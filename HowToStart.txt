@@ -1,5 +1,5 @@
 1. Start neo4j:
-cd "/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Implementation-code copy/docker"
+cd "/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/docker"
 docker compose up -d
 
 verify it:
@@ -17,7 +17,7 @@ verify it:
 curl -s http://localhost:1234/v1/models
 
 4. install Python dependencies
-cd "/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Implementation-code copy"
+cd "/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder"
 source venv/bin/activate
 pip install -r requirements.txt
 
@@ -33,7 +33,7 @@ Verify the backend till now:
 curl -N -X POST http://localhost:8001/api/v1/chat -F "query=Hello, what can you help me with?"
 
 7. Start the frontend
-cd "/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Implementation-code copy/frontend"
+cd "/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend"
 npm install
 npm run dev
 
