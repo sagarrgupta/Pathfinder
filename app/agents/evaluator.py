@@ -13,6 +13,7 @@ from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
+from app.adapters.neo4j.graph_store import store_extracted_entities, update_student
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.evaluator")
@@ -25,7 +26,7 @@ Evaluate the draft answer against the available sources and respond with JSON:
     "confidence_score": 0.0 to 1.0,
     "issues": ["list of any issues found"],
     "profile_updates": [
-        {{"field": "name", "value": "detected value", "source": "conversation"}}
+        {{"field": "FIELD_TYPE", "value": "detected value", "source": "conversation"}}
     ],
     "needs_disclaimer": true/false,
     "disclaimer": "optional disclaimer text if the answer contains uncertain claims"
@@ -44,9 +45,19 @@ Key checks:
 - Does the answer acknowledge what data it lacks?
 - Is the advice appropriate given the available information?
 
-Also check for "profile_updates" — if the user's original question reveals new information
-about themselves (e.g., "I'm interested in machine learning" or "I got an A in CSC 200"),
-extract these as profile updates.
+IMPORTANT — Profile Updates (Passive Learning):
+Scan the user's original query for NEW information about themselves that should be saved.
+For each piece, set "field" to one of: name, gpa, university, program, email, semester,
+interest, goal, skill, company, project, course.
+
+Examples:
+- "I'm interested in machine learning" → {{"field": "interest", "value": "Machine Learning", "source": "conversation"}}
+- "I got an A in CSC 200" → {{"field": "course", "value": "CSC 200", "source": "conversation"}}
+- "I want to work at Google" → {{"field": "goal", "value": "Work at Google", "source": "conversation"}}
+- "My GPA is 3.8" → {{"field": "gpa", "value": "3.8", "source": "conversation"}}
+- "I know Python and React" → [{{"field": "skill", "value": "Python"}}, {{"field": "skill", "value": "React"}}]
+
+Only extract genuinely new information. Don't extract questions or hypotheticals.
 
 Draft answer:
 {draft}
@@ -130,6 +141,41 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     elif needs_disclaimer and disclaimer:
         final_draft = f"{draft}\n\n⚠️ *{disclaimer}*"
 
+    # ── Passively learn: persist profile updates detected from conversation ──
+    student_id = state.get("student_id", "default")
+    if profile_updates:
+        try:
+            # Separate student-level properties from entity updates
+            student_props = {}
+            entities = []
+            for update in profile_updates:
+                field = update.get("field", "")
+                value = update.get("value", "")
+                if not field or not value:
+                    continue
+                # Student-level fields (name, gpa, university, etc.)
+                if field.lower() in ("name", "gpa", "university", "program", "email", "semester"):
+                    student_props[field.lower()] = value
+                else:
+                    # Treat as entity (interest, goal, skill, etc.)
+                    label = _field_to_label(field)
+                    entities.append({
+                        "label": label,
+                        "properties": {"name": value},
+                        "relationship": _label_to_relationship(label),
+                    })
+
+            if student_props:
+                await update_student(student_id, **student_props)
+                log.info("Evaluator: passively updated student props: %s", list(student_props.keys()))
+
+            if entities:
+                count = await store_extracted_entities(entities, "conversation", student_id)
+                log.info("Evaluator: passively stored %d entities from conversation", count)
+
+        except Exception as exc:
+            log.warning("Evaluator: failed to persist profile updates: %s", exc)
+
     step_progress.append(f"Confidence: {confidence:.0%} — Grounded: {'Yes' if is_grounded else 'Needs review'}")
 
     log.info("Evaluator: confidence=%.2f grounded=%s updates=%d issues=%s",
@@ -144,3 +190,29 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
         "step_progress": step_progress,
         "next_node": "responder",
     }
+
+
+def _field_to_label(field: str) -> str:
+    """Map a profile update field name to an entity label."""
+    mapping = {
+        "interest": "Interest", "interests": "Interest",
+        "goal": "Goal", "goals": "Goal",
+        "skill": "Skill", "skills": "Skill",
+        "company": "Company", "experience": "Company",
+        "project": "Project", "projects": "Project",
+        "course": "Course", "courses": "Course",
+    }
+    return mapping.get(field.lower(), "Interest")
+
+
+def _label_to_relationship(label: str) -> str:
+    """Map an entity label to a relationship type."""
+    mapping = {
+        "Interest": "INTERESTED_IN",
+        "Goal": "HAS_GOAL",
+        "Skill": "HAS_SKILL",
+        "Company": "WORKED_AT",
+        "Project": "COMPLETED",
+        "Course": "TOOK",
+    }
+    return mapping.get(label, "HAS")

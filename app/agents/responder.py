@@ -11,21 +11,26 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from app.adapters.llm.lmstudio import get_text_llm
+from app.adapters.llm.lmstudio import get_text_llm, strip_repetition, is_garbage_output
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.responder")
 
-_SYNTHESIS_PROMPT = """You are the final Responder in Pathfinder. Your job is to take a draft answer and
-polish it into a clear, well-formatted response for the student.
+_SYNTHESIS_PROMPT = """You are the final Responder in Pathfinder, an AI academic and career guidance assistant for students.
+
+Your job is to take a draft answer and polish it into a personalized, well-formatted response.
+
+Student name: {student_name}
 
 Rules:
 1. Keep the substance of the draft answer — don't remove important information.
-2. Format with markdown: use headers, bullet points, and bold for key info.
-3. If there are citations, weave them naturally into the text.
-4. Keep the tone friendly, professional, and encouraging.
-5. If confidence is low, acknowledge uncertainty honestly.
-6. End with a clear next step or follow-up suggestion when appropriate.
+2. Format with markdown: use headers (##), bullet points, tables, and bold for key info.
+3. Weave citations naturally into the text with clickable links.
+4. Tone: warm, professional, encouraging — like a knowledgeable mentor. Not generic or robotic.
+5. If confidence is low, acknowledge uncertainty honestly but still be helpful.
+6. End with 1-2 specific follow-up suggestions (not generic ones).
+7. If the student's name is available, address them by first name occasionally — but don't overdo it.
+8. Use "sources:" at the end to list URLs referenced (if any).
 
 Draft answer: {draft}
 Confidence: {confidence}
@@ -106,16 +111,40 @@ async def responder(state: PathfinderState) -> PathfinderState:
             "step_progress": step_progress,
         }
 
-    # If it's a greeting or simple response, use draft directly
-    if intent == "greeting" or not draft:
+    # Extract student name for personalization
+    profile = state.get("profile_data", {})
+    personal = profile.get("personal", {}) if profile else {}
+    student_name = personal.get("name", "").split()[0] if personal.get("name") else ""
+
+    # If it's a greeting, generate a personalized welcome
+    if intent == "greeting":
         if not draft:
             llm = get_text_llm()
+
+            greeting_context = "The student has no profile yet." if not student_name else (
+                f"The student's name is {student_name}."
+            )
+
+            # Build profile snapshot for personalized greeting
+            if profile:
+                skills_count = len(profile.get("skills", []))
+                courses_count = len(profile.get("courses", []))
+                docs_count = len(profile.get("documents", []))
+                if skills_count or courses_count:
+                    greeting_context += f" They have {courses_count} courses and {skills_count} skills in their profile."
+                if docs_count:
+                    greeting_context += f" They have {docs_count} documents uploaded."
+
             response = await llm.ainvoke([
                 SystemMessage(content=(
-                    "You are Pathfinder, a friendly AI academic and career guidance assistant. "
-                    "Respond to the user's greeting or simple question warmly. "
-                    "Mention that you can help with academic advising, career planning, "
-                    "and interview preparation."
+                    "You are Pathfinder, a warm and knowledgeable AI academic and career guidance assistant "
+                    "designed for students. "
+                    "Respond to the user's greeting personally. If you know their name, use it. "
+                    "Briefly mention what you can help with: course planning, career guidance, "
+                    "interview prep, resume analysis, and web research. "
+                    "If they have profile data, acknowledge it (e.g., 'I see you have your courses loaded'). "
+                    "Keep it concise — 2-3 sentences max. Don't use bullet points for greetings.\n\n"
+                    f"Context: {greeting_context}"
                 )),
                 HumanMessage(content=state.get("query", "Hello")),
             ])
@@ -128,20 +157,92 @@ async def responder(state: PathfinderState) -> PathfinderState:
             "step_progress": step_progress,
         }
 
+    # If the draft is garbage (model control tokens, etc.), discard it
+    if draft and is_garbage_output(draft):
+        log.warning("Responder received garbage draft (%d chars), discarding", len(draft))
+        draft = ""
+
+    # If no advisory agent produced a draft but we have data, generate
+    # a substantive answer using the available profile + document chunks
+    if not draft:
+        step_progress.append("Generating answer from available data...")
+        llm = get_text_llm()
+        query = state.get("query", "")
+        if not profile:
+            profile = state.get("profile_data", {})
+        documents = state.get("retrieved_documents", [])
+        web_results = state.get("web_results", [])
+
+        context_parts = []
+        if not personal:
+            personal = profile.get("personal", {}) if profile else {}
+        if personal:
+            context_parts.append("Student profile: " + ", ".join(
+                f"{k}: {v}" for k, v in personal.items()
+                if v and k not in ("id", "created_at", "updated_at")
+            ))
+        skills = profile.get("skills", [])
+        if skills:
+            context_parts.append("Skills: " + ", ".join(s.get("name", "") for s in skills))
+        experience = profile.get("experience", [])
+        if experience:
+            context_parts.append("Experience: " + ", ".join(
+                f"{e.get('role', '')} at {e.get('name', '')}" for e in experience
+            ))
+        if documents:
+            context_parts.append("Relevant document excerpts:\n" + "\n".join(
+                d.get("text", "")[:400] for d in documents[:5]
+            ))
+        if web_results:
+            for r in web_results[:5]:
+                source = r.get("source", "")
+                content = r.get("content", "")
+                if source == "direct_url":
+                    context_parts.append(f"Web page content [{r.get('title', '')}]({r.get('url', '')}):\n{content[:6000]}")
+                else:
+                    context_parts.append(f"- {r.get('title', '')}: {content[:400]}")
+
+        context = "\n\n".join(context_parts) if context_parts else "No data available."
+
+        name_intro = f"The student's name is {student_name}. " if student_name else ""
+        response = await llm.ainvoke([
+            SystemMessage(content=(
+                "You are Pathfinder, a warm and knowledgeable AI academic and career guidance assistant "
+                "for students. "
+                + name_intro +
+                "Answer the student's question using the context provided below. "
+                "If the context includes their resume or profile data, USE it to give "
+                "a personalized, specific answer. Do NOT ask the student to tell you "
+                "things that are already in the context. "
+                "When summarizing web page content, be thorough and include key details. "
+                "Format with markdown. Be helpful and actionable."
+            )),
+            HumanMessage(content=f"Context:\n{context}\n\nStudent's question: {query}"),
+        ])
+        draft = strip_repetition(response.content if isinstance(response.content, str) else str(response.content))
+
+        return {
+            **state,
+            "final_answer": draft,
+            "confidence_score": 0.6,
+            "step_progress": step_progress,
+        }
+
     # Polish the draft for non-trivial answers
     step_progress.append("Formatting your answer...")
     llm = get_text_llm()
 
     response = await llm.ainvoke([
-        SystemMessage(content="You are a response formatter. Polish and format the following answer."),
+        SystemMessage(content="You are a response formatter for Pathfinder. Polish and personalize the following answer."),
         HumanMessage(content=_SYNTHESIS_PROMPT.format(
-            draft=draft[:3000],
+            student_name=student_name or "the student",
+            draft=draft[:4000],
             confidence=f"{confidence:.0%}",
             intent=intent,
         )),
     ])
 
-    final = response.content if isinstance(response.content, str) else str(response.content)
+    final = strip_repetition(response.content if isinstance(response.content, str) else str(response.content))
 
     # Determine method for metadata
     method = _determine_method(state)

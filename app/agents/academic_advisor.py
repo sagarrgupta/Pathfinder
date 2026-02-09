@@ -11,33 +11,39 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from app.adapters.llm.lmstudio import get_text_llm
+from app.adapters.llm.lmstudio import get_text_llm, strip_repetition, is_garbage_output
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.academic_advisor")
 
 # ── Prompt when we have SUFFICIENT data ──────────────────────────
-_SYSTEM_PROMPT = """You are the Academic Advisor agent in Pathfinder, an AI academic guidance system.
+_SYSTEM_PROMPT = """You are the Academic Advisor agent in Pathfinder, an AI academic guidance system for students.
 
 You have access to the student's profile data, web research results, and retrieved documents.
-Your job is to provide personalized academic advice based on this information.
+Your job is to provide personalized, actionable academic advice.
 
 Capabilities:
 - Major/minor selection based on strengths and interests
 - Course planning and scheduling recommendations
 - University comparison and admission guidance
+- Program requirement matching (prerequisites, GPA requirements)
+- Research opportunity identification
+- Academic goal planning (PhD prep, thesis topics, etc.)
+- Summarizing and analyzing web content the student shares with you
 - Requirement matching (prerequisites, GPA requirements, etc.)
 - Academic goal planning (graduate school, research, etc.)
 
-CRITICAL RULES — FOLLOW THESE STRICTLY:
-1. ONLY recommend specific courses if they appear in web results or documents — NEVER make up course codes.
+CRITICAL RULES:
+1. ONLY recommend specific courses if they appear in web results or documents — NEVER invent course codes.
 2. If web results contain real course catalogs, reference those SPECIFIC courses with correct names/codes.
-3. If you do NOT have specific course data from web search or documents, recommend TYPES of courses (e.g. "a graduate-level deep learning course") rather than inventing names.
+3. If you do NOT have specific course data, recommend TYPES of courses rather than inventing names.
 4. Always acknowledge what data you DO have vs what you're MISSING.
-5. Cite web sources when using external information.
-6. Be encouraging but realistic about the student's prospects.
-7. Provide actionable next steps.
-8. Format using markdown for readability.
+5. Cite web sources with URLs when using external information.
+6. Be encouraging but realistic.
+7. Provide actionable next steps — be specific, not vague.
+8. Format using markdown for readability (headers, tables, bullet points).
+9. Address the student by name if available.
+10. When analyzing web page content (reviews, articles), provide a thorough summary with key takeaways.
 
 Student Profile:
 {profile}
@@ -107,7 +113,7 @@ async def academic_advisor(state: PathfinderState) -> PathfinderState:
             HumanMessage(content=query),
         ])
 
-        answer = response.content if isinstance(response.content, str) else str(response.content)
+        answer = strip_repetition(response.content if isinstance(response.content, str) else str(response.content))
 
         return {
             **state,
@@ -127,7 +133,11 @@ async def academic_advisor(state: PathfinderState) -> PathfinderState:
         HumanMessage(content=query),
     ])
 
-    answer = response.content if isinstance(response.content, str) else str(response.content)
+    answer = strip_repetition(response.content if isinstance(response.content, str) else str(response.content))
+
+    if is_garbage_output(answer):
+        log.warning("Academic advisor produced garbage output (%d chars), discarding", len(answer))
+        answer = ""
 
     step_progress.append("Academic advice prepared")
     log.info("Academic advisor generated response (%d chars)", len(answer))
@@ -185,13 +195,24 @@ def _format_profile(profile: dict[str, Any]) -> str:
 
 
 def _format_web_results(results: list[dict[str, Any]]) -> str:
-    """Format web results for LLM context."""
+    """Format web results for LLM context.
+
+    Direct URL fetches (source=direct_url) get much more content since
+    the user explicitly asked to analyze that page.
+    """
     if not results:
         return "No web results available."
     parts = []
     for r in results[:5]:
-        parts.append(f"- [{r.get('title', 'Untitled')}]({r.get('url', '')}): {r.get('content', '')[:200]}")
-    return "\n".join(parts)
+        source = r.get("source", "")
+        content = r.get("content", "")
+        if source == "direct_url":
+            # Direct fetch — include full content (up to 8000 chars)
+            parts.append(f"### [{r.get('title', 'Page')}]({r.get('url', '')})\n{content[:8000]}")
+        else:
+            # Search result — include a generous snippet
+            parts.append(f"- [{r.get('title', 'Untitled')}]({r.get('url', '')}): {content[:500]}")
+    return "\n\n".join(parts)
 
 
 def _format_documents(documents: list[dict[str, Any]]) -> str:

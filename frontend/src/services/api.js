@@ -13,13 +13,16 @@ const API_BASE = '/api/v1';
  * @param {Object} callbacks - { onProgress, onToken, onDone, onError }
  * @returns {AbortController} - call .abort() to cancel
  */
-export function chatSSE({ query, sessionId, files = [], isGlobalUpload = false }, callbacks) {
+export function chatSSE({ query, sessionId, files = [], isGlobalUpload = false, replaceFilenames = [] }, callbacks) {
   const controller = new AbortController();
 
   const formData = new FormData();
   formData.append('query', query);
   if (sessionId) formData.append('session_id', sessionId);
   formData.append('is_global_upload', isGlobalUpload.toString());
+  if (replaceFilenames.length > 0) {
+    formData.append('replace_filenames', replaceFilenames.join(','));
+  }
   files.forEach((file) => formData.append('files', file));
 
   fetch(`${API_BASE}/chat`, {
@@ -72,11 +75,18 @@ export function chatSSE({ query, sessionId, files = [], isGlobalUpload = false }
 
 // ── Document Upload ─────────────────────────────────────────────
 
-export async function uploadDocument(file, scope = 'global', sessionId = null) {
+export async function checkDocumentExists(filename) {
+  const response = await fetch(`${API_BASE}/documents/check?filename=${encodeURIComponent(filename)}`);
+  if (!response.ok) throw new Error(`Check failed: ${response.status}`);
+  return response.json();
+}
+
+export async function uploadDocument(file, scope = 'global', sessionId = null, replace = false) {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('scope', scope);
   if (sessionId) formData.append('session_id', sessionId);
+  if (replace) formData.append('replace', 'true');
 
   const response = await fetch(`${API_BASE}/documents`, {
     method: 'POST',
@@ -109,6 +119,16 @@ export async function deleteProfileEntity(label, name) {
     method: 'DELETE',
   });
   if (!response.ok) throw new Error(`Failed to delete entity: ${response.status}`);
+  return response.json();
+}
+
+export async function updateProfileEntity(label, name, properties) {
+  const response = await fetch(`${API_BASE}/profile/entity`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label, name, properties }),
+  });
+  if (!response.ok) throw new Error(`Failed to update entity: ${response.status}`);
   return response.json();
 }
 

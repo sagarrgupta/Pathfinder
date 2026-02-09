@@ -26,22 +26,43 @@ _INJECTION_PATTERNS = [
 ]
 
 # ── Off-topic detection keywords ────────────────────────────────
+# Broader keyword set to reduce false positives on legitimate queries
 _ALLOWED_TOPICS = {
+    # Academic
     "academic", "university", "college", "course", "class", "grade",
-    "gpa", "transcript", "major", "minor", "degree", "career",
-    "job", "internship", "resume", "interview", "skill", "project",
-    "research", "scholarship", "financial", "admission", "application",
-    "study", "learn", "student", "professor", "semester", "credit",
-    "work", "experience", "certification", "phd", "master", "bachelor",
+    "gpa", "transcript", "major", "minor", "degree", "school",
+    "program", "graduate", "undergraduate", "phd", "master", "bachelor",
+    "semester", "credit", "prerequisite", "elective", "curriculum",
+    "professor", "advisor", "department", "thesis", "dissertation",
+    "admission", "application", "scholarship", "financial", "tuition",
+    # Career
+    "career", "job", "internship", "resume", "interview", "skill",
+    "project", "research", "certification", "work", "experience",
+    "salary", "hire", "hiring", "recruit", "apply", "position", "role",
+    "company", "startup", "promotion", "portfolio", "linkedin",
+    # Tech
+    "developer", "engineer", "data", "science", "computer", "software",
+    "programming", "coding", "technology", "ai", "ml", "machine",
+    "learning", "web", "mobile", "cloud", "database", "api",
+    "backend", "frontend", "fullstack", "devops", "security", "design",
+    # Companies
+    "google", "amazon", "microsoft", "apple", "meta", "nvidia",
+    "netflix", "tesla", "openai", "intel", "ibm", "oracle", "adobe",
+    # General interaction
     "hello", "hi", "hey", "thanks", "thank", "help", "profile",
     "document", "upload", "file", "what", "how", "can", "should",
     "recommend", "suggest", "compare", "analyze", "plan", "goal",
-    "salary", "company", "google", "amazon", "microsoft", "startup",
-    "backend", "frontend", "developer", "engineer", "data", "science",
-    "computer", "software", "programming", "coding", "technology",
+    "review", "summarize", "read", "find", "search", "show", "tell",
+    "list", "give", "explain", "describe", "check", "look", "open",
+    # Study / learning
+    "study", "learn", "practice", "prepare", "improve", "train",
+    "book", "resource", "tutorial", "workshop", "bootcamp", "online",
 }
 
-MAX_QUERY_LENGTH = 2000
+# URLs always pass — the user explicitly wants web content analyzed
+_URL_PATTERN = re.compile(r"https?://", re.IGNORECASE)
+
+MAX_QUERY_LENGTH = 4000
 
 
 async def input_guard(state: PathfinderState) -> PathfinderState:
@@ -86,19 +107,26 @@ async def input_guard(state: PathfinderState) -> PathfinderState:
 
     # 4. Topic guardrail (if enabled)
     if topic_guard_enabled:
-        words = set(re.findall(r"\w+", query_lower))
-        if not words.intersection(_ALLOWED_TOPICS):
-            log.info("Blocked: off-topic query")
-            return {
-                **state,
-                "is_blocked": True,
-                "block_reason": (
-                    "I'm designed to help with academic and career guidance. "
-                    "Your question doesn't seem related to these topics. "
-                    "You can disable topic filtering in Settings if you'd like to chat freely."
-                ),
-                "step_progress": step_progress,
-            }
+        # URLs always pass — the user wants Pathfinder to analyze web content
+        has_url = bool(_URL_PATTERN.search(query))
+
+        # Has uploaded files → always relevant
+        has_files = bool(state.get("files"))
+
+        if not has_url and not has_files:
+            words = set(re.findall(r"\w+", query_lower))
+            if not words.intersection(_ALLOWED_TOPICS):
+                log.info("Blocked: off-topic query")
+                return {
+                    **state,
+                    "is_blocked": True,
+                    "block_reason": (
+                        "I'm designed to help with academic and career guidance. "
+                        "Your question doesn't seem related to these topics. "
+                        "You can disable topic filtering in Settings if you'd like to chat freely."
+                    ),
+                    "step_progress": step_progress,
+                }
 
     step_progress.append("Input validated ✓")
     log.info("Input guard passed for query: %s", query[:60])

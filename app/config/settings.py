@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # ---------- Neo4j ----------
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"
-    NEO4J_PASSWORD: str = "pathfinder123"
+    NEO4J_PASSWORD: str = ""
 
     # ---------- SQLite (LangGraph Memory) ----------
     SQLITE_DB_PATH: str = "data/pathfinder.db"
@@ -61,7 +61,17 @@ class Settings(BaseSettings):
     
     # ---------- File Upload ----------
     MAX_FILE_SIZE_MB: int = 10
-    ALLOWED_FILE_TYPES: list[str] = [".pdf"]
+    ALLOWED_FILE_TYPES: list[str] = [".pdf", ".png", ".jpg", ".jpeg", ".heif", ".heic", ".docx"]
+
+    # ---------- LLM Limits ----------
+    # gpt-oss-20b is a thinking/reasoning model — it uses tokens for internal
+    # chain-of-thought before producing visible output.  With max_tokens=2048
+    # the model exhausts the budget on thinking and returns empty content.
+    # 16384 gives ample room for both reasoning (~12k) and output (~4k).
+    LLM_MAX_TOKENS: int = 16384
+    LLM_REQUEST_TIMEOUT: float = 300.0   # Thinking models can take longer
+    LLM_FREQUENCY_PENALTY: float = 0.6   # Penalise repeated tokens (prevents repetition loops)
+    LLM_PRESENCE_PENALTY: float = 0.3    # Encourage topic diversity
 
     # ---------- Server ----------
     HOST: str = "0.0.0.0"

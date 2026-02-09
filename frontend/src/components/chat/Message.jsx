@@ -3,9 +3,29 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   User, Sparkles, ChevronDown, ChevronUp, ExternalLink,
-  Shield, Copy, Check, Loader2, CheckCircle2,
+  Shield, Copy, Check, Loader2, CheckCircle2, Paperclip,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+// Map technical node names to user-friendly phase labels
+const STEP_LABELS = {
+  input_guard: 'Validation',
+  orchestrator: 'Planning',
+  clarifier: 'Clarifying',
+  doc_analyst: 'Documents',
+  profile_manager: 'Your Profile',
+  web_researcher: 'Research',
+  academic_advisor: 'Academic Advice',
+  career_planner: 'Career',
+  interview_prep: 'Interview Prep',
+  evaluator: 'Quality Check',
+  responder: 'Response',
+};
+
+function formatStep(step) {
+  const label = STEP_LABELS[step.node] || step.node;
+  return { label, message: step.message || '' };
+}
 
 export default function Message({ message, isLast, isStreaming }) {
   const [showCitations, setShowCitations] = useState(false);
@@ -15,6 +35,7 @@ export default function Message({ message, isLast, isStreaming }) {
   const metadata = message.metadata || {};
   const citations = metadata.citations || [];
   const progress = message.progress || [];
+  const attachments = message.attachments || [];
   const isCurrentlyStreaming = isLast && isStreaming && !isUser;
   const hasContent = !!message.content;
 
@@ -57,20 +78,23 @@ export default function Message({ message, isLast, isStreaming }) {
             {/* During streaming: show live progress */}
             {isCurrentlyStreaming && !hasContent ? (
               <div className="space-y-1.5">
-                {progress.map((step, i) => (
-                  <div key={i} className={cn(
-                    'flex items-center gap-2 text-xs',
-                    i === progress.length - 1 ? 'animate-fade-in' : ''
-                  )}>
-                    {i === progress.length - 1 ? (
-                      <Loader2 className="h-3 w-3 animate-spin text-primary flex-shrink-0" />
-                    ) : (
-                      <CheckCircle2 className="h-3 w-3 text-green-500 dark:text-green-400 flex-shrink-0" />
-                    )}
-                    <span className="font-medium text-foreground/70">{step.node}:</span>
-                    <span className="text-muted-foreground">{step.message}</span>
-                  </div>
-                ))}
+                {progress.map((step, i) => {
+                  const { label, message } = formatStep(step);
+                  return (
+                    <div key={i} className={cn(
+                      'flex items-center gap-2 text-xs',
+                      i === progress.length - 1 ? 'animate-fade-in' : ''
+                    )}>
+                      {i === progress.length - 1 ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-primary flex-shrink-0" />
+                      ) : (
+                        <CheckCircle2 className="h-3 w-3 text-green-500 dark:text-green-400 flex-shrink-0" />
+                      )}
+                      <span className="font-medium text-foreground/70">{label}</span>
+                      <span className="text-muted-foreground">{message}</span>
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               /* After streaming: collapsible summary */
@@ -80,21 +104,39 @@ export default function Message({ message, isLast, isStreaming }) {
                   className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded-md px-1.5 py-0.5 -ml-1.5 hover:bg-accent/50"
                 >
                   {showProgress ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                  <span>{progress.length} thinking steps</span>
+                  <span>See how I answered</span>
                 </button>
                 {showProgress && (
                   <div className="mt-2 pl-2 space-y-1 border-l-2 border-border/50 ml-0.5 animate-fade-in">
-                    {progress.map((step, i) => (
-                      <div key={i} className="flex items-center gap-2 text-xs pl-2">
-                        <CheckCircle2 className="h-3 w-3 text-green-500 dark:text-green-400 flex-shrink-0" />
-                        <span className="font-medium text-foreground/70">{step.node}:</span>
-                        <span className="text-muted-foreground">{step.message}</span>
-                      </div>
-                    ))}
+                    {progress.map((step, i) => {
+                      const { label, message } = formatStep(step);
+                      return (
+                        <div key={i} className="flex items-center gap-2 text-xs pl-2">
+                          <CheckCircle2 className="h-3 w-3 text-green-500 dark:text-green-400 flex-shrink-0" />
+                          <span className="font-medium text-foreground/70">{label}</span>
+                          <span className="text-muted-foreground">{message}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── File Attachments (user messages) ── */}
+        {isUser && attachments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {attachments.map((file, i) => (
+              <div
+                key={i}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/15 text-xs font-medium"
+              >
+                <Paperclip className="h-3 w-3 flex-shrink-0 opacity-70" />
+                <span className="truncate max-w-[160px]">{file.name}</span>
+              </div>
+            ))}
           </div>
         )}
 

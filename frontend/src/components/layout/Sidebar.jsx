@@ -257,7 +257,14 @@ export default function Sidebar({ open, onToggle }) {
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center ring-1 ring-primary/10">
               <GraduationCap className="h-4.5 w-4.5 text-primary" />
             </div>
-            <h1 className="font-semibold text-base whitespace-nowrap tracking-tight">Pathfinder</h1>
+            <div className="min-w-0">
+              <h1 className="font-semibold text-base whitespace-nowrap tracking-tight leading-tight">Pathfinder</h1>
+              {state.profile?.personal?.name && (
+                <p className="text-[10px] text-muted-foreground truncate leading-tight">
+                  {state.profile.personal.name.split(' ')[0]}'s Guide
+                </p>
+              )}
+            </div>
           </div>
           <button onClick={onToggle} className="p-1.5 rounded-lg hover:bg-accent flex-shrink-0 transition-colors" title="Collapse sidebar">
             <PanelLeftClose className="h-4.5 w-4.5 text-muted-foreground" />

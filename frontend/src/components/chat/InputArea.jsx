@@ -93,14 +93,14 @@ export default function InputArea({
             type="button"
             onClick={() => fileInputRef.current?.click()}
             className="h-[44px] w-[44px] flex items-center justify-center rounded-xl border bg-background hover:bg-accent transition-colors flex-shrink-0"
-            title="Attach PDF"
+            title="Attach file (PDF, Image, DOCX)"
           >
             <Paperclip className="h-5 w-5 text-muted-foreground" />
           </button>
           <input
             ref={fileInputRef}
             type="file"
-            accept=".pdf"
+            accept=".pdf,.png,.jpg,.jpeg,.heif,.heic,.docx"
             multiple
             onChange={handleFileSelect}
             className="hidden"

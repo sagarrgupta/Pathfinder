@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
-import { getProfile, addProfileText, uploadDocument, deleteProfileEntity, updateProfile } from '@/services/api';
+import { getProfile, addProfileText, uploadDocument, deleteProfileEntity, updateProfile, updateProfileEntity, checkDocumentExists } from '@/services/api';
 import {
   User, Upload, FileText, Trash2, Plus, BookOpen,
   Briefcase, Target, Star, GraduationCap, Loader2,
@@ -69,6 +69,12 @@ export default function ProfilePage() {
   const fileInputRef = useRef(null);
   const profile = state.profile;
 
+  // Confirmation dialog state
+  const [confirmDialog, setConfirmDialog] = useState({
+    open: false, title: '', message: '', onConfirm: null,
+    confirmLabel: 'Delete', variant: 'destructive',
+  });
+
   useEffect(() => {
     loadProfile();
   }, []);
@@ -84,15 +90,17 @@ export default function ProfilePage() {
     }
   };
 
-  const handleUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const performUpload = async (file, replace = false) => {
     setIsUploading(true);
     setProcessingStep('Uploading document...');
     try {
       setProcessingStep('Processing and extracting entities...');
-      const result = await uploadDocument(file, 'global');
-      toast.success(`Uploaded ${file.name}: ${result.entities_extracted} entities extracted`);
+      const result = await uploadDocument(file, 'global', null, replace);
+      toast.success(
+        replace
+          ? `Replaced ${file.name}: ${result.entities_extracted} entities extracted`
+          : `Uploaded ${file.name}: ${result.entities_extracted} entities extracted`
+      );
       setProcessingStep('');
       await loadProfile();
     } catch (err) {
@@ -102,6 +110,34 @@ export default function ProfilePage() {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  };
+
+  const handleUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Check for duplicate
+    try {
+      const { exists } = await checkDocumentExists(file.name);
+      if (exists) {
+        setConfirmDialog({
+          open: true,
+          title: 'Duplicate Document',
+          message: `"${file.name}" already exists in your profile. Would you like to replace it with the new version?`,
+          confirmLabel: 'Replace',
+          variant: 'primary',
+          onConfirm: () => {
+            setConfirmDialog((prev) => ({ ...prev, open: false }));
+            performUpload(file, true);
+          },
+        });
+        return;
+      }
+    } catch {
+      // If check fails, proceed with upload anyway
+    }
+
+    performUpload(file);
   };
 
   const handleAddText = async () => {
@@ -124,21 +160,40 @@ export default function ProfilePage() {
     }
   };
 
-  const handleDelete = async (label, name) => {
-    if (!window.confirm(`Delete "${name}" from your profile?`)) return;
-    try {
-      await deleteProfileEntity(label, name);
-      toast.success(`Deleted ${name}`);
-      await loadProfile();
-    } catch (err) {
-      toast.error(`Delete failed: ${err.message}`);
-    }
+  const handleDelete = (label, name) => {
+    setConfirmDialog({
+      open: true,
+      title: 'Confirm Deletion',
+      message: `Are you sure you want to delete "${name}" from your profile? This action cannot be undone.`,
+      onConfirm: async () => {
+        setConfirmDialog((prev) => ({ ...prev, open: false }));
+        try {
+          await deleteProfileEntity(label, name);
+          toast.success(`Deleted ${name}`);
+          await loadProfile();
+        } catch (err) {
+          toast.error(`Delete failed: ${err.message}`);
+        }
+      },
+    });
   };
+
+  const closeConfirmDialog = () => setConfirmDialog((prev) => ({ ...prev, open: false }));
 
   const handleEditField = async (field, value) => {
     try {
       await updateProfile(field, value);
       toast.success(`Updated ${formatFieldLabel(field)}`);
+      await loadProfile();
+    } catch (err) {
+      toast.error(`Update failed: ${err.message}`);
+    }
+  };
+
+  const handleEditEntity = async (label, name, properties) => {
+    try {
+      await updateProfileEntity(label, name, properties);
+      toast.success(`Updated ${name}`);
       await loadProfile();
     } catch (err) {
       toast.error(`Update failed: ${err.message}`);
@@ -170,6 +225,15 @@ export default function ProfilePage() {
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-fade">
+      <ConfirmDialog
+        open={confirmDialog.open}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        onConfirm={confirmDialog.onConfirm}
+        onCancel={closeConfirmDialog}
+        confirmLabel={confirmDialog.confirmLabel}
+        variant={confirmDialog.variant}
+      />
       <div className="max-w-4xl mx-auto p-6 animate-fade-in">
         {/* Header */}
         <div className="flex items-center gap-4 mb-8">
@@ -206,16 +270,16 @@ export default function ProfilePage() {
               <Upload className="h-4 w-4 text-primary" /> Upload Document
             </h3>
             <p className="text-xs text-muted-foreground mb-4">
-              Upload transcripts, resumes, or other academic documents (PDF).
+              Upload transcripts, resumes, or other academic documents (PDF, Images, DOCX).
             </p>
-            <input ref={fileInputRef} type="file" accept=".pdf" onChange={handleUpload} className="hidden" />
+            <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.heif,.heic,.docx" onChange={handleUpload} className="hidden" />
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isProcessing}
               className="w-full py-2.5 border-2 border-dashed rounded-lg text-sm hover:bg-accent hover:border-primary/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2 active:scale-[0.98]"
             >
               {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              {isUploading ? 'Processing...' : 'Select PDF File'}
+              {isUploading ? 'Processing...' : 'Select File'}
             </button>
           </div>
 
@@ -294,6 +358,7 @@ export default function ProfilePage() {
                 label={activeTab}
                 items={profile.all_entities?.[activeTab] || []}
                 onDelete={handleDelete}
+                onEdit={handleEditEntity}
               />
             )}
           </div>
@@ -337,7 +402,7 @@ function DynamicPersonalTab({ personal, onEditField }) {
 
 // ── Dynamic Entity Tab ──────────────────────────────────────────
 
-function DynamicEntityTab({ label, items, onDelete }) {
+function DynamicEntityTab({ label, items, onDelete, onEdit }) {
   if (!items || items.length === 0) return <EmptyTab />;
 
   const config = getEntityConfig(label);
@@ -356,7 +421,13 @@ function DynamicEntityTab({ label, items, onDelete }) {
     return (
       <div className="space-y-3">
         {sortedItems.map((item, i) => (
-          <ExperienceCard key={i} item={item} onDelete={() => onDelete(label, item[config.nameKey] || item.name || '')} />
+          <ExperienceCard
+            key={i}
+            label={label}
+            item={item}
+            onDelete={() => onDelete(label, item[config.nameKey] || item.name || '')}
+            onEdit={onEdit}
+          />
         ))}
       </div>
     );
@@ -396,12 +467,114 @@ function DynamicEntityTab({ label, items, onDelete }) {
 
 // ── Experience Card ─────────────────────────────────────────────
 
-function ExperienceCard({ item, onDelete }) {
+function ExperienceCard({ label, item, onDelete, onEdit }) {
+  const [editing, setEditing] = useState(false);
   const name = item.name || 'Company';
   const title = item.title || item.role || '';
   const description = item.description || '';
   const startDate = item.start_date || item.startDate || '';
   const endDate = item.end_date || item.endDate || '';
+
+  const [draft, setDraft] = useState({
+    name, title, description, start_date: startDate, end_date: endDate,
+  });
+
+  const handleSave = () => {
+    // Build only changed properties
+    const changes = {};
+    if (draft.name !== name) changes.name = draft.name;
+    if (draft.title !== title) changes.title = draft.title;
+    if (draft.description !== description) changes.description = draft.description;
+    if (draft.start_date !== startDate) changes.start_date = draft.start_date;
+    if (draft.end_date !== endDate) changes.end_date = draft.end_date;
+
+    if (Object.keys(changes).length > 0) {
+      onEdit(label, name, changes);
+    }
+    setEditing(false);
+  };
+
+  const handleCancel = () => {
+    setDraft({ name, title, description, start_date: startDate, end_date: endDate });
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="rounded-xl border p-4 ring-2 ring-primary/20 animate-fade-in">
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">Company</label>
+              <input
+                type="text"
+                value={draft.name}
+                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">Role / Title</label>
+              <input
+                type="text"
+                value={draft.title}
+                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+                className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">Start Date</label>
+              <input
+                type="text"
+                value={draft.start_date}
+                onChange={(e) => setDraft({ ...draft, start_date: e.target.value })}
+                placeholder="e.g. Jan 2022"
+                className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">End Date</label>
+              <input
+                type="text"
+                value={draft.end_date}
+                onChange={(e) => setDraft({ ...draft, end_date: e.target.value })}
+                placeholder="Present"
+                className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Description</label>
+            <textarea
+              value={draft.description}
+              onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+              className="w-full rounded-lg border bg-background px-3 py-2 text-sm resize-none h-20 focus:outline-none focus:ring-2 focus:ring-ring/50"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              onClick={handleCancel}
+              className="px-3 py-1.5 text-sm font-medium rounded-lg border hover:bg-muted transition-colors flex items-center gap-1.5"
+            >
+              <X className="h-3.5 w-3.5" /> Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              className="px-3 py-1.5 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity flex items-center gap-1.5"
+            >
+              <Check className="h-3.5 w-3.5" /> Save
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-xl border p-4 hover:bg-muted/30 hover:shadow-sm transition-all group">
@@ -430,13 +603,22 @@ function ExperienceCard({ item, onDelete }) {
           )}
         </div>
 
-        <button
-          onClick={onDelete}
-          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all ml-3 mt-0.5 flex-shrink-0 p-1 rounded-md hover:bg-destructive/10"
-          title="Delete"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all ml-3 mt-0.5 flex-shrink-0">
+          <button
+            onClick={() => setEditing(true)}
+            className="text-muted-foreground hover:text-foreground p-1 rounded-md hover:bg-accent transition-colors"
+            title="Edit"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={onDelete}
+            className="text-muted-foreground hover:text-destructive p-1 rounded-md hover:bg-destructive/10 transition-colors"
+            title="Delete"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -506,6 +688,55 @@ function EmptyTab() {
         <FileText className="h-5 w-5 text-muted-foreground/50" />
       </div>
       <p className="text-muted-foreground text-sm">No data available yet.</p>
+    </div>
+  );
+}
+
+// ── Confirmation Dialog ──────────────────────────────────────────
+
+function ConfirmDialog({ open, title, message, onConfirm, onCancel, confirmLabel = 'Delete', variant = 'destructive' }) {
+  if (!open) return null;
+
+  const btnClass = variant === 'destructive'
+    ? 'bg-destructive text-destructive-foreground'
+    : 'bg-primary text-primary-foreground';
+  const iconBgClass = variant === 'destructive'
+    ? 'bg-destructive/10'
+    : 'bg-primary/10';
+  const iconColor = variant === 'destructive'
+    ? 'text-destructive'
+    : 'text-primary';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
+      {/* Dialog */}
+      <div className="relative bg-card border rounded-2xl shadow-xl p-6 max-w-sm w-full mx-4 animate-fade-in-up">
+        <div className="flex items-start gap-3 mb-4">
+          <div className={`w-10 h-10 rounded-full ${iconBgClass} flex items-center justify-center flex-shrink-0`}>
+            <AlertTriangle className={`h-5 w-5 ${iconColor}`} />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold">{title}</h3>
+            <p className="text-sm text-muted-foreground mt-1">{message}</p>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium rounded-lg border hover:bg-muted transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className={`px-4 py-2 text-sm font-medium rounded-lg ${btnClass} hover:opacity-90 transition-opacity`}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

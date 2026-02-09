@@ -18,38 +18,41 @@ from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.orchestrator")
 
-_SYSTEM_PROMPT = """You are the Orchestrator of Pathfinder, an AI academic and career guidance system.
+_SYSTEM_PROMPT = """You are the Orchestrator of Pathfinder, an AI academic and career guidance system for students.
 
 Your job is to analyze the user's query and decide which specialist agents should handle it.
 
 Available agents:
 - clarifier: Ask the user for more information when the query is ambiguous or missing key details
-- doc_analyst: Process uploaded documents (PDFs) — extract text, create chunks, extract entities
+- doc_analyst: Process uploaded documents (PDFs, images, DOCX) — extract text, create chunks, extract entities
 - profile_manager: Query or update the student's knowledge graph profile (courses, skills, GPA, etc.)
-- web_researcher: Search the web for external information (university requirements, job postings, courses available, etc.)
-- academic_advisor: Provide academic guidance (major selection, course planning, university comparison)
-- career_planner: Provide career guidance (job matching, skill gap analysis, career paths)
-- interview_prep: Help with interview preparation (mock questions, answer feedback, company research)
+- web_researcher: Search the web for external information (university pages, job postings, reviews, any URL the user provides)
+- academic_advisor: Provide academic guidance (course planning, university comparison, program requirements)
+- career_planner: Provide career guidance (job matching, skill gap analysis, career paths, salary insights)
+- interview_prep: Help with interview preparation (mock questions, STAR answers, company research)
 
 Analyze the user's query and respond with a JSON object:
-{
-    "intent": "academic|career|interview|document|profile|general|greeting",
+{{
+    "intent": "academic|career|interview|document|profile|general|greeting|research",
     "plan": ["agent1", "agent2", ...],
     "missing_info": [],
     "reasoning": "brief explanation of your routing decision"
-}
+}}
 
 Rules:
 1. If the user uploaded files, ALWAYS include "doc_analyst" first.
-2. If the query references anything personal (grades, skills, GPA, courses, profile, university, name, "my", "I"), include "profile_manager" FIRST.
-3. If the query asks about specific courses, programs, universities, job listings, or anything factual that could be looked up, include "web_researcher".
-4. Only route to "clarifier" if the query is genuinely ambiguous AND profile data cannot help resolve it.
-5. For greetings or simple chat (like "hello", "hi", "thanks"), return intent "greeting" with an empty plan.
-6. Always think about what information is needed and which agents provide it.
+2. If the query references anything personal (grades, skills, GPA, courses, profile, university, name, "my", "I"), include "profile_manager".
+3. If the query asks about specific courses, programs, universities, job listings, URLs, reviews, or anything external, include "web_researcher".
+4. If the query contains a URL (https://...), ALWAYS include "web_researcher" — it will fetch the page directly.
+5. Only route to "clarifier" if the query is genuinely ambiguous AND profile data cannot help resolve it.
+6. For greetings or simple chat (like "hello", "hi", "thanks"), return intent "greeting" with an empty plan.
 7. Profile_manager MUST come before agents that need profile data (academic_advisor, career_planner, interview_prep).
-8. For academic, career, or interview queries, ALWAYS include profile_manager in the plan even if no profile is loaded yet — it will fetch data from the database.
+8. For academic, career, or interview queries, ALWAYS include profile_manager in the plan.
 9. NEVER return just ["clarifier"] if the student has profile data available.
-10. For course recommendations or university comparisons, ALWAYS include "web_researcher" to get real, up-to-date information.
+10. For course recommendations or university comparisons, ALWAYS include "web_researcher".
+11. A query can have MIXED intents (e.g., "based on my resume, find me jobs" is both profile + career). Pick the PRIMARY intent but include ALL relevant agents.
+12. Use intent "research" when the user asks to read, summarize, or analyze external content (URLs, reviews, articles).
+13. Consider the conversation history — if the user is following up on a previous topic, maintain context.
 """
 
 
@@ -109,14 +112,26 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         context_parts.append(f"User uploaded {len(files)} file(s): {[f.get('filename', 'unknown') for f in files]}")
     context_parts.append(profile_context)
 
-    context = "\n".join(context_parts)
+    # Add conversation history for follow-up awareness
+    messages = state.get("messages", [])
+    if len(messages) > 1:
+        # Summarize recent conversation turns (skip current query)
+        history_lines = []
+        for msg in messages[:-1]:  # Everything except the current message
+            if isinstance(msg, tuple):
+                role, content = msg
+                history_lines.append(f"{role}: {content[:150]}")
+            elif hasattr(msg, "content"):
+                role = getattr(msg, "type", "unknown")
+                history_lines.append(f"{role}: {msg.content[:150]}")
+        if history_lines:
+            context_parts.append("Recent conversation:\n" + "\n".join(history_lines[-6:]))
 
-    # #region agent log
-    import os, json as _json
-    _log_path = __import__("os").path.join(__import__("tempfile").gettempdir(), "pathfinder-debug.log")
-    with open(_log_path, "a") as _f:
-        _f.write(_json.dumps({"location": "orchestrator.py:entry", "message": "Orchestrator context", "data": {"query": query, "profile_context": profile_context, "has_profile": has_profile}, "hypothesisId": "A", "timestamp": __import__("time").time()}) + "\n")
-    # #endregion
+    # Detect URLs in query
+    if "http" in query.lower():
+        context_parts.append("NOTE: The query contains URL(s) — web_researcher can fetch page content directly.")
+
+    context = "\n".join(context_parts)
 
     response = await llm.ainvoke([
         SystemMessage(content=_SYSTEM_PROMPT),
@@ -189,6 +204,26 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
                     plan.insert(agent_idx, "profile_manager")
                     break
 
+    # ── Guardrail: URL queries must include web_researcher ──
+    if "http" in query_lower and "web_researcher" not in plan:
+        plan.insert(0 if "profile_manager" not in plan else plan.index("profile_manager") + 1, "web_researcher")
+        log.info("Guardrail: inserted web_researcher for URL query")
+
+    # ── Guardrail: intent MUST have a matching advisory agent ──
+    # Without this, the plan can end at web_researcher with no agent
+    # that actually generates a draft_answer.
+    _intent_to_agent = {
+        "career": "career_planner",
+        "academic": "academic_advisor",
+        "interview": "interview_prep",
+        "research": "academic_advisor",  # research queries get academic_advisor to synthesize
+    }
+    if intent in _intent_to_agent:
+        required_agent = _intent_to_agent[intent]
+        if required_agent not in plan:
+            plan.append(required_agent)
+            log.info("Guardrail: inserted %s for %s intent", required_agent, intent)
+
     # Determine next node
     if intent == "greeting":
         next_node = "responder"
@@ -197,12 +232,17 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     else:
         next_node = "responder"
 
-    # #region agent log
-    with open(_log_path, "a") as _f:
-        _f.write(_json.dumps({"location": "orchestrator.py:exit", "message": "Orchestrator decision", "data": {"intent": intent, "plan": plan, "next_node": next_node, "missing_info": missing_info, "raw_response": content[:500]}, "hypothesisId": "B", "timestamp": __import__("time").time()}) + "\n")
-    # #endregion
-
-    step_progress.append(f"Intent: {intent} — Plan: {' → '.join(plan) if plan else 'direct response'}")
+    _plan_labels = {
+        "profile_manager": "Profile",
+        "web_researcher": "Research",
+        "academic_advisor": "Academic",
+        "career_planner": "Career",
+        "interview_prep": "Interview",
+        "doc_analyst": "Documents",
+        "clarifier": "Clarify",
+    }
+    plan_display = " → ".join(_plan_labels.get(p, p) for p in plan) if plan else "direct response"
+    step_progress.append(f"Intent: {intent} — Plan: {plan_display}")
     log.info("Orchestrator: intent=%s plan=%s next=%s", intent, plan, next_node)
 
     return {
