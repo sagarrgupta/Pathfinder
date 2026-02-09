@@ -1,0 +1,41 @@
+1. Start neo4j:
+cd "/path/to/Pathfinder/docker"
+docker compose up -d
+
+verify it:
+curl -s http://localhost:7474
+
+
+2. Start ollma:
+ollama serve
+
+verify it:
+ollama list
+
+3. Start LM studio and load gpt-oss model:
+verify it:
+curl -s http://localhost:1234/v1/models
+
+4. install Python dependencies
+cd "/path/to/Pathfinder"
+source venv/bin/activate
+pip install -r requirements.txt
+
+5: Start the backend server
+Make sure you're still in the project directory with the venv activated, then:
+mkdir -p data
+uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+
+verify it:
+curl -s http://localhost:8001/api/v1/health
+
+Verify the backend till now:
+curl -N -X POST http://localhost:8001/api/v1/chat -F "query=Hello, what can you help me with?"
+
+7. Start the frontend
+cd "/path/to/Pathfinder/frontend"
+npm install
+npm run dev
+
+open in browser:
+http://localhost:3000
