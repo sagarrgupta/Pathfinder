@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useReducer, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
+import { getProfile } from '@/services/api';
 
 const AppContext = createContext(null);
 
@@ -214,6 +215,22 @@ export function AppProvider({ children }) {
       return () => mq.removeEventListener('change', handler);
     }
   }, [state.theme]);
+
+  // ── Auto-load profile on app start for personalization ──
+  const profileLoaded = useRef(false);
+  useEffect(() => {
+    if (profileLoaded.current) return;
+    profileLoaded.current = true;
+    (async () => {
+      try {
+        dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
+        const data = await getProfile();
+        dispatch({ type: 'SET_PROFILE', payload: data });
+      } catch {
+        dispatch({ type: 'SET_PROFILE_LOADING', payload: false });
+      }
+    })();
+  }, []);
 
   const createSession = useCallback(() => {
     const sessionId = `session_${Date.now().toString(36)}`;

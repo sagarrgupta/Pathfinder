@@ -29,6 +29,13 @@ class ProfileUpdate(BaseModel):
     value: Any
 
 
+class EntityUpdate(BaseModel):
+    """Update properties on a profile entity (Company, Skill, etc.)."""
+    label: str
+    name: str  # current name to identify the entity
+    properties: dict[str, Any]  # new property values
+
+
 class SettingsUpdate(BaseModel):
     """Update application settings."""
     topic_guard_enabled: Optional[bool] = None

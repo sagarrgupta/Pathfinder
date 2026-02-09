@@ -150,6 +150,27 @@ async def create_entity(
         return _sanitize(dict(record["entity"])) if record else {}
 
 
+async def update_entity(
+    label: str, match_props: dict[str, Any], new_props: dict[str, Any]
+) -> dict[str, Any]:
+    """Update properties on an existing entity node."""
+    driver = await get_driver()
+    where = " AND ".join(f"n.{k} = ${k}" for k in match_props)
+    set_clauses = ", ".join(f"n.{k} = $new_{k}" for k in new_props)
+    params = {**match_props, **{f"new_{k}": v for k, v in new_props.items()}}
+    async with driver.session() as session:
+        result = await session.run(
+            f"""
+            MATCH (n:{label}) WHERE {where}
+            SET {set_clauses}, n.updated_at = datetime()
+            RETURN n {{.*}} AS entity
+            """,
+            **params,
+        )
+        record = await result.single()
+        return _sanitize(dict(record["entity"])) if record else {}
+
+
 async def delete_entity(label: str, match_props: dict[str, Any]) -> bool:
     """Delete a node (and its relationships) matching *label* and *match_props*."""
     driver = await get_driver()
@@ -218,6 +239,24 @@ async def store_document_node(
         )
         record = await result.single()
         return _sanitize(dict(record["doc"])) if record else {}
+
+
+async def find_document_by_filename(
+    filename: str, student_id: str = "default"
+) -> dict[str, Any] | None:
+    """Return the Document node for *filename* if it exists, else None."""
+    driver = await get_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (s:Student {id: $sid})-[:UPLOADED]->(d:Document {filename: $fname})
+            RETURN d {.*} AS doc
+            """,
+            sid=student_id,
+            fname=filename,
+        )
+        record = await result.single()
+        return _sanitize(dict(record["doc"])) if record else None
 
 
 async def delete_document_cascade(document_id: str) -> bool:

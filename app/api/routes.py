@@ -16,11 +16,13 @@ from app.adapters.neo4j.graph_store import (
     delete_document_cascade,
     delete_entity,
     ensure_student,
+    find_document_by_filename,
     get_full_profile,
     get_graph_data,
     promote_document_to_global,
     reset_student_data,
     run_cypher,
+    update_entity,
     update_student,
 )
 from app.agents.profile_manager import process_free_text
@@ -30,6 +32,7 @@ from app.core.state import PathfinderState
 from app.schemas.models import (
     ChatResponse,
     DocumentUploadResponse,
+    EntityUpdate,
     GraphDataResponse,
     HealthResponse,
     ProfileResponse,
@@ -58,10 +61,23 @@ async def chat(
     session_id: Optional[str] = Form(None),
     files: list[UploadFile] = File(default=[]),
     is_global_upload: bool = Form(False),
+    replace_filenames: str = Form(""),
 ):
     """Main chat endpoint with SSE streaming."""
     if not session_id:
         session_id = generate_session_id()
+
+    # Parse replace filenames (comma-separated list of filenames to replace)
+    replace_set = set(
+        name.strip() for name in replace_filenames.split(",") if name.strip()
+    )
+
+    # Delete existing documents that are being replaced
+    for fname in replace_set:
+        existing = await find_document_by_filename(fname, "default")
+        if existing and existing.get("id"):
+            await delete_document_cascade(existing["id"])
+            log.info("Chat: replaced existing document before re-upload: %s", fname)
 
     # Read uploaded files
     file_data = []
@@ -80,6 +96,8 @@ async def chat(
         try:
             graph = await get_compiled_graph()
 
+            # Reset ALL computed state fields to prevent stale data from
+            # previous turns leaking via the checkpointer.
             initial_state: dict[str, Any] = {
                 "messages": [("human", query)],
                 "query": query,
@@ -90,9 +108,29 @@ async def chat(
                 "topic_guard_enabled": _topic_guard_enabled,
                 "step_progress": [],
                 "citations": [],
+                # ── Reset stale orchestrator/agent fields ──
+                "plan": [],
+                "next_node": "",
+                "intent": "",
+                "missing_info": [],
+                "draft_answer": "",
+                "final_answer": "",
+                "is_blocked": False,
+                "block_reason": "",
+                "confidence_score": 0.0,
+                "is_grounded": True,
+                "profile_updates": [],
+                "extracted_entities": [],
+                "retrieved_documents": [],
+                "web_results": [],
+                "graph_results": [],
+                "profile_data": {},
             }
 
-            config = {"configurable": {"thread_id": session_id}}
+            config = {
+                "configurable": {"thread_id": session_id},
+                "recursion_limit": 15,  # Safeguard: max 15 node executions per turn
+            }
 
             # Stream graph execution
             last_progress_count = 0
@@ -133,25 +171,47 @@ async def chat(
 # ── Document Upload ──────────────────────────────────────────────
 
 
+@router.get("/documents/check")
+async def check_document_exists(filename: str):
+    """Check if a document with this filename already exists in the profile."""
+    existing = await find_document_by_filename(filename, "default")
+    return {"exists": existing is not None, "document": existing}
+
+
 @router.post("/documents", response_model=DocumentUploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
     scope: str = Form("global"),
     session_id: Optional[str] = Form(None),
+    replace: str = Form("false"),
 ):
     """Upload a document to the student profile or session."""
+    import os
+
     content = await file.read()
     if len(content) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
         raise HTTPException(413, f"File exceeds {settings.MAX_FILE_SIZE_MB}MB limit")
 
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Only PDF files are supported")
+    if not file.filename:
+        raise HTTPException(400, "Filename is required")
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in settings.ALLOWED_FILE_TYPES:
+        allowed = ", ".join(settings.ALLOWED_FILE_TYPES)
+        raise HTTPException(400, f"Unsupported file type '{ext}'. Allowed: {allowed}")
+
+    # If replacing, delete the existing document first
+    if replace.lower() == "true":
+        existing = await find_document_by_filename(file.filename, "default")
+        if existing and existing.get("id"):
+            await delete_document_cascade(existing["id"])
+            log.info("Replaced existing document: %s", file.filename)
 
     # Process through doc_analyst directly
     from app.agents.doc_analyst import doc_analyst as process_doc
 
     state: dict[str, Any] = {
-        "files": [{"filename": file.filename, "content": content, "size": len(content)}],
+        "files": [{"filename": file.filename, "content": content, "size": len(content), "content_type": file.content_type}],
         "session_id": session_id or "",
         "student_id": "default",
         "is_global_upload": scope == "global",
@@ -216,6 +276,19 @@ async def delete_profile_entity(entity_label: str, entity_name: str):
     else:
         deleted = await delete_entity(entity_label, {"name": entity_name})
     return {"deleted": deleted}
+
+
+@router.put("/profile/entity")
+async def update_profile_entity(body: EntityUpdate):
+    """Update properties on a profile entity (Company, Skill, etc.)."""
+    result = await update_entity(
+        label=body.label,
+        match_props={"name": body.name},
+        new_props=body.properties,
+    )
+    if not result:
+        raise HTTPException(404, f"{body.label} '{body.name}' not found")
+    return {"updated": True, "data": result}
 
 
 @router.delete("/profile/reset")

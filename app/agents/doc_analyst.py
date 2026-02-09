@@ -23,34 +23,37 @@ from app.adapters.neo4j.graph_store import (
     store_extracted_entities,
 )
 from app.adapters.neo4j.vector_store import store_chunks
-from app.adapters.pdf.extractor import extract_text_from_pdf
+from app.adapters.pdf.extractor import (
+    extract_text_from_pdf,
+    extract_text_from_image,
+    extract_text_from_docx,
+    get_file_type,
+)
 from app.config.settings import settings
 from app.core.state import PathfinderState
 from app.utils.ids import generate_document_id, generate_chunk_id
 
 log = logging.getLogger("pathfinder.agents.doc_analyst")
 
-_ENTITY_EXTRACTION_PROMPT = """You are an entity extraction specialist. Extract structured entities from the following document text.
+_ENTITY_EXTRACTION_SYSTEM = (
+    "You are a JSON entity extractor. You ALWAYS respond with a single JSON object and NOTHING else. "
+    "No explanations, no markdown, no commentary — ONLY valid JSON."
+)
 
-For each entity, provide:
-- label: one of [Course, Skill, Company, Goal, Interest, Project, Department]
-- properties: a dict with at least "name" and any other relevant fields
-- relationship: one of [TOOK, HAS_SKILL, WORKED_AT, HAS_GOAL, INTERESTED_IN, COMPLETED, IN_DEPARTMENT]
+_ENTITY_EXTRACTION_USER = '''Extract entities from the document below. Return ONLY this JSON structure:
 
-Also extract student-level properties if found: name, gpa, university, program, semester.
+{"entities":[{"label":"LABEL","properties":{"name":"VALUE"},"relationship":"REL"}],"student_properties":{"name":"","gpa":"","university":"","program":""}}
 
-Respond with valid JSON:
-{{
-    "entities": [
-        {{"label": "Course", "properties": {{"name": "CSC 200", "code": "CSC200", "grade": "A"}}, "relationship": "TOOK"}},
-        {{"label": "Skill", "properties": {{"name": "Python", "proficiency": "advanced"}}, "relationship": "HAS_SKILL"}}
-    ],
-    "student_properties": {{"name": "John", "gpa": "3.5", "university": "CSUS"}}
-}}
+Label must be one of: Skill, Company, Project, Course, Goal, Interest, Department
+Relationship must be one of: HAS_SKILL, WORKED_AT, COMPLETED, TOOK, HAS_GOAL, INTERESTED_IN, IN_DEPARTMENT
 
-Document text:
-{text}
-"""
+Example for a resume:
+{"entities":[{"label":"Skill","properties":{"name":"Python","proficiency":"advanced"},"relationship":"HAS_SKILL"},{"label":"Company","properties":{"name":"Google","role":"Software Engineer","start_date":"2020","end_date":"2023"},"relationship":"WORKED_AT"},{"label":"Project","properties":{"name":"Search Optimizer","description":"Improved search ranking"},"relationship":"COMPLETED"}],"student_properties":{"name":"Jane Doe","university":"Stanford"}}
+
+IMPORTANT: Output ONLY the JSON. No other text before or after it.
+
+--- DOCUMENT START ---
+'''
 
 
 async def doc_analyst(state: PathfinderState) -> PathfinderState:
@@ -84,8 +87,19 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         step_progress.append(f"Processing {filename}...")
         doc_id = generate_document_id()
 
-        # Step 1: Extract text (adaptive)
-        pages = await extract_text_from_pdf(content, filename)
+        # Step 1: Extract text (adaptive — route by file type)
+        file_type = get_file_type(filename)
+        if file_type == "pdf":
+            pages = await extract_text_from_pdf(content, filename)
+        elif file_type == "image":
+            step_progress.append(f"Analyzing image with vision model...")
+            pages = await extract_text_from_image(content, filename)
+        elif file_type == "docx":
+            pages = await extract_text_from_docx(content, filename)
+        else:
+            step_progress.append(f"Unsupported file type for {filename}, skipping")
+            continue
+
         full_text = "\n\n".join(p["text"] for p in pages if p["text"])
 
         if not full_text.strip():
@@ -125,24 +139,15 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         # Step 4: Entity extraction
         step_progress.append(f"Extracting knowledge from {filename}...")
         try:
-            # #region agent log
-            _log_path = "/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Implementation-code copy/.cursor/debug.log"
-            import json as _json, time as _time
-            with open(_log_path, "a") as _f:
-                _f.write(_json.dumps({"location": "doc_analyst.py:entity_extract_start", "message": "Starting entity extraction", "data": {"filename": filename, "text_length": len(full_text), "text_preview": full_text[:500]}, "hypothesisId": "C", "timestamp": _time.time()}) + "\n")
-            # #endregion
-
+            # Use string concatenation (NOT .format()) to avoid crashes
+            # when the resume text contains curly braces like {Python, Java}
+            user_content = _ENTITY_EXTRACTION_USER + full_text[:4000] + "\n--- DOCUMENT END ---"
             response = await llm.ainvoke([
-                SystemMessage(content="You are an entity extraction specialist."),
-                HumanMessage(content=_ENTITY_EXTRACTION_PROMPT.format(text=full_text[:4000])),
+                SystemMessage(content=_ENTITY_EXTRACTION_SYSTEM),
+                HumanMessage(content=user_content),
             ])
 
             content_text = response.content if isinstance(response.content, str) else str(response.content)
-
-            # #region agent log
-            with open(_log_path, "a") as _f:
-                _f.write(_json.dumps({"location": "doc_analyst.py:llm_response", "message": "LLM entity extraction response", "data": {"response_length": len(content_text), "response_preview": content_text[:800]}, "hypothesisId": "C", "timestamp": _time.time()}) + "\n")
-            # #endregion
 
             json_start = content_text.find("{")
             json_end = content_text.rfind("}") + 1
@@ -150,11 +155,6 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                 parsed = json.loads(content_text[json_start:json_end])
                 entities = parsed.get("entities", [])
                 student_props = parsed.get("student_properties", {})
-
-                # #region agent log
-                with open(_log_path, "a") as _f:
-                    _f.write(_json.dumps({"location": "doc_analyst.py:parsed_entities", "message": "Parsed entities", "data": {"entity_count": len(entities), "student_props": student_props, "entities_preview": entities[:3]}, "hypothesisId": "C", "timestamp": _time.time()}) + "\n")
-                # #endregion
 
                 # Store entities in KG
                 count = await store_extracted_entities(entities, doc_id, student_id)
@@ -166,18 +166,9 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                     from app.adapters.neo4j.graph_store import update_student
                     await update_student(student_id, **{k: v for k, v in student_props.items() if v})
             else:
-                # #region agent log
-                with open(_log_path, "a") as _f:
-                    _f.write(_json.dumps({"location": "doc_analyst.py:no_json", "message": "No JSON found in LLM response", "data": {"response": content_text[:500]}, "hypothesisId": "C", "timestamp": _time.time()}) + "\n")
-                # #endregion
                 step_progress.append(f"Could not parse entities from {filename}")
 
         except Exception as exc:
-            # #region agent log
-            import traceback
-            with open(_log_path, "a") as _f:
-                _f.write(_json.dumps({"location": "doc_analyst.py:entity_error", "message": "Entity extraction exception", "data": {"error": str(exc), "traceback": traceback.format_exc()}, "hypothesisId": "C", "timestamp": _time.time()}) + "\n")
-            # #endregion
             log.warning("Entity extraction failed for %s: %s", filename, exc)
             step_progress.append(f"Entity extraction partially failed for {filename}")
 
@@ -186,6 +177,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
 
     return {
         **state,
+        "files": [],  # Clear binary file data — no longer needed after processing
         "extracted_entities": all_entities,
         "step_progress": step_progress,
         "next_node": _determine_next(state),

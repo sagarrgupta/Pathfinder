@@ -206,11 +206,15 @@ export default function SettingsPage() {
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">Version</span>
-              <span className="font-mono font-medium">2.0.0</span>
+              <span className="font-mono font-medium">2.1.0</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Architecture</span>
-              <span className="font-medium">Multi-Agent LangGraph + Neo4j</span>
+              <span className="font-medium">Multi-Agent LangGraph + Neo4j KG</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Features</span>
+              <span className="font-medium">Personalized AI Guidance</span>
             </div>
           </div>
         </div>
