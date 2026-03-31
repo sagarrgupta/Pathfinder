@@ -5,6 +5,12 @@
 
 const API_BASE = '/api/v1';
 
+function withStudentId(path, studentId) {
+  if (!studentId) return path;
+  const joiner = path.includes('?') ? '&' : '?';
+  return `${path}${joiner}student_id=${encodeURIComponent(studentId)}`;
+}
+
 // ── SSE Chat ────────────────────────────────────────────────────
 
 /**
@@ -13,12 +19,13 @@ const API_BASE = '/api/v1';
  * @param {Object} callbacks - { onProgress, onToken, onDone, onError }
  * @returns {AbortController} - call .abort() to cancel
  */
-export function chatSSE({ query, sessionId, files = [], isGlobalUpload = false, replaceFilenames = [] }, callbacks) {
+export function chatSSE({ query, sessionId, studentId, files = [], isGlobalUpload = false, replaceFilenames = [] }, callbacks) {
   const controller = new AbortController();
 
   const formData = new FormData();
   formData.append('query', query);
   if (sessionId) formData.append('session_id', sessionId);
+  if (studentId) formData.append('student_id', studentId);
   formData.append('is_global_upload', isGlobalUpload.toString());
   if (replaceFilenames.length > 0) {
     formData.append('replace_filenames', replaceFilenames.join(','));
@@ -75,17 +82,18 @@ export function chatSSE({ query, sessionId, files = [], isGlobalUpload = false, 
 
 // ── Document Upload ─────────────────────────────────────────────
 
-export async function checkDocumentExists(filename) {
-  const response = await fetch(`${API_BASE}/documents/check?filename=${encodeURIComponent(filename)}`);
+export async function checkDocumentExists(filename, studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/documents/check?filename=${encodeURIComponent(filename)}`, studentId));
   if (!response.ok) throw new Error(`Check failed: ${response.status}`);
   return response.json();
 }
 
-export async function uploadDocument(file, scope = 'global', sessionId = null, replace = false) {
+export async function uploadDocument(file, scope = 'global', sessionId = null, replace = false, studentId = null) {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('scope', scope);
   if (sessionId) formData.append('session_id', sessionId);
+  if (studentId) formData.append('student_id', studentId);
   if (replace) formData.append('replace', 'true');
 
   const response = await fetch(`${API_BASE}/documents`, {
@@ -98,42 +106,72 @@ export async function uploadDocument(file, scope = 'global', sessionId = null, r
 
 // ── Profile ─────────────────────────────────────────────────────
 
-export async function getProfile() {
-  const response = await fetch(`${API_BASE}/profile`);
+export async function getProfiles() {
+  const response = await fetch(`${API_BASE}/profiles`);
+  if (!response.ok) throw new Error(`Failed to load profiles: ${response.status}`);
+  return response.json();
+}
+
+export async function createProfile(body) {
+  const response = await fetch(`${API_BASE}/profiles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`Failed to create profile: ${response.status}`);
+  return response.json();
+}
+
+export async function getProfile(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile`, studentId));
   if (!response.ok) throw new Error(`Failed to load profile: ${response.status}`);
   return response.json();
 }
 
-export async function updateProfile(field, value) {
+export async function getProfileConflicts(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile/conflicts`, studentId));
+  if (!response.ok) throw new Error(`Failed to load profile conflicts: ${response.status}`);
+  return response.json();
+}
+
+export async function selfResolveProfileConflicts(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile/conflicts/self-resolve`, studentId), {
+    method: 'POST',
+  });
+  if (!response.ok) throw new Error(`Failed to self-resolve conflicts: ${response.status}`);
+  return response.json();
+}
+
+export async function updateProfile(field, value, studentId) {
   const response = await fetch(`${API_BASE}/profile`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ field, value }),
+    body: JSON.stringify({ field, value, student_id: studentId }),
   });
   if (!response.ok) throw new Error(`Failed to update profile: ${response.status}`);
   return response.json();
 }
 
-export async function deleteProfileEntity(label, name) {
-  const response = await fetch(`${API_BASE}/profile/entity/${label}/${name}`, {
+export async function deleteProfileEntity(label, name, studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile/entity/${label}/${name}`, studentId), {
     method: 'DELETE',
   });
   if (!response.ok) throw new Error(`Failed to delete entity: ${response.status}`);
   return response.json();
 }
 
-export async function updateProfileEntity(label, name, properties) {
+export async function updateProfileEntity(label, name, properties, studentId) {
   const response = await fetch(`${API_BASE}/profile/entity`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label, name, properties }),
+    body: JSON.stringify({ label, name, properties, student_id: studentId }),
   });
   if (!response.ok) throw new Error(`Failed to update entity: ${response.status}`);
   return response.json();
 }
 
-export async function addProfileText(text) {
-  const response = await fetch(`${API_BASE}/profile/text`, {
+export async function addProfileText(text, studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile/text`, studentId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
@@ -142,29 +180,57 @@ export async function addProfileText(text) {
   return response.json();
 }
 
-export async function getProfileGraph() {
-  const response = await fetch(`${API_BASE}/profile/graph`);
+export async function getProfileGraph(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile/graph`, studentId));
   if (!response.ok) throw new Error(`Failed to load graph: ${response.status}`);
   return response.json();
 }
 
-export async function resetAllData() {
-  const response = await fetch(`${API_BASE}/profile/reset`, { method: 'DELETE' });
+export async function resetAllData(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile/reset`, studentId), { method: 'DELETE' });
   if (!response.ok) throw new Error(`Failed to reset data: ${response.status}`);
   return response.json();
 }
 
 // ── Sessions ────────────────────────────────────────────────────
 
-export async function getSessions() {
-  const response = await fetch(`${API_BASE}/sessions`);
+export async function getSessions(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/sessions`, studentId));
   if (!response.ok) throw new Error(`Failed to load sessions: ${response.status}`);
   return response.json();
 }
 
-export async function deleteSession(sessionId) {
-  const response = await fetch(`${API_BASE}/sessions/${sessionId}`, { method: 'DELETE' });
+export async function deleteSession(sessionId, studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/sessions/${sessionId}`, studentId), { method: 'DELETE' });
   if (!response.ok) throw new Error(`Failed to delete session: ${response.status}`);
+  return response.json();
+}
+
+// ── Saved Recommendations ──────────────────────────────────────
+
+export async function getSavedRecommendations(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/recommendations`, studentId));
+  if (!response.ok) throw new Error(`Failed to load recommendations: ${response.status}`);
+  return response.json();
+}
+
+export async function saveRecommendation(body) {
+  const response = await fetch(`${API_BASE}/recommendations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`Failed to save recommendation: ${response.status}`);
+  return response.json();
+}
+
+export async function resolveConflictChoice(body) {
+  const response = await fetch(`${API_BASE}/conflicts/resolve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`Failed to resolve conflict: ${response.status}`);
   return response.json();
 }
 

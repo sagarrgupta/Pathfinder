@@ -10,47 +10,23 @@ Handles all Neo4j knowledge graph interactions:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
-from langchain_core.messages import SystemMessage, HumanMessage
-
-from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import (
     ensure_student,
     get_full_profile,
-    store_extracted_entities,
-    update_student,
 )
 from app.adapters.neo4j.vector_store import hybrid_search
 from app.core.state import PathfinderState
+from app.services.memory_ingestion import ingest_memory
 
 log = logging.getLogger("pathfinder.agents.profile_manager")
-
-_TEXT_EXTRACTION_PROMPT = """You are a profile data extractor. The user has entered free-text information about themselves.
-Extract structured entities from this text.
-
-Respond with valid JSON:
-{{
-    "entities": [
-        {{"label": "Skill", "properties": {{"name": "Python", "proficiency": "advanced"}}, "relationship": "HAS_SKILL"}},
-        {{"label": "Goal", "properties": {{"name": "PhD in CS", "type": "phd", "field": "Computer Science"}}, "relationship": "HAS_GOAL"}}
-    ],
-    "student_properties": {{"name": "John", "gpa": "3.5"}}
-}}
-
-Possible labels: Course, Skill, Company, Goal, Interest, Project, Department
-Possible relationships: TOOK, HAS_SKILL, WORKED_AT, HAS_GOAL, INTERESTED_IN, COMPLETED, IN_DEPARTMENT
-
-User text: {text}
-"""
-
 
 async def profile_manager(state: PathfinderState) -> PathfinderState:
     """Load profile, search documents, and enrich state with personal data."""
     query = state.get("query", "")
-    student_id = state.get("student_id", "default")
+    student_id = state.get("student_id", "")
     session_id = state.get("session_id", "")
 
     step_progress = list(state.get("step_progress", []))
@@ -94,37 +70,24 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
 
 
 async def process_free_text(
-    text: str, student_id: str = "default"
+    text: str, student_id: str
 ) -> dict[str, Any]:
     """Process free-text input from the My Profile page.
 
-    Extracts entities and stores them in the KG.
+    Extracts layered memory and promotes strong items into the KG.
     """
-    llm = get_text_llm()
-
-    response = await llm.ainvoke([
-        SystemMessage(content="You are a profile data extractor."),
-        HumanMessage(content=_TEXT_EXTRACTION_PROMPT.format(text=text)),
-    ])
-
-    content = response.content if isinstance(response.content, str) else str(response.content)
-
-    try:
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        parsed = json.loads(content[json_start:json_end])
-    except (json.JSONDecodeError, ValueError):
-        return {"entities_extracted": 0, "error": "Could not parse entities from text"}
-
-    entities = parsed.get("entities", [])
-    student_props = parsed.get("student_properties", {})
-
-    count = await store_extracted_entities(entities, "free_text_input", student_id)
-
-    if student_props:
-        await update_student(student_id, **{k: v for k, v in student_props.items() if v})
-
-    return {"entities_extracted": count, "student_properties_updated": bool(student_props)}
+    result = await ingest_memory(
+        student_id=student_id,
+        source_type="profile_text",
+        content=text,
+        metadata={"entrypoint": "profile_manager.process_free_text"},
+    )
+    return {
+        "entities_extracted": len(result.get("candidate_facts", []))
+        + len(result.get("promoted_entities", [])),
+        "student_properties_updated": bool(result.get("student_updates")),
+        "memory_items_created": len(result.get("memory_items", [])),
+    }
 
 
 def _determine_next(state: PathfinderState) -> str:

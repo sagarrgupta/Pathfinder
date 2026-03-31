@@ -15,6 +15,7 @@ class ChatRequest(BaseModel):
     """Chat request body (used for JSON endpoint; SSE uses form-data)."""
     query: str
     session_id: Optional[str] = None
+    student_id: Optional[str] = None
     topic_guard_enabled: Optional[bool] = None
 
 
@@ -25,12 +26,14 @@ class ProfileTextInput(BaseModel):
 
 class ProfileUpdate(BaseModel):
     """Update a specific profile field."""
+    student_id: Optional[str] = None
     field: str
     value: Any
 
 
 class EntityUpdate(BaseModel):
     """Update properties on a profile entity (Company, Skill, etc.)."""
+    student_id: Optional[str] = None
     label: str
     name: str  # current name to identify the entity
     properties: dict[str, Any]  # new property values
@@ -39,6 +42,64 @@ class EntityUpdate(BaseModel):
 class SettingsUpdate(BaseModel):
     """Update application settings."""
     topic_guard_enabled: Optional[bool] = None
+
+
+class ProfileCreate(BaseModel):
+    """Create a new local student profile."""
+    name: str = Field(..., min_length=1, max_length=120)
+    email: Optional[str] = None
+    university: Optional[str] = None
+    program: Optional[str] = None
+
+
+class SavedRecommendationCreate(BaseModel):
+    """Save a recommendation or action plan."""
+    student_id: Optional[str] = None
+    title: str = Field(..., min_length=1, max_length=200)
+    summary: str = Field(..., min_length=1, max_length=5000)
+    recommendation_type: str = "plan"
+    source_session_id: Optional[str] = None
+    source_query: Optional[str] = None
+    actions: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConflictChoiceRequest(BaseModel):
+    """User-selected action for a conflict nudge."""
+    student_id: Optional[str] = None
+    conflict_id: str = Field(..., min_length=1)
+    fact_type: str = Field(..., min_length=1)
+    action: str = Field(..., min_length=1)
+    selected_value: Optional[str] = None
+
+
+class ConflictOption(BaseModel):
+    """One selectable resolution option for a conflict."""
+    action: str
+    label: str
+    value: Optional[str] = None
+
+
+class ProfileConflictInfo(BaseModel):
+    """Grouped conflict information for the profile resolution screen."""
+    id: str
+    fact_type: str
+    message: str
+    current_option: str
+    other_options: list[str] = Field(default_factory=list)
+    question: str
+    options: list[ConflictOption] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
+class ConflictAutoResolveResponse(BaseModel):
+    """Result of a profile conflict self-resolution attempt."""
+    student_id: str
+    resolved_count: int = 0
+    unresolved_count: int = 0
+    used_llm: bool = False
+    resolved: list[dict[str, Any]] = Field(default_factory=list)
+    unresolved: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ── Response Models ─────────────────────────────────────────────
@@ -89,6 +150,9 @@ class ProfileResponse(BaseModel):
     projects: list[dict[str, Any]] = Field(default_factory=list)
     # Dynamic: all entity types from the KG keyed by Neo4j label
     all_entities: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    completeness: float = 0.0
+    confidence: float = 0.0
+    memory_overview: dict[str, Any] = Field(default_factory=dict)
 
 
 class GraphDataResponse(BaseModel):
@@ -100,10 +164,40 @@ class GraphDataResponse(BaseModel):
 class SessionInfo(BaseModel):
     """Chat session metadata."""
     session_id: str
+    student_id: Optional[str] = None
     title: str = "New Chat"
     last_message: str = ""
     created_at: Optional[datetime] = None
     message_count: int = 0
+
+
+class ProfileInfo(BaseModel):
+    """Local student profile summary."""
+    student_id: str
+    name: str = "Student"
+    email: Optional[str] = None
+    university: Optional[str] = None
+    program: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    completeness: float = 0.0
+
+
+class SavedRecommendationInfo(BaseModel):
+    """Saved recommendation/plan summary."""
+    id: str
+    student_id: str
+    title: str
+    summary: str
+    recommendation_type: str = "plan"
+    actions: list[str] = Field(default_factory=list)
+    source_session_id: Optional[str] = None
+    source_query: Optional[str] = None
+    created_at: Optional[datetime] = None
+    status: str = "active"
+    next_review_at: Optional[str] = None
+    follow_up_prompt: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class HealthResponse(BaseModel):
@@ -113,6 +207,7 @@ class HealthResponse(BaseModel):
     lm_studio: str = "unknown"
     ollama: str = "unknown"
     version: str = "2.0.0"
+    background_jobs: dict[str, Any] = Field(default_factory=dict)
 
 
 class SettingsResponse(BaseModel):

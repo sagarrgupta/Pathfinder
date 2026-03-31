@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
+import { useToast } from '@/components/shared/Toast';
 import {
   MessageSquare, User, Settings, Plus, Trash2,
   PanelLeftClose, PanelLeftOpen, GraduationCap,
-  Pin, PinOff, Pencil, Check, X, Search,
+  Pin, PinOff, Pencil, Check, X, Search, CheckSquare, Activity, Layers3,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -16,7 +17,9 @@ const COLLAPSED_WIDTH = 48;
 export default function Sidebar({ open, onToggle }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { state, dispatch, createSession } = useApp();
+  const { state, dispatch, createSession, createProfileAndActivate } = useApp();
+  const toast = useToast();
+  const studentId = state.activeStudentId;
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -71,6 +74,8 @@ export default function Sidebar({ open, onToggle }) {
   const navItems = [
     { path: '/chat', label: 'Chat', icon: MessageSquare },
     { path: '/profile', label: 'My Profile', icon: User },
+    { path: '/plans', label: 'Saved Plans', icon: CheckSquare },
+    { path: '/analytics', label: 'Analytics', icon: Activity },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
 
@@ -79,14 +84,24 @@ export default function Sidebar({ open, onToggle }) {
     navigate('/chat');
   };
 
+  const handleCreateProfile = async () => {
+    try {
+      const created = await createProfileAndActivate('Student');
+      toast.success(`Created ${created.name}`);
+      navigate('/profile');
+    } catch (error) {
+      toast.error(error?.message || 'Failed to create profile');
+    }
+  };
+
   const handleDeleteSession = (e, sessionId) => {
     e.stopPropagation();
-    dispatch({ type: 'REMOVE_SESSION', payload: sessionId });
+    dispatch({ type: 'REMOVE_SESSION', payload: { studentId, sessionId } });
   };
 
   const handleSelectSession = (sessionId) => {
     if (editingId) return;
-    dispatch({ type: 'SET_ACTIVE_SESSION', payload: sessionId });
+    dispatch({ type: 'SET_ACTIVE_SESSION', studentId, payload: sessionId });
     navigate('/chat');
   };
 
@@ -101,7 +116,7 @@ export default function Sidebar({ open, onToggle }) {
     if (e) e.stopPropagation();
     const trimmed = editValue.trim();
     if (trimmed && editingId) {
-      dispatch({ type: 'RENAME_SESSION', payload: { sessionId: editingId, title: trimmed } });
+      dispatch({ type: 'RENAME_SESSION', payload: { studentId, sessionId: editingId, title: trimmed } });
     }
     setEditingId(null);
     setEditValue('');
@@ -128,13 +143,14 @@ export default function Sidebar({ open, onToggle }) {
   // ── Pin handler ──
   const handleTogglePin = (e, sessionId) => {
     e.stopPropagation();
-    dispatch({ type: 'TOGGLE_PIN_SESSION', payload: sessionId });
+    dispatch({ type: 'TOGGLE_PIN_SESSION', payload: { studentId, sessionId } });
   };
 
   // ── Filtered & sorted sessions ──
   const filteredSessions = state.sessions.filter((s) => {
     if (!searchQuery.trim()) return true;
-    return s.title.toLowerCase().includes(searchQuery.toLowerCase());
+    const target = `${s.title || ''} ${s.last_message || ''}`.toLowerCase();
+    return target.includes(searchQuery.toLowerCase());
   });
   const pinnedSessions = filteredSessions.filter((s) => s.pinned);
   const unpinnedSessions = filteredSessions.filter((s) => !s.pinned);
@@ -201,6 +217,9 @@ export default function Sidebar({ open, onToggle }) {
               {session.pinned && <Pin className="h-3 w-3 text-primary flex-shrink-0" />}
               <div className="flex-1 min-w-0">
                 <span className="truncate text-left block" title={session.title}>{session.title}</span>
+                <span className="truncate text-[11px] text-muted-foreground/75 block">
+                  {session.last_message || formatRelativeTime(session.updated_at || session.created_at)}
+                </span>
               </div>
             </div>
 
@@ -269,6 +288,34 @@ export default function Sidebar({ open, onToggle }) {
           <button onClick={onToggle} className="p-1.5 rounded-lg hover:bg-accent flex-shrink-0 transition-colors" title="Collapse sidebar">
             <PanelLeftClose className="h-4.5 w-4.5 text-muted-foreground" />
           </button>
+        </div>
+      )}
+
+      {open && state.profiles.length > 0 && (
+        <div className="px-3 pt-3">
+          <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest px-1 block mb-1.5">
+            Active Profile
+          </label>
+          <div className="space-y-2">
+            <select
+              value={studentId || ''}
+              onChange={(e) => dispatch({ type: 'SET_ACTIVE_STUDENT', payload: e.target.value })}
+              className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring/50"
+            >
+              {state.profiles.map((profile) => (
+                <option key={profile.student_id} value={profile.student_id}>
+                  {profile.name}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={handleCreateProfile}
+              className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-dashed px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <Layers3 className="h-4 w-4" />
+              Add Profile
+            </button>
+          </div>
         </div>
       )}
 

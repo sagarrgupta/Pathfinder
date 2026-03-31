@@ -60,7 +60,7 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     """Classify intent and create an execution plan."""
     query = state.get("query", "")
     files = state.get("files", [])
-    student_id = state.get("student_id", "default")
+    student_id = state.get("student_id", "")
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Analyzing your question...")

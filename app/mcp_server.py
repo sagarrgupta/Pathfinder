@@ -90,8 +90,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Execute a Pathfinder tool."""
     try:
         if name == "search_knowledge_graph":
-            from app.adapters.neo4j.graph_store import get_full_profile
-            student_id = arguments.get("student_id", "default")
+            from app.adapters.neo4j.graph_store import get_full_profile, list_students
+            student_id = arguments.get("student_id")
+            if not student_id:
+                students = await list_students()
+                student_id = students[0]["id"] if students else ""
             profile = await get_full_profile(student_id)
             return [TextContent(type="text", text=json.dumps(profile, default=str))]
 
@@ -110,8 +113,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(results, default=str))]
 
         elif name == "get_student_profile":
-            from app.adapters.neo4j.graph_store import get_full_profile
-            student_id = arguments.get("student_id", "default")
+            from app.adapters.neo4j.graph_store import get_full_profile, list_students
+            student_id = arguments.get("student_id")
+            if not student_id:
+                students = await list_students()
+                student_id = students[0]["id"] if students else ""
             profile = await get_full_profile(student_id)
             return [TextContent(type="text", text=json.dumps(profile, default=str))]
 

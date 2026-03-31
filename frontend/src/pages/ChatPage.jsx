@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useApp } from '@/context/AppContext';
-import { chatSSE, checkDocumentExists } from '@/services/api';
+import { chatSSE, checkDocumentExists, getProfile, getSavedRecommendations, resolveConflictChoice } from '@/services/api';
 import MessageList from '@/components/chat/MessageList';
 import InputArea from '@/components/chat/InputArea';
 import {
@@ -45,6 +45,7 @@ function generateSmartTitle(query) {
 
 export default function ChatPage() {
   const { state, dispatch, createSession } = useApp();
+  const studentId = state.activeStudentId;
   const [files, setFiles] = useState([]);
   const [isGlobalUpload, setIsGlobalUpload] = useState(false);
   const [replaceFlags, setReplaceFlags] = useState({});  // filename -> true if user chose to replace
@@ -68,6 +69,15 @@ export default function ChatPage() {
     return () => window.removeEventListener('keydown', handler);
   }, [createSession]);
 
+  useEffect(() => {
+    abortRef.current?.abort();
+    dispatch({ type: 'SET_STREAMING', payload: false });
+    setFiles([]);
+    setIsGlobalUpload(false);
+    setReplaceFlags({});
+    setDupDialog({ open: false, filename: '', pendingFile: null });
+  }, [studentId, dispatch]);
+
   const handleFilesChange = async (newFiles) => {
     // Find files that were just added (not already in the existing list)
     const existingNames = new Set(files.map((f) => f.name));
@@ -76,7 +86,7 @@ export default function ChatPage() {
     // Check each newly added file for duplicates in the profile
     for (const file of justAdded) {
       try {
-        const { exists } = await checkDocumentExists(file.name);
+        const { exists } = await checkDocumentExists(file.name, studentId);
         if (exists) {
           setDupDialog({ open: true, filename: file.name, pendingFile: file });
           // Remove this file from the list until user decides
@@ -126,7 +136,7 @@ export default function ChatPage() {
     };
     dispatch({
       type: 'ADD_MESSAGE',
-      payload: { sessionId: sid, message: userMessage },
+      payload: { studentId, sessionId: sid, message: userMessage },
     });
 
     // Clear files and replace flags from input area immediately (like ChatGPT)
@@ -137,6 +147,7 @@ export default function ChatPage() {
     dispatch({
       type: 'ADD_MESSAGE',
       payload: {
+        studentId,
         sessionId: sid,
         message: { role: 'assistant', content: '', metadata: {}, progress: [] },
       },
@@ -147,53 +158,74 @@ export default function ChatPage() {
     let tokenBuffer = '';
 
     abortRef.current = chatSSE(
-      { query, sessionId: sid, files: pendingFiles, isGlobalUpload, replaceFilenames: pendingReplaceNames },
+      { query, sessionId: sid, studentId, files: pendingFiles, isGlobalUpload, replaceFilenames: pendingReplaceNames },
       {
         onProgress: (data) => {
           dispatch({
             type: 'APPEND_MESSAGE_PROGRESS',
-            payload: { sessionId: sid, progress: data },
+            payload: { studentId, sessionId: sid, progress: data },
           });
         },
         onToken: (data) => {
           tokenBuffer += data.content;
           dispatch({
             type: 'UPDATE_LAST_MESSAGE',
-            payload: { sessionId: sid, update: { content: tokenBuffer } },
+            payload: { studentId, sessionId: sid, update: { content: tokenBuffer } },
           });
         },
         onDone: (data) => {
           dispatch({
             type: 'UPDATE_LAST_MESSAGE',
             payload: {
+              studentId,
               sessionId: sid,
               update: {
                 metadata: {
                   confidence: data.confidence,
                   citations: data.citations,
                   method: data.method,
+                  rationale: data.metadata?.rationale || [],
+                  sources: data.metadata?.sources || [],
+                  recommendedActions: data.metadata?.recommended_actions || [],
+                  missingInfo: data.metadata?.missing_info || [],
+                  conflicts: data.metadata?.conflicts || [],
+                  conflictNudges: data.metadata?.conflict_nudges || [],
+                  plannerTrace: data.metadata?.planner_trace || [],
+                  retrievalSummary: data.metadata?.retrieval_summary || {},
+                  consolidationSummary: data.metadata?.consolidation_summary || {},
+                  executionTrace: data.metadata?.execution_trace || [],
                 },
               },
             },
           });
           dispatch({ type: 'SET_STREAMING', payload: false });
 
+          Promise.allSettled([
+            getProfile(studentId),
+            getSavedRecommendations(studentId),
+          ]).then(([profileResult, recommendationsResult]) => {
+            if (profileResult.status === 'fulfilled') {
+              dispatch({ type: 'SET_PROFILE', payload: profileResult.value });
+            }
+            if (recommendationsResult.status === 'fulfilled') {
+              dispatch({ type: 'SET_SAVED_RECOMMENDATIONS', payload: recommendationsResult.value });
+            }
+          });
+
           // Smart auto-title from first query
           const currentMessages = state.messagesBySession[sid] || [];
           if (currentMessages.length <= 1) {
             const title = generateSmartTitle(query);
             dispatch({
-              type: 'SET_SESSIONS',
-              payload: state.sessions.map((s) =>
-                s.session_id === sid ? { ...s, title } : s
-              ),
+              type: 'RENAME_SESSION',
+              payload: { studentId, sessionId: sid, title },
             });
           }
         },
         onError: (error) => {
           dispatch({
             type: 'UPDATE_LAST_MESSAGE',
-            payload: { sessionId: sid, update: { content: `Error: ${error}` } },
+            payload: { studentId, sessionId: sid, update: { content: `Error: ${error}` } },
           });
           dispatch({ type: 'SET_STREAMING', payload: false });
         },
@@ -210,6 +242,21 @@ export default function ChatPage() {
     if (!sessionId) createSession();
     // Small delay for session to initialize
     setTimeout(() => handleSend(text), 50);
+  };
+
+  const handleConflictAction = async (payload) => {
+    const result = await resolveConflictChoice({ ...payload, student_id: studentId });
+    const [profileResult, recommendationsResult] = await Promise.allSettled([
+      getProfile(studentId),
+      getSavedRecommendations(studentId),
+    ]);
+    if (profileResult.status === 'fulfilled') {
+      dispatch({ type: 'SET_PROFILE', payload: profileResult.value });
+    }
+    if (recommendationsResult.status === 'fulfilled') {
+      dispatch({ type: 'SET_SAVED_RECOMMENDATIONS', payload: recommendationsResult.value });
+    }
+    return result;
   };
 
   // ── Personalization ──
@@ -361,7 +408,11 @@ export default function ChatPage() {
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto scrollbar-fade">
-        <MessageList messages={messages} isStreaming={state.isStreaming} />
+          <MessageList
+            messages={messages}
+            isStreaming={state.isStreaming}
+            onConflictAction={handleConflictAction}
+          />
       </div>
 
       {/* Input Area */}

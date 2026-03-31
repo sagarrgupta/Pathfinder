@@ -90,6 +90,19 @@ class LoggingChatOpenAI(ChatOpenAI):
             return result
 
         except Exception as exc:
+            message = str(exc)
+            if "context length" in message.lower() or "tokens to keep" in message.lower():
+                _write_debug(f"[{label.upper()}] context-length error; retrying with trimmed prompt\n")
+                trimmed_input = _trim_messages_for_retry(input)
+                result = await super().ainvoke(trimmed_input, config=config, **kwargs)
+                elapsed = time.time() - start
+                content = result.content if isinstance(result.content, str) else str(result.content)
+                _write_debug(
+                    f"[{label.upper()}] ── RESPONSE AFTER RETRY ({elapsed:.1f}s, {len(content)} chars) ──\n"
+                    f"content: {_trunc(content, 2000)}\n"
+                    f"{'─' * 60}\n"
+                )
+                return result
             elapsed = time.time() - start
             _write_debug(
                 f"[{label.upper()}] ── ERROR ({elapsed:.1f}s) ──\n"
@@ -139,6 +152,30 @@ def _write_debug(text: str) -> None:
             f.write(f"[{ts}] {text}\n")
     except Exception:
         pass  # Never let debug logging break the app
+
+
+def _shorten_message_content(content: Any, *, limit: int) -> Any:
+    if isinstance(content, str):
+        return _trunc(content, limit)
+    return content
+
+
+def _trim_messages_for_retry(input_val: Any) -> Any:
+    messages = input_val if isinstance(input_val, list) else [input_val]
+    trimmed = []
+    for index, msg in enumerate(messages):
+        limit = 1200 if index == 0 else 2200
+        if isinstance(msg, BaseMessage):
+            trimmed.append(msg.__class__(content=_shorten_message_content(msg.content, limit=limit)))
+        elif isinstance(msg, dict):
+            copied = dict(msg)
+            copied["content"] = _shorten_message_content(copied.get("content", ""), limit=limit)
+            trimmed.append(copied)
+        elif isinstance(msg, tuple) and len(msg) == 2:
+            trimmed.append((msg[0], _shorten_message_content(msg[1], limit=limit)))
+        else:
+            trimmed.append(msg)
+    return trimmed if isinstance(input_val, list) else trimmed[0]
 
 
 # ── LLM Singletons ─────────────────────────────────────────────────

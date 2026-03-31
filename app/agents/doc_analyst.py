@@ -27,10 +27,12 @@ from app.adapters.pdf.extractor import (
     extract_text_from_pdf,
     extract_text_from_image,
     extract_text_from_docx,
+    extract_text_from_plaintext,
     get_file_type,
 )
 from app.config.settings import settings
 from app.core.state import PathfinderState
+from app.services.memory_ingestion import ingest_memory
 from app.utils.ids import generate_document_id, generate_chunk_id
 
 log = logging.getLogger("pathfinder.agents.doc_analyst")
@@ -60,13 +62,14 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
     """Process uploaded files: extract, chunk, embed, store."""
     files = state.get("files", [])
     session_id = state.get("session_id", "")
-    student_id = state.get("student_id", "default")
+    student_id = state.get("student_id", "")
     is_global = state.get("is_global_upload", False)
     scope = "global" if is_global else "session"
 
     step_progress = list(state.get("step_progress", []))
     all_entities: list[dict[str, Any]] = []
     total_chunks = 0
+    current_turn_docs: list[dict[str, Any]] = []
 
     if not files:
         step_progress.append("No files to process")
@@ -96,6 +99,8 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
             pages = await extract_text_from_image(content, filename)
         elif file_type == "docx":
             pages = await extract_text_from_docx(content, filename)
+        elif file_type == "text":
+            pages = await extract_text_from_plaintext(content, filename)
         else:
             step_progress.append(f"Unsupported file type for {filename}, skipping")
             continue
@@ -107,7 +112,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
             continue
 
         # Step 2: Store document node
-        await store_document_node(
+        stored_doc = await store_document_node(
             document_id=doc_id,
             filename=filename,
             scope=scope,
@@ -135,6 +140,16 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
             stored = await store_chunks(chunks_to_store, doc_id)
             total_chunks += stored
             step_progress.append(f"Stored {stored} text chunks from {filename}")
+            current_turn_docs.extend(
+                {
+                    "filename": filename,
+                    "document_id": doc_id,
+                    "text": text[:500],
+                    "page_number": chunk.get("page_number"),
+                    "score": 1.0,
+                }
+                for text, chunk in zip(chunk_texts[:4], chunks_to_store[:4])
+            )
 
         # Step 4: Entity extraction
         step_progress.append(f"Extracting knowledge from {filename}...")
@@ -172,6 +187,15 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
             log.warning("Entity extraction failed for %s: %s", filename, exc)
             step_progress.append(f"Entity extraction partially failed for {filename}")
 
+        await ingest_memory(
+            student_id=student_id,
+            source_type="document",
+            content=full_text[:8000],
+            source_ref=stored_doc.get("id", doc_id),
+            session_id=session_id if scope == "session" else None,
+            metadata={"filename": filename, "scope": scope, "document_id": doc_id},
+        )
+
     step_progress.append(f"Document processing complete: {total_chunks} chunks, {len(all_entities)} entities")
     log.info("Doc analyst: %d chunks, %d entities", total_chunks, len(all_entities))
 
@@ -179,6 +203,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         **state,
         "files": [],  # Clear binary file data — no longer needed after processing
         "extracted_entities": all_entities,
+        "retrieved_documents": current_turn_docs[:8],
         "step_progress": step_progress,
         "next_node": _determine_next(state),
     }

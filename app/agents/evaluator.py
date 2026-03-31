@@ -13,8 +13,8 @@ from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
-from app.adapters.neo4j.graph_store import store_extracted_entities, update_student
 from app.core.state import PathfinderState
+from app.services.memory_ingestion import ingest_memory
 
 log = logging.getLogger("pathfinder.agents.evaluator")
 
@@ -142,37 +142,20 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
         final_draft = f"{draft}\n\n⚠️ *{disclaimer}*"
 
     # ── Passively learn: persist profile updates detected from conversation ──
-    student_id = state.get("student_id", "default")
+    student_id = state.get("student_id", "")
     if profile_updates:
         try:
-            # Separate student-level properties from entity updates
-            student_props = {}
-            entities = []
-            for update in profile_updates:
-                field = update.get("field", "")
-                value = update.get("value", "")
-                if not field or not value:
-                    continue
-                # Student-level fields (name, gpa, university, etc.)
-                if field.lower() in ("name", "gpa", "university", "program", "email", "semester"):
-                    student_props[field.lower()] = value
-                else:
-                    # Treat as entity (interest, goal, skill, etc.)
-                    label = _field_to_label(field)
-                    entities.append({
-                        "label": label,
-                        "properties": {"name": value},
-                        "relationship": _label_to_relationship(label),
-                    })
-
-            if student_props:
-                await update_student(student_id, **student_props)
-                log.info("Evaluator: passively updated student props: %s", list(student_props.keys()))
-
-            if entities:
-                count = await store_extracted_entities(entities, "conversation", student_id)
-                log.info("Evaluator: passively stored %d entities from conversation", count)
-
+            serialized = "\n".join(
+                f"{update.get('field', '')}: {update.get('value', '')}" for update in profile_updates
+            )
+            await ingest_memory(
+                student_id=student_id,
+                source_type="conversation_inference",
+                content=serialized,
+                source_ref=state.get("session_id"),
+                session_id=state.get("session_id"),
+                metadata={"query": query},
+            )
         except Exception as exc:
             log.warning("Evaluator: failed to persist profile updates: %s", exc)
 
@@ -190,29 +173,3 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
         "step_progress": step_progress,
         "next_node": "responder",
     }
-
-
-def _field_to_label(field: str) -> str:
-    """Map a profile update field name to an entity label."""
-    mapping = {
-        "interest": "Interest", "interests": "Interest",
-        "goal": "Goal", "goals": "Goal",
-        "skill": "Skill", "skills": "Skill",
-        "company": "Company", "experience": "Company",
-        "project": "Project", "projects": "Project",
-        "course": "Course", "courses": "Course",
-    }
-    return mapping.get(field.lower(), "Interest")
-
-
-def _label_to_relationship(label: str) -> str:
-    """Map an entity label to a relationship type."""
-    mapping = {
-        "Interest": "INTERESTED_IN",
-        "Goal": "HAS_GOAL",
-        "Skill": "HAS_SKILL",
-        "Company": "WORKED_AT",
-        "Project": "COMPLETED",
-        "Course": "TOOK",
-    }
-    return mapping.get(label, "HAS")

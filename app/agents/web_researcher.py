@@ -16,6 +16,7 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
+from app.agents.system_context import build_step_system_prompt
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.web_search.fallback_chain import search
 from app.adapters.web_search.url_fetcher import extract_urls, fetch_url_content
@@ -23,50 +24,52 @@ from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.web_researcher")
 
-_QUERY_GEN_PROMPT = """You are a search query optimizer. Generate 2-3 specific, targeted web search queries
-to find information that will help answer this student's question.
+_QUERY_GEN_PROMPT = build_step_system_prompt(
+    step_name="web_researcher.query_generation",
+    objective="Generate 2-3 precise search queries that gather the external evidence needed for the current request.",
+    relevant_capabilities=("web_researcher",),
+    extra_rules=(
+        "Preserve the user's main objective; do not switch the search topic to a different problem just because profile context is available.",
+        "Use profile context only when it materially improves the search.",
+        "If the request is about jobs, roles, internships, salaries, deadlines, programs, or courses, keep those exact target concepts in the queries.",
+        "Do not drift into school rankings, generic prestige, or broad background research unless the user explicitly asked for that.",
+        "Target different angles or sources rather than repeating near-identical queries.",
+        "Return a JSON array of query strings only.",
+    ),
+    output_schema="""
+Return ONLY a JSON array of search query strings.
+Example:
+["CSUS computer science masters course catalog 2026", "AI machine learning graduate courses California State Sacramento"]
+""",
+)
 
-Use their profile data to craft precise queries — include university name, program, specific skills, etc.
-Each query should target a different angle or source of information.
-
-Student Profile:
-{profile_summary}
-
-Student Question: {query}
-Intent: {intent}
-
-Return ONLY a JSON array of search query strings, nothing else.
-Example: ["CSUS computer science masters course catalog 2026", "AI machine learning graduate courses California State Sacramento"]
-"""
-
-_QUERY_GEN_URL_PROMPT = """You are a search query optimizer. The student has provided specific URL(s) in their question.
-The URL content is already being fetched directly. Generate 1-2 supplementary search queries.
-
-IMPORTANT — Decide whether to incorporate the student's profile based on the question:
-- If the question is about the URL content itself (e.g., "summarize this page", "read reviews on this site"),
-  focus queries ONLY on the URL's topic. Do NOT add the student's university or profile.
-- If the question connects the URL to the student personally (e.g., "is this school good for me",
-  "based on my skills, which programs fit", "compare this with my university"),
-  then USE the student's profile to craft relevant queries.
-
-Student Profile:
-{profile_summary}
-
-URLs already being fetched: {urls}
-Student Question: {query}
-Intent: {intent}
-
-Return ONLY a JSON array of search query strings, nothing else.
-Example (URL-only): ["Boston University graduate school reviews 2026", "Boston University graduate program student experience"]
-Example (profile-relevant): ["Boston University vs CSUS computer science masters", "Boston University CS program career outcomes software engineer"]
-"""
+_QUERY_GEN_URL_PROMPT = build_step_system_prompt(
+    step_name="web_researcher.url_query_generation",
+    objective="Generate 1-2 supplementary search queries when the user already provided URL content to fetch directly.",
+    relevant_capabilities=("web_researcher",),
+    extra_rules=(
+        "If the question is only about the URL content itself, focus on the URL topic and do not inject profile context.",
+        "If the question connects the URL to the student personally, use profile context to tailor the search.",
+        "Preserve the user's main objective and avoid drifting into adjacent research topics.",
+        "Return a JSON array of query strings only.",
+    ),
+    output_schema="""
+Return ONLY a JSON array of search query strings.
+Example URL-only:
+["Boston University graduate school reviews 2026", "Boston University graduate program student experience"]
+Example profile-relevant:
+["Boston University vs CSUS computer science masters", "Boston University CS program career outcomes software engineer"]
+""",
+)
 
 
 async def web_researcher(state: PathfinderState) -> PathfinderState:
     """Search the web with LLM-generated smart queries and add results to state."""
     query = state.get("query", "")
+    interpreted_query = state.get("interpreted_query", "").strip() or query
     intent = state.get("intent", "general")
     profile = state.get("profile_data", {})
+    web_search_hint = state.get("interpreted_search_brief", "").strip() or state.get("web_search_hint", "")
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Searching the web for relevant information...")
@@ -91,15 +94,19 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                 log.warning("Could not fetch URL: %s", url)
                 step_progress.append(f"Could not access {url}")
 
+    direct_url_results = [item for item in all_results if item.get("source") == "direct_url"]
+    url_profile_enrichment = bool(user_urls) and intent == "profile"
+
     # ── Step 2: Generate search queries ──────────────────────────────
-    # If user provided URLs, use the URL-aware prompt that gives the LLM
-    # both the profile and URLs — the LLM decides whether profile context
-    # is relevant based on the nature of the question.
-    # Otherwise, use the standard profile-aware prompt.
-    if user_urls:
-        search_queries = await _generate_url_aware_queries(query, intent, user_urls, profile)
+    # For profile enrichment from an explicit link, only the linked page matters.
+    # If the page cannot be fetched directly, avoid falling back to generic web
+    # results that would not be reliable for updating profile truth.
+    if url_profile_enrichment:
+        search_queries = []
+    elif user_urls:
+        search_queries = await _generate_url_aware_queries(interpreted_query, intent, user_urls, profile, web_search_hint)
     else:
-        search_queries = await _generate_smart_queries(query, intent, profile)
+        search_queries = await _generate_smart_queries(interpreted_query, intent, profile, web_search_hint)
 
     log.info("Web researcher: running %d queries: %s", len(search_queries), search_queries)
 
@@ -122,6 +129,8 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
 
     if results:
         step_progress.append(f"Found {len(results)} web results")
+    elif url_profile_enrichment and not direct_url_results:
+        step_progress.append("No usable information could be read from the linked page")
     else:
         step_progress.append("No relevant web results found")
 
@@ -148,7 +157,7 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
 
 
 async def _generate_url_aware_queries(
-    query: str, intent: str, urls: list[str], profile: dict[str, Any]
+    query: str, intent: str, urls: list[str], profile: dict[str, Any], web_search_hint: str
 ) -> list[str]:
     """Generate supplementary search queries when the user provided URLs.
 
@@ -164,6 +173,7 @@ async def _generate_url_aware_queries(
             SystemMessage(content="You are a search query optimizer. Generate supplementary search queries."),
             HumanMessage(content=_QUERY_GEN_URL_PROMPT.format(
                 profile_summary=profile_summary,
+                web_search_hint=web_search_hint or "Use the web only where external evidence materially improves the answer.",
                 urls=", ".join(urls),
                 query=query,
                 intent=intent,
@@ -189,7 +199,7 @@ async def _generate_url_aware_queries(
 
 
 async def _generate_smart_queries(
-    query: str, intent: str, profile: dict[str, Any]
+    query: str, intent: str, profile: dict[str, Any], web_search_hint: str
 ) -> list[str]:
     """Use the LLM to generate targeted search queries based on profile context.
 
@@ -204,6 +214,7 @@ async def _generate_smart_queries(
             SystemMessage(content="You are a search query optimizer. Generate targeted web search queries."),
             HumanMessage(content=_QUERY_GEN_PROMPT.format(
                 profile_summary=profile_summary,
+                web_search_hint=web_search_hint or "Use the web only where external evidence materially improves the answer.",
                 query=query,
                 intent=intent,
             )),
@@ -261,38 +272,22 @@ def _build_profile_summary(profile: dict[str, Any]) -> str:
 def _build_fallback_queries(
     query: str, intent: str, profile: dict[str, Any]
 ) -> list[str]:
-    """Rule-based fallback when LLM query generation fails."""
+    """Compact fallback when LLM query generation fails."""
     queries = []
     personal = profile.get("personal", {})
     university = personal.get("university", "")
     program = personal.get("program", "")
+    top_goal = next((g.get("name", "") for g in profile.get("goals", []) if g.get("name")), "")
+    top_skills = [s.get("name", "") for s in profile.get("skills", [])[:2] if s.get("name")]
 
-    # Query 1: Question + university + program (most specific)
     if university and program:
         queries.append(f"{university} {program} {query}")
-
-    # Query 2: Question + university
     if university:
         queries.append(f"{query} {university}")
-
-    # Intent-specific queries
-    if intent == "academic":
-        if university:
-            queries.append(f"{university} course catalog {program or ''} 2025 2026")
-    elif intent == "career":
-        skills = [s.get("name", "") for s in profile.get("skills", [])[:3]]
-        if skills:
-            queries.append(f"career path {' '.join(skills)}")
-    elif intent == "interview":
-        skills = [s.get("name", "") for s in profile.get("skills", [])[:3]]
-        goals = [g.get("name", "") for g in profile.get("goals", [])[:2]]
-        if skills or goals:
-            queries.append(f"interview questions {' '.join(skills + goals)}")
-
-    # Always include the raw query as a fallback
+    if top_goal or top_skills:
+        queries.append(" ".join(part for part in [query, top_goal, *top_skills] if part).strip())
     queries.append(query)
 
-    # Deduplicate and limit to 3
     seen = set()
     unique = []
     for q in queries:

@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
-import { getSettings, updateSettings, getHealth, resetAllData } from '@/services/api';
+import { createProfile, getProfiles, getSettings, updateSettings, getHealth, getProfile, getSavedRecommendations, resetAllData } from '@/services/api';
 import {
   Settings, Shield, Monitor, Server, Loader2,
   CheckCircle2, XCircle, Trash2, AlertTriangle, X,
-  Sun, Moon, SunMoon, Zap,
+  Sun, Moon, SunMoon, Zap, RefreshCw, ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -27,6 +27,7 @@ const THEME_OPTIONS = [
 
 export default function SettingsPage() {
   const { state, dispatch } = useApp();
+  const studentId = state.activeStudentId;
   const toast = useToast();
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -83,8 +84,17 @@ export default function SettingsPage() {
           </div>
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-            <p className="text-muted-foreground text-sm mt-0.5">Configure Pathfinder behavior and appearance</p>
+            <p className="text-muted-foreground text-sm mt-0.5">
+              Configure Pathfinder for {state.profile?.personal?.name || 'the active profile'}
+            </p>
           </div>
+          <button
+            onClick={loadData}
+            className="ml-auto inline-flex items-center gap-2 rounded-xl border bg-card px-3 py-2 text-sm font-medium transition-colors hover:bg-accent"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Refresh
+          </button>
         </div>
 
         {/* Appearance */}
@@ -173,7 +183,21 @@ export default function SettingsPage() {
                 ['Ollama', health.ollama],
               ].map(([name, status]) => (
                 <div key={name} className="flex items-center justify-between py-3 border-b last:border-0 border-border/50">
-                  <span className="text-sm font-medium">{name}</span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-medium">{name}</span>
+                    {name === 'Neo4j' && (
+                      <a
+                        href="http://localhost:7474"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                        title="Open Neo4j Browser"
+                      >
+                        Open Browser
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     {status === 'connected' ? (
                       <>
@@ -228,7 +252,7 @@ export default function SettingsPage() {
             <div>
               <p className="text-sm font-medium">Reset All Data</p>
               <p className="text-xs text-muted-foreground">
-                Permanently delete your profile, all documents, courses, skills, and knowledge graph data.
+                Permanently delete this profile's chats, documents, courses, skills, and knowledge graph data.
               </p>
             </div>
             <button
@@ -245,10 +269,53 @@ export default function SettingsPage() {
       {/* Reset Confirmation Modal */}
       {showResetModal && (
         <ResetModal
+          studentId={studentId}
           onClose={() => setShowResetModal(false)}
-          onSuccess={(msg) => {
+          onSuccess={async (msg) => {
+            dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
+            dispatch({ type: 'RESET_STUDENT_LOCAL_DATA', payload: { studentId } });
+            let profiles = [];
+            try {
+              profiles = await getProfiles();
+            } catch {
+              profiles = [];
+            }
+
+            if (profiles.length === 0) {
+              try {
+                const created = await createProfile({ name: 'Student' });
+                profiles = [created];
+              } catch {
+                profiles = [];
+              }
+            }
+
+            dispatch({ type: 'SET_PROFILES', payload: profiles });
+
+            const nextStudentId = profiles.find((profile) => profile.student_id === studentId)
+              ? studentId
+              : profiles[0]?.student_id || null;
+
+            if (!nextStudentId) {
+              dispatch({ type: 'SET_ACTIVE_STUDENT', payload: null });
+              dispatch({ type: 'SET_PROFILE', payload: null });
+              dispatch({ type: 'SET_SAVED_RECOMMENDATIONS', payload: [] });
+              toast.success(msg);
+              return;
+            }
+
+            dispatch({ type: 'SET_ACTIVE_STUDENT', payload: nextStudentId });
+
+            const [profileResult, recommendationsResult] = await Promise.allSettled([
+              getProfile(nextStudentId),
+              getSavedRecommendations(nextStudentId),
+            ]);
+            dispatch({ type: 'SET_PROFILE', payload: profileResult.status === 'fulfilled' ? profileResult.value : null });
+            dispatch({
+              type: 'SET_SAVED_RECOMMENDATIONS',
+              payload: recommendationsResult.status === 'fulfilled' ? recommendationsResult.value : [],
+            });
             toast.success(msg);
-            dispatch({ type: 'SET_PROFILE', payload: null });
           }}
         />
       )}
@@ -258,7 +325,7 @@ export default function SettingsPage() {
 
 // ── Reset Confirmation Modal ────────────────────────────────────
 
-function ResetModal({ onClose, onSuccess }) {
+function ResetModal({ studentId, onClose, onSuccess }) {
   const [confirmText, setConfirmText] = useState('');
   const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState('');
@@ -272,8 +339,8 @@ function ResetModal({ onClose, onSuccess }) {
     setIsResetting(true);
     setError('');
     try {
-      await resetAllData();
-      onSuccess('All profile data has been reset successfully.');
+      await resetAllData(studentId);
+      await onSuccess('All profile data has been reset successfully.');
       onClose();
     } catch (err) {
       setError(`Reset failed: ${err.message}`);
@@ -321,6 +388,7 @@ function ResetModal({ onClose, onSuccess }) {
           <ul className="text-sm space-y-2 pl-1">
             {[
               'Your student profile and personal information',
+              'All chats and session history for this profile',
               'All uploaded documents and extracted text',
               'Courses, skills, goals, experience, and other entities',
               'Entire knowledge graph data',

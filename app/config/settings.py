@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # ---------- Session ----------
     SESSION_TTL_MINUTES: int = 60
     MAX_CONVERSATION_HISTORY_MESSAGES: int = 20
+
+    # ---------- Background Consolidation ----------
+    CONSOLIDATION_ENABLED: bool = True
+    CONSOLIDATION_INTERVAL_SECONDS: int = 900
     
     # ---------- Rate Limiting ----------
     RATE_LIMIT_ENABLED: bool = True

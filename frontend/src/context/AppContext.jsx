@@ -1,43 +1,31 @@
-import React, { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
-import { getProfile } from '@/services/api';
+import React, { createContext, useContext, useEffect, useReducer, useRef } from 'react';
+import { createProfile, getProfile, getProfiles, getSavedRecommendations } from '@/services/api';
 
 const AppContext = createContext(null);
-
-// ── LocalStorage helpers ────────────────────────────────────────
-
-const STORAGE_KEY = 'pathfinder_state';
+const STORAGE_KEY = 'pathfinder_state_v2';
 
 function loadPersistedState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const saved = JSON.parse(raw);
-      return {
-        sessions: saved.sessions || [],
-        activeSessionId: saved.activeSessionId || null,
-        messagesBySession: saved.messagesBySession || {},
-        settings: saved.settings || { topic_guard_enabled: true },
-        theme: saved.theme || 'system',
-      };
-    }
+    return raw ? JSON.parse(raw) : null;
   } catch {
-    // Corrupt data — ignore
+    return null;
   }
-  return null;
 }
 
 function persistState(state) {
   try {
-    const toSave = {
-      sessions: state.sessions,
-      activeSessionId: state.activeSessionId,
-      messagesBySession: state.messagesBySession,
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      profiles: state.profiles,
+      activeStudentId: state.activeStudentId,
+      sessionsByStudent: state.sessionsByStudent,
+      activeSessionByStudent: state.activeSessionByStudent,
+      messagesByStudent: state.messagesByStudent,
       settings: state.settings,
       theme: state.theme,
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+    }));
   } catch {
-    // Storage full or unavailable — ignore
+    // ignore persistence failures
   }
 }
 
@@ -50,164 +38,259 @@ function applyTheme(theme) {
   document.documentElement.classList.toggle('dark', resolved === 'dark');
 }
 
-// ── State Shape ─────────────────────────────────────────────────
-
 const persisted = loadPersistedState();
 
 const initialState = {
-  // Sessions (restored from localStorage if available)
-  sessions: persisted?.sessions || [],
-  activeSessionId: persisted?.activeSessionId || null,
-
-  // Messages per session: { [sessionId]: [{role, content, metadata}] }
-  messagesBySession: persisted?.messagesBySession || {},
-
-  // Profile
-  profile: null,
-  profileLoading: false,
-
-  // Settings
+  profiles: persisted?.profiles || [],
+  activeStudentId: persisted?.activeStudentId || null,
+  sessionsByStudent: persisted?.sessionsByStudent || {},
+  activeSessionByStudent: persisted?.activeSessionByStudent || {},
+  messagesByStudent: persisted?.messagesByStudent || {},
   settings: persisted?.settings || { topic_guard_enabled: true },
-
-  // Theme
   theme: persisted?.theme || 'system',
-
-  // UI (never persisted)
+  profile: null,
+  savedRecommendations: [],
+  profileLoading: false,
   sidebarOpen: true,
   isStreaming: false,
-  streamProgress: [],
 };
 
-// ── Reducer ─────────────────────────────────────────────────────
+function ensureStudentState(container, studentId, fallback) {
+  return container[studentId] || fallback;
+}
 
 function appReducer(state, action) {
   switch (action.type) {
-    case 'SET_SESSIONS':
-      return { ...state, sessions: action.payload };
-
-    case 'SET_ACTIVE_SESSION':
-      return { ...state, activeSessionId: action.payload, streamProgress: [] };
-
-    case 'ADD_SESSION': {
-      const newSession = action.payload;
+    case 'SET_PROFILES':
+      return { ...state, profiles: action.payload };
+    case 'ADD_PROFILE':
+      return { ...state, profiles: [action.payload, ...state.profiles] };
+    case 'REMOVE_PROFILE': {
+      const { studentId } = action.payload;
       return {
         ...state,
-        sessions: [newSession, ...state.sessions],
-        activeSessionId: newSession.session_id,
-        messagesBySession: { ...state.messagesBySession, [newSession.session_id]: [] },
+        profiles: state.profiles.filter((profile) => profile.student_id !== studentId),
       };
     }
-
-    case 'REMOVE_SESSION': {
-      const sid = action.payload;
-      const { [sid]: _, ...rest } = state.messagesBySession;
-      return {
-        ...state,
-        sessions: state.sessions.filter((s) => s.session_id !== sid),
-        messagesBySession: rest,
-        activeSessionId: state.activeSessionId === sid ? null : state.activeSessionId,
-      };
-    }
-
-    case 'RENAME_SESSION': {
-      const { sessionId: renameId, title } = action.payload;
-      return {
-        ...state,
-        sessions: state.sessions.map((s) =>
-          s.session_id === renameId ? { ...s, title } : s
-        ),
-      };
-    }
-
-    case 'TOGGLE_PIN_SESSION': {
-      const pinId = action.payload;
-      return {
-        ...state,
-        sessions: state.sessions.map((s) =>
-          s.session_id === pinId ? { ...s, pinned: !s.pinned } : s
-        ),
-      };
-    }
-
-    case 'ADD_MESSAGE': {
-      const { sessionId, message } = action.payload;
-      const msgs = state.messagesBySession[sessionId] || [];
-      return {
-        ...state,
-        messagesBySession: { ...state.messagesBySession, [sessionId]: [...msgs, message] },
-      };
-    }
-
-    case 'UPDATE_LAST_MESSAGE': {
-      const { sessionId, update } = action.payload;
-      const msgs = [...(state.messagesBySession[sessionId] || [])];
-      if (msgs.length > 0) {
-        msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], ...update };
+    case 'SET_ACTIVE_STUDENT':
+      if (!action.payload) {
+        return {
+          ...state,
+          activeStudentId: null,
+          profile: null,
+          savedRecommendations: [],
+        };
       }
       return {
         ...state,
-        messagesBySession: { ...state.messagesBySession, [sessionId]: msgs },
+        activeStudentId: action.payload,
+        profile: null,
+        savedRecommendations: [],
+        sessionsByStudent: {
+          ...state.sessionsByStudent,
+          [action.payload]: ensureStudentState(state.sessionsByStudent, action.payload, []),
+        },
+        activeSessionByStudent: {
+          ...state.activeSessionByStudent,
+          [action.payload]: state.activeSessionByStudent[action.payload] || null,
+        },
+        messagesByStudent: {
+          ...state.messagesByStudent,
+          [action.payload]: ensureStudentState(state.messagesByStudent, action.payload, {}),
+        },
+        isStreaming: false,
+      };
+    case 'SET_ACTIVE_SESSION':
+      return {
+        ...state,
+        activeSessionByStudent: {
+          ...state.activeSessionByStudent,
+          [action.studentId]: action.payload,
+        },
+      };
+    case 'ADD_SESSION': {
+      const { studentId, session } = action.payload;
+      return {
+        ...state,
+        sessionsByStudent: {
+          ...state.sessionsByStudent,
+          [studentId]: [session, ...ensureStudentState(state.sessionsByStudent, studentId, [])],
+        },
+        activeSessionByStudent: {
+          ...state.activeSessionByStudent,
+          [studentId]: session.session_id,
+        },
+        messagesByStudent: {
+          ...state.messagesByStudent,
+          [studentId]: {
+            ...ensureStudentState(state.messagesByStudent, studentId, {}),
+            [session.session_id]: [],
+          },
+        },
       };
     }
-
+    case 'SET_STUDENT_SESSIONS': {
+      const { studentId, sessions } = action.payload;
+      return {
+        ...state,
+        sessionsByStudent: { ...state.sessionsByStudent, [studentId]: sessions },
+        activeSessionByStudent: {
+          ...state.activeSessionByStudent,
+          [studentId]: sessions.some((session) => session.session_id === state.activeSessionByStudent[studentId])
+            ? state.activeSessionByStudent[studentId]
+            : sessions[0]?.session_id || null,
+        },
+      };
+    }
+    case 'RESET_STUDENT_LOCAL_DATA': {
+      const { studentId } = action.payload;
+      return {
+        ...state,
+        sessionsByStudent: {
+          ...state.sessionsByStudent,
+          [studentId]: [],
+        },
+        activeSessionByStudent: {
+          ...state.activeSessionByStudent,
+          [studentId]: null,
+        },
+        messagesByStudent: {
+          ...state.messagesByStudent,
+          [studentId]: {},
+        },
+        savedRecommendations: state.activeStudentId === studentId ? [] : state.savedRecommendations,
+        profile: state.activeStudentId === studentId ? null : state.profile,
+        isStreaming: state.activeStudentId === studentId ? false : state.isStreaming,
+      };
+    }
+    case 'REMOVE_SESSION': {
+      const { studentId, sessionId } = action.payload;
+      const studentMessages = { ...ensureStudentState(state.messagesByStudent, studentId, {}) };
+      delete studentMessages[sessionId];
+      return {
+        ...state,
+        sessionsByStudent: {
+          ...state.sessionsByStudent,
+          [studentId]: ensureStudentState(state.sessionsByStudent, studentId, []).filter((s) => s.session_id !== sessionId),
+        },
+        messagesByStudent: {
+          ...state.messagesByStudent,
+          [studentId]: studentMessages,
+        },
+        activeSessionByStudent: {
+          ...state.activeSessionByStudent,
+          [studentId]: state.activeSessionByStudent[studentId] === sessionId ? null : state.activeSessionByStudent[studentId],
+        },
+      };
+    }
+    case 'RENAME_SESSION': {
+      const { studentId, sessionId, title } = action.payload;
+      return {
+        ...state,
+        sessionsByStudent: {
+          ...state.sessionsByStudent,
+          [studentId]: ensureStudentState(state.sessionsByStudent, studentId, []).map((s) =>
+            s.session_id === sessionId ? { ...s, title } : s
+          ),
+        },
+      };
+    }
+    case 'TOGGLE_PIN_SESSION': {
+      const { studentId, sessionId } = action.payload;
+      return {
+        ...state,
+        sessionsByStudent: {
+          ...state.sessionsByStudent,
+          [studentId]: ensureStudentState(state.sessionsByStudent, studentId, []).map((s) =>
+            s.session_id === sessionId ? { ...s, pinned: !s.pinned } : s
+          ),
+        },
+      };
+    }
+    case 'ADD_MESSAGE': {
+      const { studentId, sessionId, message } = action.payload;
+      const studentMessages = { ...ensureStudentState(state.messagesByStudent, studentId, {}) };
+      studentMessages[sessionId] = [...(studentMessages[sessionId] || []), message];
+      return {
+        ...state,
+        sessionsByStudent: {
+          ...state.sessionsByStudent,
+          [studentId]: ensureStudentState(state.sessionsByStudent, studentId, []).map((session) =>
+            session.session_id === sessionId
+              ? {
+                  ...session,
+                  last_message: message.content || session.last_message || '',
+                  updated_at: new Date().toISOString(),
+                }
+              : session
+          ),
+        },
+        messagesByStudent: { ...state.messagesByStudent, [studentId]: studentMessages },
+      };
+    }
+    case 'UPDATE_LAST_MESSAGE': {
+      const { studentId, sessionId, update } = action.payload;
+      const studentMessages = { ...ensureStudentState(state.messagesByStudent, studentId, {}) };
+      const msgs = [...(studentMessages[sessionId] || [])];
+      if (msgs.length > 0) msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], ...update };
+      studentMessages[sessionId] = msgs;
+      return {
+        ...state,
+        messagesByStudent: { ...state.messagesByStudent, [studentId]: studentMessages },
+      };
+    }
     case 'APPEND_MESSAGE_PROGRESS': {
-      const { sessionId, progress } = action.payload;
-      const msgs = [...(state.messagesBySession[sessionId] || [])];
+      const { studentId, sessionId, progress } = action.payload;
+      const studentMessages = { ...ensureStudentState(state.messagesByStudent, studentId, {}) };
+      const msgs = [...(studentMessages[sessionId] || [])];
       if (msgs.length > 0) {
         const last = { ...msgs[msgs.length - 1] };
         last.progress = [...(last.progress || []), progress];
         msgs[msgs.length - 1] = last;
       }
+      studentMessages[sessionId] = msgs;
       return {
         ...state,
-        messagesBySession: { ...state.messagesBySession, [sessionId]: msgs },
+        messagesByStudent: { ...state.messagesByStudent, [studentId]: studentMessages },
       };
     }
-
     case 'SET_STREAMING':
       return { ...state, isStreaming: action.payload };
-
-    case 'ADD_PROGRESS':
-      return { ...state, streamProgress: [...state.streamProgress, action.payload] };
-
-    case 'CLEAR_PROGRESS':
-      return { ...state, streamProgress: [] };
-
     case 'SET_PROFILE':
       return { ...state, profile: action.payload, profileLoading: false };
-
+    case 'SET_SAVED_RECOMMENDATIONS':
+      return { ...state, savedRecommendations: action.payload };
     case 'SET_PROFILE_LOADING':
       return { ...state, profileLoading: action.payload };
-
     case 'SET_SETTINGS':
       return { ...state, settings: { ...state.settings, ...action.payload } };
-
     case 'SET_THEME':
       return { ...state, theme: action.payload };
-
     case 'TOGGLE_SIDEBAR':
       return { ...state, sidebarOpen: !state.sidebarOpen };
-
     default:
       return state;
   }
 }
 
-// ── Provider ────────────────────────────────────────────────────
-
 export function AppProvider({ children }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
+  const bootstrapped = useRef(false);
 
-  // Persist to localStorage whenever sessions/messages/settings/theme change
   useEffect(() => {
     persistState(state);
-  }, [state.sessions, state.activeSessionId, state.messagesBySession, state.settings, state.theme]);
+  }, [
+    state.profiles,
+    state.activeStudentId,
+    state.sessionsByStudent,
+    state.activeSessionByStudent,
+    state.messagesByStudent,
+    state.settings,
+    state.theme,
+  ]);
 
-  // Apply theme on change
   useEffect(() => {
     applyTheme(state.theme);
-
-    // Listen for system theme changes when theme is 'system'
     if (state.theme === 'system') {
       const mq = window.matchMedia('(prefers-color-scheme: dark)');
       const handler = () => applyTheme('system');
@@ -216,32 +299,88 @@ export function AppProvider({ children }) {
     }
   }, [state.theme]);
 
-  // ── Auto-load profile on app start for personalization ──
-  const profileLoaded = useRef(false);
   useEffect(() => {
-    if (profileLoaded.current) return;
-    profileLoaded.current = true;
+    if (bootstrapped.current) return;
+    bootstrapped.current = true;
+    (async () => {
+      let profiles = [];
+      try {
+        profiles = await getProfiles();
+      } catch {
+        profiles = [];
+      }
+      if (profiles.length === 0) {
+        try {
+          const created = await createProfile({ name: 'Student' });
+          profiles = [created];
+        } catch {
+          profiles = [];
+        }
+      }
+      dispatch({ type: 'SET_PROFILES', payload: profiles });
+      const persistedActive = state.activeStudentId;
+      const activeStudentId = profiles.some((profile) => profile.student_id === persistedActive)
+        ? persistedActive
+        : profiles[0]?.student_id || null;
+      if (activeStudentId) {
+        dispatch({ type: 'SET_ACTIVE_STUDENT', payload: activeStudentId });
+      }
+    })();
+  }, [state.activeStudentId]);
+
+  useEffect(() => {
+    if (!state.activeStudentId) return;
     (async () => {
       try {
         dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
-        const data = await getProfile();
-        dispatch({ type: 'SET_PROFILE', payload: data });
+        const [profileData, recommendationData] = await Promise.all([
+          getProfile(state.activeStudentId),
+          getSavedRecommendations(state.activeStudentId).catch(() => []),
+        ]);
+        dispatch({ type: 'SET_PROFILE', payload: profileData });
+        dispatch({ type: 'SET_SAVED_RECOMMENDATIONS', payload: recommendationData });
       } catch {
         dispatch({ type: 'SET_PROFILE_LOADING', payload: false });
       }
     })();
-  }, []);
+  }, [state.activeStudentId]);
 
-  const createSession = useCallback(() => {
-    const sessionId = `session_${Date.now().toString(36)}`;
-    dispatch({
-      type: 'ADD_SESSION',
-      payload: { session_id: sessionId, title: 'New Chat', created_at: new Date().toISOString() },
-    });
-    return sessionId;
-  }, []);
+  const activeStudentId = state.activeStudentId;
+  const sessions = activeStudentId ? ensureStudentState(state.sessionsByStudent, activeStudentId, []) : [];
+  const activeSessionId = activeStudentId ? state.activeSessionByStudent[activeStudentId] || null : null;
+  const messagesBySession = activeStudentId ? ensureStudentState(state.messagesByStudent, activeStudentId, {}) : {};
 
-  const value = { state, dispatch, createSession };
+  const createSession = () => {
+    if (!activeStudentId) return null;
+    const session = {
+      session_id: `session_${Date.now().toString(36)}`,
+      student_id: activeStudentId,
+      title: 'New Chat',
+      created_at: new Date().toISOString(),
+    };
+    dispatch({ type: 'ADD_SESSION', payload: { studentId: activeStudentId, session } });
+    return session.session_id;
+  };
+
+  const createProfileAndActivate = async (name = 'Student') => {
+    const profile = await createProfile({ name });
+    dispatch({ type: 'ADD_PROFILE', payload: profile });
+    dispatch({ type: 'SET_ACTIVE_STUDENT', payload: profile.student_id });
+    return profile;
+  };
+
+  const value = {
+    state: {
+      ...state,
+      sessions,
+      activeSessionId,
+      messagesBySession,
+      activeStudentId,
+    },
+    dispatch,
+    createSession,
+    createProfileAndActivate,
+  };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

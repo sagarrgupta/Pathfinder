@@ -98,7 +98,7 @@ async def similarity_search(
     k: int = 5,
     scope: str | None = None,
     session_id: str | None = None,
-    student_id: str = "default",
+    student_id: str = "",
 ) -> list[dict[str, Any]]:
     """Semantic similarity search over Chunk nodes.
 
@@ -174,7 +174,7 @@ async def similarity_search(
 async def hybrid_search(
     query: str,
     k: int = 5,
-    student_id: str = "default",
+    student_id: str = "",
     session_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Combine vector similarity with graph context.
