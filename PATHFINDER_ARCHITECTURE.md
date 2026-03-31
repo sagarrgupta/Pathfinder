@@ -543,3 +543,4 @@ data: {"content": " your"}
 event: done
 data: {"confidence": 0.85, "citations": [...], "method": "rag+web", "profile_updates": [...]}
 ```
+
