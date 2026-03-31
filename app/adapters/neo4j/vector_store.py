@@ -125,10 +125,19 @@ async def similarity_search(
         if scope == "global":
             where_clauses.append("d.scope = 'global'")
         elif scope == "session" and session_id:
-            where_clauses.append(f"d.session_id = '{session_id}'")
+            where_clauses.append("d.session_id = $filter_session_id")
         # Otherwise search all documents for this student
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        params: dict[str, Any] = {
+            "index_name": VECTOR_INDEX_NAME,
+            "k": k,
+            "embedding": query_embedding,
+            "student_id": student_id,
+        }
+        if scope == "session" and session_id:
+            params["filter_session_id"] = session_id
 
         result = await session.run(
             f"""
@@ -146,10 +155,7 @@ async def similarity_search(
             ORDER BY score DESC
             LIMIT $k
             """,
-            index_name=VECTOR_INDEX_NAME,
-            k=k,
-            embedding=query_embedding,
-            student_id=student_id,
+            **params,
         )
 
         results = []

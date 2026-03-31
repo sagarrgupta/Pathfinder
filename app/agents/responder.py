@@ -13,29 +13,10 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm, strip_repetition, is_garbage_output
 from app.core.state import PathfinderState
+from app.graph.ontology import profile_key_for_label
+from app.prompts import Prompts
 
 log = logging.getLogger("pathfinder.agents.responder")
-
-_SYNTHESIS_PROMPT = """You are the final Responder in Pathfinder, an AI academic and career guidance assistant for students.
-
-Your job is to take a draft answer and polish it into a personalized, well-formatted response.
-
-Student name: {student_name}
-
-Rules:
-1. Keep the substance of the draft answer — don't remove important information.
-2. Format with markdown: use headers (##), bullet points, tables, and bold for key info.
-3. Weave citations naturally into the text with clickable links.
-4. Tone: warm, professional, encouraging — like a knowledgeable mentor. Not generic or robotic.
-5. If confidence is low, acknowledge uncertainty honestly but still be helpful.
-6. End with 1-2 specific follow-up suggestions (not generic ones).
-7. If the student's name is available, address them by first name occasionally — but don't overdo it.
-8. Use "sources:" at the end to list URLs referenced (if any).
-
-Draft answer: {draft}
-Confidence: {confidence}
-Intent: {intent}
-"""
 
 
 async def responder(state: PathfinderState) -> PathfinderState:
@@ -78,10 +59,11 @@ async def responder(state: PathfinderState) -> PathfinderState:
             summary_parts.append(f"### Extracted Information ({len(entities)} items)\n")
             for e in entities[:10]:
                 label = e.get("label", "")
-                name = e.get("properties", {}).get("name", "")
+                props = e.get("properties", {}) or {}
+                name = props.get("name") or props.get("code") or props.get("title", "")
                 extra = ""
                 if label == "Course":
-                    grade = e.get("properties", {}).get("grade", "")
+                    grade = props.get("grade", "")
                     extra = f" (Grade: {grade})" if grade else ""
                 summary_parts.append(f"- **{label}**: {name}{extra}")
         else:
@@ -92,7 +74,7 @@ async def responder(state: PathfinderState) -> PathfinderState:
         personal = profile.get("personal", {})
         courses = profile.get("courses", [])
         skills = profile.get("skills", [])
-        if courses or skills:
+        if courses or skills or profile.get("all_entities"):
             summary_parts.append("\n### Your Updated Profile")
             if courses:
                 course_list = ", ".join(c.get("name", c.get("code", "?")) for c in courses[:10])
@@ -100,6 +82,18 @@ async def responder(state: PathfinderState) -> PathfinderState:
             if skills:
                 skill_list = ", ".join(s.get("name", "") for s in skills[:10])
                 summary_parts.append(f"- **Skills**: {skill_list}")
+            all_ent = profile.get("all_entities") or {}
+            for neo_label, items in sorted(all_ent.items()):
+                if neo_label in ("Course", "Skill", "Student", "Document", "Chunk") or not items:
+                    continue
+                key = profile_key_for_label(neo_label)
+                if key in ("courses", "skills", "documents"):
+                    continue
+                preview = ", ".join(
+                    str(i.get("name", i.get("code", ""))) for i in items[:5] if i.get("name") or i.get("code")
+                )
+                if preview:
+                    summary_parts.append(f"- **{neo_label}** ({key}): {preview}")
 
         summary_parts.append("\n---\n**What would you like to do next?** You can ask me for course recommendations, career advice, or anything else!")
 
@@ -233,8 +227,8 @@ async def responder(state: PathfinderState) -> PathfinderState:
     llm = get_text_llm()
 
     response = await llm.ainvoke([
-        SystemMessage(content="You are a response formatter for Pathfinder. Polish and personalize the following answer."),
-        HumanMessage(content=_SYNTHESIS_PROMPT.format(
+        SystemMessage(content=Prompts.RESPONDER_FORMAT_SYSTEM),
+        HumanMessage(content=Prompts.RESPONDER_SYNTHESIS.format(
             student_name=student_name or "the student",
             draft=draft[:4000],
             confidence=f"{confidence:.0%}",

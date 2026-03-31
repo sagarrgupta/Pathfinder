@@ -10,7 +10,6 @@ Handles all Neo4j knowledge graph interactions:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -25,26 +24,10 @@ from app.adapters.neo4j.graph_store import (
 )
 from app.adapters.neo4j.vector_store import hybrid_search
 from app.core.state import PathfinderState
+from app.prompts import Prompts
+from app.utils.json_llm import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.profile_manager")
-
-_TEXT_EXTRACTION_PROMPT = """You are a profile data extractor. The user has entered free-text information about themselves.
-Extract structured entities from this text.
-
-Respond with valid JSON:
-{{
-    "entities": [
-        {{"label": "Skill", "properties": {{"name": "Python", "proficiency": "advanced"}}, "relationship": "HAS_SKILL"}},
-        {{"label": "Goal", "properties": {{"name": "PhD in CS", "type": "phd", "field": "Computer Science"}}, "relationship": "HAS_GOAL"}}
-    ],
-    "student_properties": {{"name": "John", "gpa": "3.5"}}
-}}
-
-Possible labels: Course, Skill, Company, Goal, Interest, Project, Department
-Possible relationships: TOOK, HAS_SKILL, WORKED_AT, HAS_GOAL, INTERESTED_IN, COMPLETED, IN_DEPARTMENT
-
-User text: {text}
-"""
 
 
 async def profile_manager(state: PathfinderState) -> PathfinderState:
@@ -103,17 +86,14 @@ async def process_free_text(
     llm = get_text_llm()
 
     response = await llm.ainvoke([
-        SystemMessage(content="You are a profile data extractor."),
-        HumanMessage(content=_TEXT_EXTRACTION_PROMPT.format(text=text)),
+        SystemMessage(content=Prompts.TEXT_EXTRACTION_SYSTEM),
+        HumanMessage(content=Prompts.text_extraction_user(text)),
     ])
 
     content = response.content if isinstance(response.content, str) else str(response.content)
 
-    try:
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        parsed = json.loads(content[json_start:json_end])
-    except (json.JSONDecodeError, ValueError):
+    parsed = parse_json_object(content)
+    if not parsed:
         return {"entities_extracted": 0, "error": "Could not parse entities from text"}
 
     entities = parsed.get("entities", [])

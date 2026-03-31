@@ -7,79 +7,23 @@ university comparison, and requirement matching.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm, strip_repetition, is_garbage_output
+from app.config.settings import settings
 from app.core.state import PathfinderState
+from app.prompts import Prompts
 
 log = logging.getLogger("pathfinder.agents.academic_advisor")
 
-# ── Prompt when we have SUFFICIENT data ──────────────────────────
-_SYSTEM_PROMPT = """You are the Academic Advisor agent in Pathfinder, an AI academic guidance system for students.
-
-You have access to the student's profile data, web research results, and retrieved documents.
-Your job is to provide personalized, actionable academic advice.
-
-Capabilities:
-- Major/minor selection based on strengths and interests
-- Course planning and scheduling recommendations
-- University comparison and admission guidance
-- Program requirement matching (prerequisites, GPA requirements)
-- Research opportunity identification
-- Academic goal planning (PhD prep, thesis topics, etc.)
-- Summarizing and analyzing web content the student shares with you
-- Requirement matching (prerequisites, GPA requirements, etc.)
-- Academic goal planning (graduate school, research, etc.)
-
-CRITICAL RULES:
-1. ONLY recommend specific courses if they appear in web results or documents — NEVER invent course codes.
-2. If web results contain real course catalogs, reference those SPECIFIC courses with correct names/codes.
-3. If you do NOT have specific course data, recommend TYPES of courses rather than inventing names.
-4. Always acknowledge what data you DO have vs what you're MISSING.
-5. Cite web sources with URLs when using external information.
-6. Be encouraging but realistic.
-7. Provide actionable next steps — be specific, not vague.
-8. Format using markdown for readability (headers, tables, bullet points).
-9. Address the student by name if available.
-10. When analyzing web page content (reviews, articles), provide a thorough summary with key takeaways.
-
-Student Profile:
-{profile}
-
-Web Research Results:
-{web_results}
-
-Retrieved Document Context:
-{documents}
-"""
-
-# ── Prompt when we LACK course data ──────────────────────────────
-_INSUFFICIENT_DATA_PROMPT = """You are the Academic Advisor agent in Pathfinder, an AI academic guidance system.
-
-The student is asking about course recommendations, but you do NOT have enough information about their completed coursework.
-
-Here's what you know:
-{profile}
-
-What's MISSING:
-- Full list of courses the student has already taken
-- Prerequisites they've completed
-- Their specific focus areas within their program
-
-YOUR TASK:
-Generate a helpful response that:
-1. Acknowledges what you know about them (name, GPA, skills, goals) — be brief.
-2. Explains WHY you need their full course history before recommending specific courses.
-3. Asks them to do ONE of these:
-   - Upload their academic transcript (PDF) using the file upload button
-   - OR type out the courses they've already completed
-4. Mention that once you have their course history, you can give much better, personalized recommendations.
-5. Keep the tone warm, helpful, and encouraging.
-6. Do NOT provide any specific course recommendations — that comes AFTER they share their history.
-7. Format using markdown.
-"""
+# Heuristic: lines that look like transcript rows (code + title or grade)
+_COURSE_LINE = re.compile(
+    r"\b[A-Z]{2,10}\s*\d{3,4}[A-Z]?\b|\b\d+\s*(?:units?|credits?)\b",
+    re.IGNORECASE,
+)
 
 
 async def academic_advisor(state: PathfinderState) -> PathfinderState:
@@ -102,14 +46,24 @@ async def academic_advisor(state: PathfinderState) -> PathfinderState:
     # Check if we have enough course data for recommendations
     courses = profile.get("courses", [])
     is_course_query = _is_course_recommendation_query(query)
+    min_courses = settings.ACADEMIC_COURSE_HISTORY_MIN
+    coverage = _transcript_course_coverage(documents)
+    has_rich_history = (
+        len(courses) >= min_courses
+        or coverage >= settings.ACADEMIC_COURSE_COVERAGE_THRESHOLD
+    )
 
-    if is_course_query and len(courses) < 4:
-        # Insufficient data — ask for more info before recommending
+    if is_course_query and not has_rich_history:
+        # Insufficient structured course data — ask for more info before recommending
         step_progress.append("Need more course history — asking for clarification")
-        log.info("Academic advisor: insufficient course data (%d courses), asking for more", len(courses))
+        log.info(
+            "Academic advisor: insufficient course signal (courses=%d coverage=%.2f), asking for more",
+            len(courses),
+            coverage,
+        )
 
         response = await llm.ainvoke([
-            SystemMessage(content=_INSUFFICIENT_DATA_PROMPT.format(profile=profile_text)),
+            SystemMessage(content=Prompts.ACADEMIC_INSUFFICIENT_SYSTEM.format(profile=profile_text)),
             HumanMessage(content=query),
         ])
 
@@ -125,7 +79,7 @@ async def academic_advisor(state: PathfinderState) -> PathfinderState:
 
     # Sufficient data — provide full advice
     response = await llm.ainvoke([
-        SystemMessage(content=_SYSTEM_PROMPT.format(
+        SystemMessage(content=Prompts.ACADEMIC_ADVISOR_SYSTEM.format(
             profile=profile_text,
             web_results=web_text,
             documents=doc_text,
@@ -159,6 +113,28 @@ def _is_course_recommendation_query(query: str) -> bool:
         "elective", "prerequisite",
     ]
     return any(kw in q for kw in course_keywords)
+
+
+def _transcript_course_coverage(documents: list[dict[str, Any]]) -> float:
+    """Estimate how much of retrieved doc text looks like a course listing (0–1)."""
+    if not documents:
+        return 0.0
+    total = 0
+    hits = 0
+    for d in documents[:8]:
+        text = d.get("text") or ""
+        if not text.strip():
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if len(line) < 8:
+                continue
+            total += 1
+            if _COURSE_LINE.search(line):
+                hits += 1
+    if total == 0:
+        return 0.0
+    return hits / total
 
 
 def _format_profile(profile: dict[str, Any]) -> str:

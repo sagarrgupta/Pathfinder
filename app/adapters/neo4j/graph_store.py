@@ -14,6 +14,7 @@ from neo4j import AsyncGraphDatabase, AsyncDriver
 import neo4j.time as neo4j_time
 
 from app.config.settings import settings
+from app.graph.ontology import normalize_extracted_entity, profile_key_for_label
 
 log = logging.getLogger("pathfinder.neo4j.graph")
 
@@ -308,26 +309,38 @@ async def store_extracted_entities(
 
     Each item in *entities* must have at least ``label`` and ``properties``.
     An optional ``relationship`` key (default ``HAS``) links to the student.
+    Labels and relationship types are validated against the graph ontology; merge
+    keys use ``code`` for courses when present, otherwise ``name``.
     """
     driver = await get_driver()
     count = 0
     async with driver.session() as session:
         for ent in entities:
-            label = ent.get("label", "Entity")
-            props = ent.get("properties", {})
-            rel = ent.get("relationship", "HAS")
+            normalized = normalize_extracted_entity(ent)
+            if not normalized:
+                continue
+            label = normalized["label"]
+            rel = normalized["relationship"]
+            props = dict(normalized["properties"])
             props["_source_document"] = document_id
+            # Merge identity: prefer course code when available
+            use_code = label == "Course" and str(props.get("code", "")).strip()
+            merge_field = "code" if use_code else "name"
+            merge_value = props.get("code") if use_code else props.get("name")
+            if merge_value is None or (isinstance(merge_value, str) and not merge_value.strip()):
+                log.warning("Skipping entity with no merge key: %s", props)
+                continue
             try:
                 await session.run(
                     f"""
                     MATCH (s:Student {{id: $sid}})
-                    MERGE (n:{label} {{name: $name}})
+                    MERGE (n:{label} {{{merge_field}: $merge_value}})
                     ON CREATE SET n += $props, n.created_at = datetime()
                     ON MATCH SET n += $props
                     MERGE (s)-[:{rel}]->(n)
                     """,
                     sid=student_id,
-                    name=props.get("name", ""),
+                    merge_value=str(merge_value).strip(),
                     props=props,
                 )
                 count += 1
@@ -367,8 +380,8 @@ async def get_full_profile(student_id: str = "default") -> dict[str, Any]:
                 entities_by_label[label] = []
             entities_by_label[label].append(props)
 
-    # Backward-compatible keys mapped from Neo4j labels
-    return {
+    # Backward-compatible keys + dynamic buckets for any ontology label
+    fixed_keys = {
         "personal": student,
         "courses": entities_by_label.get("Course", []),
         "skills": entities_by_label.get("Skill", []),
@@ -377,9 +390,14 @@ async def get_full_profile(student_id: str = "default") -> dict[str, Any]:
         "experience": entities_by_label.get("Company", []),
         "documents": entities_by_label.get("Document", []),
         "projects": entities_by_label.get("Project", []),
-        # Dynamic: all entity types for frontend flexibility
-        "all_entities": entities_by_label,
+        "departments": entities_by_label.get("Department", []),
     }
+    for neo_label, items in entities_by_label.items():
+        key = profile_key_for_label(neo_label)
+        if key not in fixed_keys:
+            fixed_keys[key] = items
+    fixed_keys["all_entities"] = entities_by_label
+    return fixed_keys
 
 
 async def get_graph_data(student_id: str = "default") -> dict[str, Any]:
@@ -413,7 +431,10 @@ async def get_graph_data(student_id: str = "default") -> dict[str, Any]:
 
 
 async def run_cypher(query: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Execute an arbitrary read-only Cypher query and return results."""
+    """Execute an arbitrary Cypher query and return results (read or write).
+
+    Callers are responsible for safe query construction; prefer parameterized queries.
+    """
     driver = await get_driver()
     async with driver.session() as session:
         result = await session.run(query, **(params or {}))

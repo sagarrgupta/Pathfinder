@@ -13,41 +13,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm, strip_repetition, is_garbage_output
 from app.core.state import PathfinderState
+from app.prompts import Prompts
 
 log = logging.getLogger("pathfinder.agents.interview_prep")
-
-_SYSTEM_PROMPT = """You are the Interview Prep agent in Pathfinder, an AI career guidance system for students.
-
-You help students prepare for job interviews based on their background and target roles.
-
-Capabilities:
-- Generate personalized interview questions based on the student's resume and target role
-- Provide STAR method answer frameworks using the student's actual experience
-- Mock interview simulation with follow-up questions
-- Technical question preparation (based on listed skills and skill level)
-- Behavioral question preparation (based on projects and experience)
-- Company-specific interview tips (from web research)
-- Salary negotiation guidance
-
-Rules:
-1. Use SPECIFIC examples from the student's profile (projects, skills, coursework).
-2. Tailor questions to the target role/company if mentioned.
-3. Provide both the question AND a suggested answer framework using STAR method.
-4. For technical questions, match the difficulty to the student's skill level.
-5. Be encouraging but honest about areas that need improvement.
-6. Format using markdown — use numbered lists for questions, bold for key phrases.
-7. Address the student by name if available.
-8. Include a "Preparation Priority" section listing what to focus on most.
-
-Student Profile:
-{profile}
-
-Web Research Results:
-{web_results}
-
-Retrieved Document Context:
-{documents}
-"""
 
 
 async def interview_prep(state: PathfinderState) -> PathfinderState:
@@ -71,7 +39,7 @@ async def interview_prep(state: PathfinderState) -> PathfinderState:
     ) if documents else "No document context available."
 
     response = await llm.ainvoke([
-        SystemMessage(content=_SYSTEM_PROMPT.format(
+        SystemMessage(content=Prompts.INTERVIEW_PREP_SYSTEM.format(
             profile=profile_text,
             web_results=web_text,
             documents=doc_text,

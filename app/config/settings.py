@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     TOP_K: int = 5
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 100
+
+    # ---------- Graph / agents (tunable without code edits) ----------
+    # Minimum course nodes before we treat history as "rich" for recommendations
+    ACADEMIC_COURSE_HISTORY_MIN: int = 4
+    # 0.0–1.0: fraction of transcript text that must look like course listings
+    ACADEMIC_COURSE_COVERAGE_THRESHOLD: float = 0.12
     
     # ---------- Web Search API Keys ----------
     TAVILY_API_KEY: str = ""

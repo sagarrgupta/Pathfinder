@@ -6,7 +6,6 @@ execution plan (ordered list of nodes to invoke).
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -15,45 +14,10 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import get_full_profile
 from app.core.state import PathfinderState
+from app.prompts import Prompts
+from app.utils.json_llm import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.orchestrator")
-
-_SYSTEM_PROMPT = """You are the Orchestrator of Pathfinder, an AI academic and career guidance system for students.
-
-Your job is to analyze the user's query and decide which specialist agents should handle it.
-
-Available agents:
-- clarifier: Ask the user for more information when the query is ambiguous or missing key details
-- doc_analyst: Process uploaded documents (PDFs, images, DOCX) — extract text, create chunks, extract entities
-- profile_manager: Query or update the student's knowledge graph profile (courses, skills, GPA, etc.)
-- web_researcher: Search the web for external information (university pages, job postings, reviews, any URL the user provides)
-- academic_advisor: Provide academic guidance (course planning, university comparison, program requirements)
-- career_planner: Provide career guidance (job matching, skill gap analysis, career paths, salary insights)
-- interview_prep: Help with interview preparation (mock questions, STAR answers, company research)
-
-Analyze the user's query and respond with a JSON object:
-{{
-    "intent": "academic|career|interview|document|profile|general|greeting|research",
-    "plan": ["agent1", "agent2", ...],
-    "missing_info": [],
-    "reasoning": "brief explanation of your routing decision"
-}}
-
-Rules:
-1. If the user uploaded files, ALWAYS include "doc_analyst" first.
-2. If the query references anything personal (grades, skills, GPA, courses, profile, university, name, "my", "I"), include "profile_manager".
-3. If the query asks about specific courses, programs, universities, job listings, URLs, reviews, or anything external, include "web_researcher".
-4. If the query contains a URL (https://...), ALWAYS include "web_researcher" — it will fetch the page directly.
-5. Only route to "clarifier" if the query is genuinely ambiguous AND profile data cannot help resolve it.
-6. For greetings or simple chat (like "hello", "hi", "thanks"), return intent "greeting" with an empty plan.
-7. Profile_manager MUST come before agents that need profile data (academic_advisor, career_planner, interview_prep).
-8. For academic, career, or interview queries, ALWAYS include profile_manager in the plan.
-9. NEVER return just ["clarifier"] if the student has profile data available.
-10. For course recommendations or university comparisons, ALWAYS include "web_researcher".
-11. A query can have MIXED intents (e.g., "based on my resume, find me jobs" is both profile + career). Pick the PRIMARY intent but include ALL relevant agents.
-12. Use intent "research" when the user asks to read, summarize, or analyze external content (URLs, reviews, articles).
-13. Consider the conversation history — if the user is following up on a previous topic, maintain context.
-"""
 
 
 async def orchestrator(state: PathfinderState) -> PathfinderState:
@@ -70,11 +34,13 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     # Pre-check: does the student have profile data in Neo4j?
     try:
         existing_profile = await get_full_profile(student_id)
+        all_ent = existing_profile.get("all_entities") or {}
         has_profile = bool(
             existing_profile.get("courses")
             or existing_profile.get("skills")
             or existing_profile.get("goals")
             or existing_profile.get("personal", {}).get("name")
+            or any(all_ent.values())
         )
         if has_profile:
             profile_summary_parts = []
@@ -134,21 +100,18 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     context = "\n".join(context_parts)
 
     response = await llm.ainvoke([
-        SystemMessage(content=_SYSTEM_PROMPT),
+        SystemMessage(content=Prompts.ORCHESTRATOR_SYSTEM),
         HumanMessage(content=f"Context:\n{context}\n\nUser query: {query}"),
     ])
 
     # Parse the LLM response
     try:
         content = response.content
-        # Try to extract JSON from the response
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        if json_start >= 0 and json_end > json_start:
-            parsed = json.loads(content[json_start:json_end])
-        else:
+        content_str = content if isinstance(content, str) else str(content)
+        parsed = parse_json_object(content_str)
+        if not parsed:
             parsed = {"intent": "general", "plan": ["profile_manager"], "missing_info": []}
-    except (json.JSONDecodeError, AttributeError):
+    except AttributeError:
         log.warning("Failed to parse orchestrator response, using defaults")
         parsed = {"intent": "general", "plan": ["profile_manager"], "missing_info": []}
 

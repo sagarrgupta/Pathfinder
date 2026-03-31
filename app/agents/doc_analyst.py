@@ -9,7 +9,6 @@ Processes uploaded documents through the adaptive pipeline:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -31,29 +30,11 @@ from app.adapters.pdf.extractor import (
 )
 from app.config.settings import settings
 from app.core.state import PathfinderState
+from app.prompts import Prompts
 from app.utils.ids import generate_document_id, generate_chunk_id
+from app.utils.json_llm import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.doc_analyst")
-
-_ENTITY_EXTRACTION_SYSTEM = (
-    "You are a JSON entity extractor. You ALWAYS respond with a single JSON object and NOTHING else. "
-    "No explanations, no markdown, no commentary — ONLY valid JSON."
-)
-
-_ENTITY_EXTRACTION_USER = '''Extract entities from the document below. Return ONLY this JSON structure:
-
-{"entities":[{"label":"LABEL","properties":{"name":"VALUE"},"relationship":"REL"}],"student_properties":{"name":"","gpa":"","university":"","program":""}}
-
-Label must be one of: Skill, Company, Project, Course, Goal, Interest, Department
-Relationship must be one of: HAS_SKILL, WORKED_AT, COMPLETED, TOOK, HAS_GOAL, INTERESTED_IN, IN_DEPARTMENT
-
-Example for a resume:
-{"entities":[{"label":"Skill","properties":{"name":"Python","proficiency":"advanced"},"relationship":"HAS_SKILL"},{"label":"Company","properties":{"name":"Google","role":"Software Engineer","start_date":"2020","end_date":"2023"},"relationship":"WORKED_AT"},{"label":"Project","properties":{"name":"Search Optimizer","description":"Improved search ranking"},"relationship":"COMPLETED"}],"student_properties":{"name":"Jane Doe","university":"Stanford"}}
-
-IMPORTANT: Output ONLY the JSON. No other text before or after it.
-
---- DOCUMENT START ---
-'''
 
 
 async def doc_analyst(state: PathfinderState) -> PathfinderState:
@@ -141,18 +122,16 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         try:
             # Use string concatenation (NOT .format()) to avoid crashes
             # when the resume text contains curly braces like {Python, Java}
-            user_content = _ENTITY_EXTRACTION_USER + full_text[:4000] + "\n--- DOCUMENT END ---"
+            user_content = Prompts.entity_extraction_user(full_text)
             response = await llm.ainvoke([
-                SystemMessage(content=_ENTITY_EXTRACTION_SYSTEM),
+                SystemMessage(content=Prompts.ENTITY_EXTRACTION_SYSTEM),
                 HumanMessage(content=user_content),
             ])
 
             content_text = response.content if isinstance(response.content, str) else str(response.content)
 
-            json_start = content_text.find("{")
-            json_end = content_text.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                parsed = json.loads(content_text[json_start:json_end])
+            parsed = parse_json_object(content_text)
+            if parsed:
                 entities = parsed.get("entities", [])
                 student_props = parsed.get("student_properties", {})
 

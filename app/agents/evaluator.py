@@ -6,7 +6,6 @@ detects hallucinations, and passively learns profile updates from the conversati
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -15,59 +14,11 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import store_extracted_entities, update_student
 from app.core.state import PathfinderState
+from app.graph.ontology import field_to_label, label_to_relationship
+from app.prompts import Prompts
+from app.utils.json_llm import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.evaluator")
-
-_EVALUATION_PROMPT = """You are the Evaluator agent in Pathfinder. Your job is to assess the quality of a draft answer.
-
-Evaluate the draft answer against the available sources and respond with JSON:
-{{
-    "is_grounded": true/false,
-    "confidence_score": 0.0 to 1.0,
-    "issues": ["list of any issues found"],
-    "profile_updates": [
-        {{"field": "FIELD_TYPE", "value": "detected value", "source": "conversation"}}
-    ],
-    "needs_disclaimer": true/false,
-    "disclaimer": "optional disclaimer text if the answer contains uncertain claims"
-}}
-
-Scoring guide:
-- 1.0: Every claim is directly supported by sources
-- 0.8-0.9: Most claims supported, minor inferences
-- 0.6-0.7: Some claims supported, some reasonable inferences
-- 0.4-0.5: Limited source support, significant inferences
-- 0.0-0.3: Mostly unsupported or fabricated
-
-Key checks:
-- Are specific course codes/names real or fabricated?
-- Are university-specific claims backed by web results?
-- Does the answer acknowledge what data it lacks?
-- Is the advice appropriate given the available information?
-
-IMPORTANT — Profile Updates (Passive Learning):
-Scan the user's original query for NEW information about themselves that should be saved.
-For each piece, set "field" to one of: name, gpa, university, program, email, semester,
-interest, goal, skill, company, project, course.
-
-Examples:
-- "I'm interested in machine learning" → {{"field": "interest", "value": "Machine Learning", "source": "conversation"}}
-- "I got an A in CSC 200" → {{"field": "course", "value": "CSC 200", "source": "conversation"}}
-- "I want to work at Google" → {{"field": "goal", "value": "Work at Google", "source": "conversation"}}
-- "My GPA is 3.8" → {{"field": "gpa", "value": "3.8", "source": "conversation"}}
-- "I know Python and React" → [{{"field": "skill", "value": "Python"}}, {{"field": "skill", "value": "React"}}]
-
-Only extract genuinely new information. Don't extract questions or hypotheticals.
-
-Draft answer:
-{draft}
-
-Available sources:
-{sources}
-
-Original user query:
-{query}
-"""
 
 
 async def evaluator(state: PathfinderState) -> PathfinderState:
@@ -101,8 +52,8 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     sources_text = "\n".join(sources) if sources else "No sources available."
 
     response = await llm.ainvoke([
-        SystemMessage(content="You are an answer quality evaluator."),
-        HumanMessage(content=_EVALUATION_PROMPT.format(
+        SystemMessage(content=Prompts.EVALUATION_SYSTEM),
+        HumanMessage(content=Prompts.evaluation_user(
             draft=draft[:2000],
             sources=sources_text,
             query=query,
@@ -112,11 +63,8 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     content = response.content if isinstance(response.content, str) else str(response.content)
 
     # Parse evaluation
-    try:
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        parsed = json.loads(content[json_start:json_end])
-    except (json.JSONDecodeError, ValueError):
+    parsed = parse_json_object(content)
+    if not parsed:
         parsed = {"is_grounded": True, "confidence_score": 0.5, "issues": [], "profile_updates": []}
 
     is_grounded = parsed.get("is_grounded", True)
@@ -158,11 +106,11 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
                     student_props[field.lower()] = value
                 else:
                     # Treat as entity (interest, goal, skill, etc.)
-                    label = _field_to_label(field)
+                    label = field_to_label(field)
                     entities.append({
                         "label": label,
                         "properties": {"name": value},
-                        "relationship": _label_to_relationship(label),
+                        "relationship": label_to_relationship(label),
                     })
 
             if student_props:
@@ -190,29 +138,3 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
         "step_progress": step_progress,
         "next_node": "responder",
     }
-
-
-def _field_to_label(field: str) -> str:
-    """Map a profile update field name to an entity label."""
-    mapping = {
-        "interest": "Interest", "interests": "Interest",
-        "goal": "Goal", "goals": "Goal",
-        "skill": "Skill", "skills": "Skill",
-        "company": "Company", "experience": "Company",
-        "project": "Project", "projects": "Project",
-        "course": "Course", "courses": "Course",
-    }
-    return mapping.get(field.lower(), "Interest")
-
-
-def _label_to_relationship(label: str) -> str:
-    """Map an entity label to a relationship type."""
-    mapping = {
-        "Interest": "INTERESTED_IN",
-        "Goal": "HAS_GOAL",
-        "Skill": "HAS_SKILL",
-        "Company": "WORKED_AT",
-        "Project": "COMPLETED",
-        "Course": "TOOK",
-    }
-    return mapping.get(label, "HAS")

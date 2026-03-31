@@ -10,7 +10,6 @@ and their content is used as the primary data source.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -20,46 +19,10 @@ from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.web_search.fallback_chain import search
 from app.adapters.web_search.url_fetcher import extract_urls, fetch_url_content
 from app.core.state import PathfinderState
+from app.prompts import Prompts
+from app.utils.json_llm import parse_json_array
 
 log = logging.getLogger("pathfinder.agents.web_researcher")
-
-_QUERY_GEN_PROMPT = """You are a search query optimizer. Generate 2-3 specific, targeted web search queries
-to find information that will help answer this student's question.
-
-Use their profile data to craft precise queries — include university name, program, specific skills, etc.
-Each query should target a different angle or source of information.
-
-Student Profile:
-{profile_summary}
-
-Student Question: {query}
-Intent: {intent}
-
-Return ONLY a JSON array of search query strings, nothing else.
-Example: ["CSUS computer science masters course catalog 2026", "AI machine learning graduate courses California State Sacramento"]
-"""
-
-_QUERY_GEN_URL_PROMPT = """You are a search query optimizer. The student has provided specific URL(s) in their question.
-The URL content is already being fetched directly. Generate 1-2 supplementary search queries.
-
-IMPORTANT — Decide whether to incorporate the student's profile based on the question:
-- If the question is about the URL content itself (e.g., "summarize this page", "read reviews on this site"),
-  focus queries ONLY on the URL's topic. Do NOT add the student's university or profile.
-- If the question connects the URL to the student personally (e.g., "is this school good for me",
-  "based on my skills, which programs fit", "compare this with my university"),
-  then USE the student's profile to craft relevant queries.
-
-Student Profile:
-{profile_summary}
-
-URLs already being fetched: {urls}
-Student Question: {query}
-Intent: {intent}
-
-Return ONLY a JSON array of search query strings, nothing else.
-Example (URL-only): ["Boston University graduate school reviews 2026", "Boston University graduate program student experience"]
-Example (profile-relevant): ["Boston University vs CSUS computer science masters", "Boston University CS program career outcomes software engineer"]
-"""
 
 
 async def web_researcher(state: PathfinderState) -> PathfinderState:
@@ -162,7 +125,7 @@ async def _generate_url_aware_queries(
         llm = get_text_llm()
         response = await llm.ainvoke([
             SystemMessage(content="You are a search query optimizer. Generate supplementary search queries."),
-            HumanMessage(content=_QUERY_GEN_URL_PROMPT.format(
+            HumanMessage(content=Prompts.web_query_gen_url(
                 profile_summary=profile_summary,
                 urls=", ".join(urls),
                 query=query,
@@ -173,13 +136,10 @@ async def _generate_url_aware_queries(
         content = response.content if isinstance(response.content, str) else str(response.content)
         content = content.strip()
 
-        json_start = content.find("[")
-        json_end = content.rfind("]") + 1
-        if json_start >= 0 and json_end > json_start:
-            queries = json.loads(content[json_start:json_end])
-            if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
-                log.info("URL-aware search queries: %s", queries[:2])
-                return queries[:2]
+        queries = parse_json_array(content)
+        if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
+            log.info("URL-aware search queries: %s", queries[:2])
+            return queries[:2]
 
     except Exception as exc:
         log.warning("URL-aware query generation failed: %s", exc)
@@ -202,7 +162,7 @@ async def _generate_smart_queries(
         llm = get_text_llm()
         response = await llm.ainvoke([
             SystemMessage(content="You are a search query optimizer. Generate targeted web search queries."),
-            HumanMessage(content=_QUERY_GEN_PROMPT.format(
+            HumanMessage(content=Prompts.web_query_gen(
                 profile_summary=profile_summary,
                 query=query,
                 intent=intent,
@@ -212,14 +172,10 @@ async def _generate_smart_queries(
         content = response.content if isinstance(response.content, str) else str(response.content)
         content = content.strip()
 
-        # Parse JSON array from response
-        json_start = content.find("[")
-        json_end = content.rfind("]") + 1
-        if json_start >= 0 and json_end > json_start:
-            queries = json.loads(content[json_start:json_end])
-            if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
-                log.info("LLM-generated search queries: %s", queries[:3])
-                return queries[:3]
+        queries = parse_json_array(content)
+        if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
+            log.info("LLM-generated search queries: %s", queries[:3])
+            return queries[:3]
 
     except Exception as exc:
         log.warning("Smart query generation failed, using fallback: %s", exc)
@@ -250,6 +206,17 @@ def _build_profile_summary(profile: dict[str, Any]) -> str:
     courses = profile.get("courses", [])
     if courses:
         parts.append(f"Completed {len(courses)} courses")
+
+    all_ent = profile.get("all_entities") or {}
+    for lbl, items in sorted(all_ent.items()):
+        if lbl in ("Student", "Document", "Chunk") or not items:
+            continue
+        if lbl in ("Course", "Skill", "Goal", "Company", "Project", "Interest"):
+            continue
+        names = [e.get("name", e.get("code", "")) for e in items[:4]]
+        names = [n for n in names if n]
+        if names:
+            parts.append(f"{lbl}: {', '.join(names)}")
 
     experience = profile.get("experience", [])
     if experience:
