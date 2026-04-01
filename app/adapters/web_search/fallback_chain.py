@@ -1,7 +1,8 @@
 """Web search fallback chain.
 
 Tries search providers in order: Tavily -> Google CSE -> Brave -> DuckDuckGo.
-Returns results from the first successful provider.
+Aggregates unique results across providers, stopping once enough
+results are collected.
 """
 
 from __future__ import annotations
@@ -25,21 +26,41 @@ _PROVIDERS: list[tuple[str, Callable[..., Coroutine]]] = [
 async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
     """Search the web using the fallback chain.
 
-    Tries each provider in order. Returns results from the first
-    successful one. If all fail, returns an empty list.
+    Tries each provider in order and aggregates unique results until
+    ``max_results`` have been collected. If all providers fail or
+    return nothing, returns an empty list.
     """
     errors: list[str] = []
+    aggregated: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
 
     for name, provider in _PROVIDERS:
         try:
             results = await provider(query, max_results=max_results)
             if results:
-                log.info("Web search successful via %s", name)
-                return results
-            log.info("Web search via %s returned no results, trying next", name)
+                added = 0
+                for result in results:
+                    url = result.get("url", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        aggregated.append(result)
+                        added += 1
+                    if len(aggregated) >= max_results:
+                        break
+                log.info(
+                    "Web search via %s added %d unique result(s), %d total",
+                    name, added, len(aggregated)
+                )
+                if len(aggregated) >= max_results:
+                    break
+            else:
+                log.info("Web search via %s returned no results, trying next", name)
         except Exception as exc:
             errors.append(f"{name}: {exc}")
             log.info("Web search via %s failed: %s — trying next provider", name, exc)
+
+    if aggregated:
+        return aggregated[:max_results]
 
     log.warning("All web search providers failed: %s", errors)
     return []

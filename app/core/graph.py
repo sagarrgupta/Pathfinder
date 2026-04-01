@@ -18,6 +18,10 @@ from app.agents.clarifier import clarifier
 from app.agents.doc_analyst import doc_analyst
 from app.agents.profile_manager import profile_manager
 from app.agents.web_researcher import web_researcher
+from app.agents.fact_extractor import fact_extractor
+from app.agents.course_planner import course_planner
+from app.agents.program_advisor import program_advisor
+from app.agents.career_matcher import career_matcher
 from app.agents.academic_advisor import academic_advisor
 from app.agents.career_planner import career_planner
 from app.agents.interview_prep import interview_prep
@@ -45,6 +49,7 @@ def route_after_orchestrator(state: PathfinderState) -> str:
     # Map valid node names
     valid_nodes = {
         "clarifier", "doc_analyst", "profile_manager", "web_researcher",
+        "fact_extractor", "course_planner", "program_advisor", "career_matcher",
         "academic_advisor", "career_planner", "interview_prep",
         "evaluator", "responder",
     }
@@ -58,6 +63,7 @@ def route_after_agent(state: PathfinderState) -> str:
     next_node = state.get("next_node", "evaluator")
     valid_nodes = {
         "profile_manager", "web_researcher", "academic_advisor",
+        "fact_extractor", "course_planner", "program_advisor", "career_matcher",
         "career_planner", "interview_prep", "evaluator", "responder",
     }
     if next_node in valid_nodes:
@@ -79,6 +85,10 @@ def build_graph() -> StateGraph:
     graph.add_node("doc_analyst", doc_analyst)
     graph.add_node("profile_manager", profile_manager)
     graph.add_node("web_researcher", web_researcher)
+    graph.add_node("fact_extractor", fact_extractor)
+    graph.add_node("course_planner", course_planner)
+    graph.add_node("program_advisor", program_advisor)
+    graph.add_node("career_matcher", career_matcher)
     graph.add_node("academic_advisor", academic_advisor)
     graph.add_node("career_planner", career_planner)
     graph.add_node("interview_prep", interview_prep)
@@ -104,6 +114,10 @@ def build_graph() -> StateGraph:
             "doc_analyst": "doc_analyst",
             "profile_manager": "profile_manager",
             "web_researcher": "web_researcher",
+            "fact_extractor": "fact_extractor",
+            "course_planner": "course_planner",
+            "program_advisor": "program_advisor",
+            "career_matcher": "career_matcher",
             "academic_advisor": "academic_advisor",
             "career_planner": "career_planner",
             "interview_prep": "interview_prep",
@@ -119,6 +133,10 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges("doc_analyst", route_after_agent, {
         "profile_manager": "profile_manager",
         "web_researcher": "web_researcher",
+        "fact_extractor": "fact_extractor",
+        "course_planner": "course_planner",
+        "program_advisor": "program_advisor",
+        "career_matcher": "career_matcher",
         "academic_advisor": "academic_advisor",
         "career_planner": "career_planner",
         "interview_prep": "interview_prep",
@@ -129,6 +147,10 @@ def build_graph() -> StateGraph:
     # Profile Manager → next in plan
     graph.add_conditional_edges("profile_manager", route_after_agent, {
         "web_researcher": "web_researcher",
+        "fact_extractor": "fact_extractor",
+        "course_planner": "course_planner",
+        "program_advisor": "program_advisor",
+        "career_matcher": "career_matcher",
         "academic_advisor": "academic_advisor",
         "career_planner": "career_planner",
         "interview_prep": "interview_prep",
@@ -138,6 +160,22 @@ def build_graph() -> StateGraph:
 
     # Web Researcher → next in plan
     graph.add_conditional_edges("web_researcher", route_after_agent, {
+        "fact_extractor": "fact_extractor",
+        "course_planner": "course_planner",
+        "program_advisor": "program_advisor",
+        "career_matcher": "career_matcher",
+        "academic_advisor": "academic_advisor",
+        "career_planner": "career_planner",
+        "interview_prep": "interview_prep",
+        "evaluator": "evaluator",
+        "responder": "responder",
+    })
+
+    # Fact Extractor → next in plan
+    graph.add_conditional_edges("fact_extractor", route_after_agent, {
+        "course_planner": "course_planner",
+        "program_advisor": "program_advisor",
+        "career_matcher": "career_matcher",
         "academic_advisor": "academic_advisor",
         "career_planner": "career_planner",
         "interview_prep": "interview_prep",
@@ -146,6 +184,9 @@ def build_graph() -> StateGraph:
     })
 
     # Advisory/Career/Interview nodes → Evaluator
+    graph.add_edge("course_planner", "evaluator")
+    graph.add_edge("program_advisor", "evaluator")
+    graph.add_edge("career_matcher", "evaluator")
     graph.add_edge("academic_advisor", "evaluator")
     graph.add_edge("career_planner", "evaluator")
     graph.add_edge("interview_prep", "evaluator")
@@ -156,7 +197,7 @@ def build_graph() -> StateGraph:
     # Responder → END
     graph.add_edge("responder", END)
 
-    log.info("Pathfinder StateGraph built with 11 nodes")
+    log.info("Pathfinder StateGraph built with extended quality nodes")
     return graph
 
 

@@ -6,6 +6,7 @@ via Neo4j's built-in vector index.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -18,6 +19,11 @@ from app.config.settings import settings
 log = logging.getLogger("pathfinder.neo4j.vector")
 
 VECTOR_INDEX_NAME = "chunk_embeddings"
+_EMBEDDING_TIMEOUT_SECONDS = 6.0
+
+
+class EmbeddingServiceError(RuntimeError):
+    """Raised when the embedding service is unavailable or times out."""
 
 
 # ── Index Management ────────────────────────────────────────────
@@ -116,7 +122,25 @@ async def similarity_search(
         Student to scope results to.
     """
     embeddings = get_embeddings()
-    query_embedding = embeddings.embed_query(query)
+    try:
+        query_embedding = await asyncio.wait_for(
+            asyncio.to_thread(embeddings.embed_query, query),
+            timeout=_EMBEDDING_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        message = (
+            f"Embedding service timed out after {_EMBEDDING_TIMEOUT_SECONDS:.1f}s "
+            "while searching your documents. Check that Ollama is running."
+        )
+        log.error(message)
+        raise EmbeddingServiceError(message) from exc
+    except Exception as exc:
+        message = (
+            "Embedding service is unavailable while searching your documents. "
+            "Check that Ollama is running and the embedding model is installed."
+        )
+        log.error("%s Original error: %s", message, exc)
+        raise EmbeddingServiceError(message) from exc
 
     driver = await get_driver()
     async with driver.session() as session:
@@ -130,27 +154,32 @@ async def similarity_search(
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
-        result = await session.run(
-            f"""
-            CALL db.index.vector.queryNodes($index_name, $k, $embedding)
-            YIELD node AS chunk, score
-            MATCH (chunk)-[:FROM_DOCUMENT]->(d:Document)<-[:UPLOADED]-(s:Student {{id: $student_id}})
-            {where_sql}
-            RETURN chunk.id AS id,
-                   chunk.text AS text,
-                   chunk.page_number AS page_number,
-                   d.filename AS filename,
-                   d.id AS document_id,
-                   d.scope AS scope,
-                   score
-            ORDER BY score DESC
-            LIMIT $k
-            """,
-            index_name=VECTOR_INDEX_NAME,
-            k=k,
-            embedding=query_embedding,
-            student_id=student_id,
-        )
+        try:
+            result = await session.run(
+                f"""
+                CALL db.index.vector.queryNodes($index_name, $k, $embedding)
+                YIELD node AS chunk, score
+                MATCH (chunk)-[:FROM_DOCUMENT]->(d:Document)<-[:UPLOADED]-(s:Student {{id: $student_id}})
+                {where_sql}
+                RETURN chunk.id AS id,
+                       chunk.text AS text,
+                       chunk.page_number AS page_number,
+                       d.filename AS filename,
+                       d.id AS document_id,
+                       d.scope AS scope,
+                       score
+                ORDER BY score DESC
+                LIMIT $k
+                """,
+                index_name=VECTOR_INDEX_NAME,
+                k=k,
+                embedding=query_embedding,
+                student_id=student_id,
+            )
+        except Exception as exc:
+            message = f"Vector similarity search failed in Neo4j: {exc}"
+            log.error(message)
+            raise RuntimeError(message) from exc
 
         results = []
         async for record in result:
@@ -210,6 +239,32 @@ async def hybrid_search(
             )
             record = await result.single()
             vr["related_entities"] = record["entities"] if record else []
+            vr["relevance_tags"] = _relevance_tags(query, vr["text"], vr["related_entities"])
             enriched.append(vr)
 
     return enriched
+
+
+def _relevance_tags(query: str, text: str, related_entities: list[dict[str, Any]]) -> list[str]:
+    """Lightweight entity-aware relevance tags for downstream planners."""
+    tags = []
+    lowered_query = query.lower()
+    lowered_text = (text or "").lower()
+
+    if any(word in lowered_query for word in ("course", "semester", "class", "enroll")):
+        tags.append("academic_planning")
+    if any(word in lowered_query for word in ("job", "career", "role", "internship")):
+        tags.append("career")
+    if any(word in lowered_query for word in ("interview", "behavioral", "technical")):
+        tags.append("interview")
+    if "gpa" in lowered_query or "requirement" in lowered_query:
+        tags.append("requirements")
+
+    if any(entity.get("label") == "Course" for entity in related_entities):
+        tags.append("course_entity")
+    if any(entity.get("label") == "Skill" for entity in related_entities):
+        tags.append("skill_entity")
+    if any(code in lowered_text for code in ("csc ", "cs ", "math ")):
+        tags.append("course_text")
+
+    return tags

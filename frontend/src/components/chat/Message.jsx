@@ -39,14 +39,35 @@ export default function Message({ message, isLast, isStreaming }) {
   const isCurrentlyStreaming = isLast && isStreaming && !isUser;
   const hasContent = !!message.content;
 
+  const buildCopyText = () => {
+    const parts = [];
+
+    if (message.content) {
+      parts.push(message.content.trim());
+    }
+
+    if (citations.length > 0) {
+      const sourcesText = citations
+        .map((c, i) => {
+          const title = c.metadata?.title || `Source ${i + 1}`;
+          return `${i + 1}. ${title}\n${c.source}`;
+        })
+        .join('\n\n');
+      parts.push(`Sources:\n${sourcesText}`);
+    }
+
+    return parts.filter(Boolean).join('\n\n').trim();
+  };
+
   const handleCopy = async () => {
+    const copyText = buildCopyText();
     try {
-      await navigator.clipboard.writeText(message.content || '');
+      await navigator.clipboard.writeText(copyText);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
       const textarea = document.createElement('textarea');
-      textarea.value = message.content || '';
+      textarea.value = copyText;
       document.body.appendChild(textarea);
       textarea.select();
       document.execCommand('copy');

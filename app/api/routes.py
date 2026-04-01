@@ -28,6 +28,7 @@ from app.adapters.neo4j.graph_store import (
 from app.agents.profile_manager import process_free_text
 from app.config.settings import settings
 from app.core.graph import get_compiled_graph
+from app.core.quality import infer_quality_path
 from app.core.state import PathfinderState
 from app.schemas.models import (
     ChatResponse,
@@ -113,6 +114,9 @@ async def chat(
                 "next_node": "",
                 "intent": "",
                 "missing_info": [],
+                "session_summary": {},
+                "target_entity": {},
+                "source_policy": {},
                 "draft_answer": "",
                 "final_answer": "",
                 "is_blocked": False,
@@ -125,6 +129,8 @@ async def chat(
                 "web_results": [],
                 "graph_results": [],
                 "profile_data": {},
+                "evidence_records": [],
+                "decision_payload": {},
             }
 
             config = {
@@ -159,7 +165,7 @@ async def chat(
                 yield f"event: token\ndata: {json.dumps({'content': word + ' '})}\n\n"
 
             # Done event
-            yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'confidence': confidence, 'citations': citations, 'method': _determine_method(final_state)})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'confidence': confidence, 'citations': citations, 'method': _determine_method(final_state), 'quality_path': infer_quality_path(final_state)})}\n\n"
 
         except Exception as exc:
             log.error("Chat error: %s", exc, exc_info=True)
