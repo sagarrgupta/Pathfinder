@@ -19,6 +19,7 @@ from app.core.state import PathfinderState
 log = logging.getLogger("pathfinder.agents.evaluator")
 
 _EVALUATION_PROMPT = """You are the Evaluator agent in Pathfinder. Your job is to assess the quality of a draft answer.
+Be strict about grounding. If a claim is not supported by the provided sources or the user's own query, treat it as unsupported.
 
 Evaluate the draft answer against the available sources and respond with JSON:
 {{
@@ -44,6 +45,8 @@ Key checks:
 - Are university-specific claims backed by web results?
 - Does the answer acknowledge what data it lacks?
 - Is the advice appropriate given the available information?
+- Are any specific jobs, companies, salaries, deadlines, policies, or requirements asserted without source support?
+- Does the answer blur the line between evidence and inference?
 
 IMPORTANT — Profile Updates (Passive Learning):
 Scan the user's original query for NEW information about themselves that should be saved.
@@ -57,7 +60,13 @@ Examples:
 - "My GPA is 3.8" → {{"field": "gpa", "value": "3.8", "source": "conversation"}}
 - "I know Python and React" → [{{"field": "skill", "value": "Python"}}, {{"field": "skill", "value": "React"}}]
 
-Only extract genuinely new information. Don't extract questions or hypotheticals.
+Only extract genuinely new information. Don't extract questions, hypotheticals, or details stated by the assistant.
+
+Evaluation policy:
+- Prefer lower confidence when support is partial.
+- Mark "is_grounded" false if the answer contains invented specifics.
+- If the answer is mostly sound but includes a few speculative details, list them in "issues".
+- Keep "disclaimer" short and factual.
 
 Draft answer:
 {draft}
@@ -143,7 +152,7 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
 
     # ── Passively learn: persist profile updates detected from conversation ──
     student_id = state.get("student_id", "default")
-    if profile_updates:
+    if profile_updates and not state.get("compare_mode", False):
         try:
             # Separate student-level properties from entity updates
             student_props = {}

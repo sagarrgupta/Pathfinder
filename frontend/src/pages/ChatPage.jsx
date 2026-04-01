@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useApp } from '@/context/AppContext';
-import { chatSSE, checkDocumentExists } from '@/services/api';
+import { chatSSE, checkDocumentExists, updateSettings } from '@/services/api';
 import MessageList from '@/components/chat/MessageList';
 import InputArea from '@/components/chat/InputArea';
 import {
@@ -13,6 +13,12 @@ const DEFAULT_SUGGESTIONS = [
   { icon: Briefcase, text: 'Find job openings based on my resume', color: 'text-emerald-500 dark:text-emerald-400' },
   { icon: MessageSquare, text: 'Prepare me for a technical interview', color: 'text-purple-500 dark:text-purple-400' },
   { icon: Globe, text: 'Summarize reviews from a university page', color: 'text-orange-500 dark:text-orange-400' },
+];
+
+const COMPARE_MODE_ORDER = [
+  { mode: 'embedding', label: 'Embedding Only' },
+  { mode: 'hybrid', label: 'Hybrid (Graph + Embedding)' },
+  { mode: 'pageindex', label: 'PageIndex + Graph + Web' },
 ];
 
 /**
@@ -47,6 +53,7 @@ export default function ChatPage() {
   const { state, dispatch, createSession } = useApp();
   const [files, setFiles] = useState([]);
   const [isGlobalUpload, setIsGlobalUpload] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
   const [replaceFlags, setReplaceFlags] = useState({});  // filename -> true if user chose to replace
   const abortRef = useRef(null);
 
@@ -138,18 +145,50 @@ export default function ChatPage() {
       type: 'ADD_MESSAGE',
       payload: {
         sessionId: sid,
-        message: { role: 'assistant', content: '', metadata: {}, progress: [] },
+        message: {
+          role: 'assistant',
+          content: '',
+          metadata: compareMode
+            ? { compareMode: true, comparisonAnswers: [], comparisonOrder: COMPARE_MODE_ORDER, currentCompareMode: 'embedding' }
+            : {},
+          progress: [],
+        },
       },
     });
 
     dispatch({ type: 'SET_STREAMING', payload: true });
 
     let tokenBuffer = '';
+    let compareAnswersBuffer = [];
 
     abortRef.current = chatSSE(
-      { query, sessionId: sid, files: pendingFiles, isGlobalUpload, replaceFilenames: pendingReplaceNames },
+      {
+        query,
+        sessionId: sid,
+        files: pendingFiles,
+        isGlobalUpload,
+        replaceFilenames: pendingReplaceNames,
+        retrievalMode: state.settings.retrieval_mode,
+        compareMode,
+      },
       {
         onProgress: (data) => {
+          if (compareMode && data.mode) {
+            dispatch({
+              type: 'UPDATE_LAST_MESSAGE',
+              payload: {
+                sessionId: sid,
+                update: {
+                  metadata: {
+                    compareMode: true,
+                    comparisonOrder: COMPARE_MODE_ORDER,
+                    currentCompareMode: data.mode,
+                    comparisonAnswers: compareAnswersBuffer,
+                  },
+                },
+              },
+            });
+          }
           dispatch({
             type: 'APPEND_MESSAGE_PROGRESS',
             payload: { sessionId: sid, progress: data },
@@ -162,7 +201,30 @@ export default function ChatPage() {
             payload: { sessionId: sid, update: { content: tokenBuffer } },
           });
         },
+        onCompareResult: (data) => {
+          compareAnswersBuffer = [
+            ...compareAnswersBuffer.filter((item) => item.mode !== data.mode),
+            data.answer,
+          ];
+          dispatch({
+            type: 'UPDATE_LAST_MESSAGE',
+            payload: {
+              sessionId: sid,
+              update: {
+                metadata: {
+                  compareMode: true,
+                  comparisonOrder: COMPARE_MODE_ORDER,
+                  currentCompareMode: data.mode,
+                  comparisonAnswers: compareAnswersBuffer,
+                },
+              },
+            },
+          });
+        },
         onDone: (data) => {
+          if (data.compare_mode) {
+            compareAnswersBuffer = data.comparison_answers || compareAnswersBuffer;
+          }
           dispatch({
             type: 'UPDATE_LAST_MESSAGE',
             payload: {
@@ -172,7 +234,14 @@ export default function ChatPage() {
                   confidence: data.confidence,
                   citations: data.citations,
                   method: data.method,
+                  retrievalMode: data.retrieval_mode,
+                  retrievalStats: data.retrieval_stats,
+                  compareMode: !!data.compare_mode,
+                  comparisonAnswers: data.comparison_answers || [],
+                  comparisonOrder: COMPARE_MODE_ORDER,
+                  currentCompareMode: data.current_compare_mode ?? null,
                 },
+                content: data.compare_mode ? '' : tokenBuffer,
               },
             },
           });
@@ -199,6 +268,16 @@ export default function ChatPage() {
         },
       }
     );
+  };
+
+  const handleTextModelChange = async (model) => {
+    const previous = state.settings.text_model;
+    dispatch({ type: 'SET_SETTINGS', payload: { text_model: model } });
+    try {
+      await updateSettings({ text_model: model });
+    } catch {
+      dispatch({ type: 'SET_SETTINGS', payload: { text_model: previous } });
+    }
   };
 
   const handleStop = () => {
@@ -365,15 +444,20 @@ export default function ChatPage() {
       </div>
 
       {/* Input Area */}
-      <InputArea
-        onSend={handleSend}
-        onStop={handleStop}
-        isStreaming={state.isStreaming}
-        files={files}
-        onFilesChange={handleFilesChange}
-        isGlobalUpload={isGlobalUpload}
-        onGlobalUploadChange={setIsGlobalUpload}
-      />
+        <InputArea
+          onSend={handleSend}
+          onStop={handleStop}
+          isStreaming={state.isStreaming}
+          files={files}
+          onFilesChange={handleFilesChange}
+          isGlobalUpload={isGlobalUpload}
+          onGlobalUploadChange={setIsGlobalUpload}
+          compareMode={compareMode}
+          onCompareModeChange={setCompareMode}
+          textModel={state.settings.text_model || 'openai/gpt-oss-20b'}
+          textModelOptions={state.settings.text_model_options || ['openai/gpt-oss-20b', 'Qwen3-14B-MLX-8bit']}
+          onTextModelChange={handleTextModelChange}
+        />
     </div>
   );
 }

@@ -1,18 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
-import { getSettings, updateSettings, getHealth, resetAllData } from '@/services/api';
+import { getSettings, updateSettings, getHealth, resetAllData, compareRetrieval } from '@/services/api';
 import {
   Settings, Shield, Monitor, Server, Loader2,
   CheckCircle2, XCircle, Trash2, AlertTriangle, X,
-  Sun, Moon, SunMoon, Zap,
+  Sun, Moon, SunMoon, Zap, Search,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const MODEL_KEY_LABELS = {
   text_llm: 'Text LLM',
   vision_llm: 'Vision LLM',
-  embedding: 'Embedding',
+  embeddings: 'Embedding',
 };
 
 function formatModelKey(key) {
@@ -25,12 +25,21 @@ const THEME_OPTIONS = [
   { value: 'system', label: 'System', icon: SunMoon },
 ];
 
+const RETRIEVAL_MODES = [
+  { value: 'embedding', label: 'Embedding Only', description: 'Pure semantic vector retrieval over document chunks.' },
+  { value: 'hybrid', label: 'Hybrid (Graph + Embedding)', description: 'Neo4j vector retrieval enriched with graph context.' },
+  { value: 'pageindex', label: 'PageIndex + Graph', description: 'PageIndex page selection with Neo4j profile context and normal web research routing.' },
+];
+
 export default function SettingsPage() {
   const { state, dispatch } = useApp();
   const toast = useToast();
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showResetModal, setShowResetModal] = useState(false);
+  const [compareQuery, setCompareQuery] = useState('');
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [comparison, setComparison] = useState(null);
 
   useEffect(() => {
     loadData();
@@ -59,6 +68,35 @@ export default function SettingsPage() {
     } catch {
       dispatch({ type: 'SET_SETTINGS', payload: { topic_guard_enabled: !newValue } });
       toast.error('Failed to update setting');
+    }
+  };
+
+  const handleRetrievalModeChange = async (event) => {
+    const newValue = event.target.value;
+    const previous = state.settings.retrieval_mode;
+    dispatch({ type: 'SET_SETTINGS', payload: { retrieval_mode: newValue } });
+    try {
+      await updateSettings({ retrieval_mode: newValue });
+      toast.success('Retrieval mode updated');
+    } catch {
+      dispatch({ type: 'SET_SETTINGS', payload: { retrieval_mode: previous } });
+      toast.error('Failed to update retrieval mode');
+    }
+  };
+
+  const handleCompare = async () => {
+    if (!compareQuery.trim()) {
+      toast.error('Enter a query to benchmark retrieval');
+      return;
+    }
+    setCompareLoading(true);
+    try {
+      const data = await compareRetrieval(compareQuery, state.activeSessionId);
+      setComparison(data);
+    } catch (error) {
+      toast.error(error.message || 'Failed to compare retrieval modes');
+    } finally {
+      setCompareLoading(false);
     }
   };
 
@@ -142,6 +180,90 @@ export default function SettingsPage() {
                 state.settings.topic_guard_enabled ? 'translate-x-5' : 'translate-x-0'
               )} />
             </button>
+          </div>
+        </div>
+
+        <div className="rounded-xl border bg-card p-5 space-y-4">
+          <h2 className="font-semibold flex items-center gap-2">
+            <Search className="h-4 w-4 text-primary" /> Retrieval
+          </h2>
+          <div className="space-y-2">
+            <div>
+              <p className="text-sm font-medium">Active Retrieval Mode</p>
+              <p className="text-xs text-muted-foreground">
+                Choose which retrieval pipeline powers document lookup during chat.
+              </p>
+            </div>
+            <select
+              value={state.settings.retrieval_mode || 'hybrid'}
+              onChange={handleRetrievalModeChange}
+              className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
+            >
+              {RETRIEVAL_MODES.map((mode) => (
+                <option key={mode.value} value={mode.value}>
+                  {mode.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              {(RETRIEVAL_MODES.find((mode) => mode.value === (state.settings.retrieval_mode || 'hybrid')) || RETRIEVAL_MODES[1]).description}
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-border/50 space-y-3">
+            <div>
+              <p className="text-sm font-medium">Benchmark Retrieval Modes</p>
+              <p className="text-xs text-muted-foreground">
+                Run the same query through all three pipelines and compare latency and hit counts.
+              </p>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                value={compareQuery}
+                onChange={(event) => setCompareQuery(event.target.value)}
+                placeholder="Enter a test query"
+                className="flex-1 rounded-lg border bg-background px-3 py-2 text-sm"
+              />
+              <button
+                onClick={handleCompare}
+                disabled={compareLoading}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-60"
+              >
+                {compareLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                Compare
+              </button>
+            </div>
+
+            {comparison?.comparisons?.length > 0 && (
+              <div className="overflow-x-auto rounded-lg border">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/50">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Mode</th>
+                      <th className="px-3 py-2 text-left font-medium">Status</th>
+                      <th className="px-3 py-2 text-left font-medium">Latency</th>
+                      <th className="px-3 py-2 text-left font-medium">Hits</th>
+                      <th className="px-3 py-2 text-left font-medium">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {comparison.comparisons.map((item) => (
+                      <tr key={item.mode} className="border-t">
+                        <td className="px-3 py-2 font-medium">{(RETRIEVAL_MODES.find((mode) => mode.value === item.mode) || { label: item.mode }).label}</td>
+                        <td className="px-3 py-2">{item.ok ? 'OK' : 'Error'}</td>
+                        <td className="px-3 py-2">{Math.round(item.stats?.elapsed_ms || 0)}ms</td>
+                        <td className="px-3 py-2">{item.stats?.result_count || 0}</td>
+                        <td className="px-3 py-2 text-muted-foreground">
+                          {item.ok
+                            ? `${item.stats?.document_count || 0} docs`
+                            : item.error}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
 

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # ---------- LM Studio (Text + Vision LLM) ----------
     LLM_BASE_URL: str = "http://localhost:1234/v1"
     LLM_MODEL: str = "openai/gpt-oss-20b"
+    LLM_AVAILABLE_MODELS: list[str] = ["openai/gpt-oss-20b", "Qwen3-14B-MLX-8bit"]
     LLM_API_KEY: str = "sk-no-key"
     VISION_MODEL: str = "qwen/qwen3-vl-8b"
     LLM_TEMPERATURE: float = 0.2
@@ -33,6 +34,11 @@ class Settings(BaseSettings):
     TOP_K: int = 5
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 100
+    DEFAULT_RETRIEVAL_MODE: str = "hybrid"
+    DOCUMENT_STORAGE_DIR: str = "data/documents"
+    PAGEINDEX_WORKSPACE_DIR: str = "data/pageindex"
+    PAGEINDEX_MODEL: str = ""
+    PAGEINDEX_RETRIEVE_MODEL: str = ""
     
     # ---------- Web Search API Keys ----------
     TAVILY_API_KEY: str = ""

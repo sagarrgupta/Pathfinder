@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 
 // Map technical node names to user-friendly phase labels
 const STEP_LABELS = {
+  comparison: 'Comparison',
   input_guard: 'Validation',
   orchestrator: 'Planning',
   clarifier: 'Clarifying',
@@ -24,18 +25,28 @@ const STEP_LABELS = {
 
 function formatStep(step) {
   const label = STEP_LABELS[step.node] || step.node;
-  return { label, message: step.message || '' };
+  const modePrefix = step.mode_label ? `${step.mode_label}: ` : '';
+  return { label, message: `${modePrefix}${step.message || ''}` };
 }
 
 export default function Message({ message, isLast, isStreaming }) {
   const [showCitations, setShowCitations] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [expandedComparisonCards, setExpandedComparisonCards] = useState({});
+  const [focusedComparisonMode, setFocusedComparisonMode] = useState(null);
+  const [comparisonWidths, setComparisonWidths] = useState({});
+  const [comparisonHeights, setComparisonHeights] = useState({});
   const isUser = message.role === 'user';
   const metadata = message.metadata || {};
   const citations = metadata.citations || [];
   const progress = message.progress || [];
   const attachments = message.attachments || [];
+  const retrievalStats = metadata.retrievalStats || {};
+  const comparisonAnswers = metadata.comparisonAnswers || [];
+  const comparisonOrder = metadata.comparisonOrder || [];
+  const currentCompareMode = metadata.currentCompareMode || null;
+  const isComparison = !isUser && metadata.compareMode;
   const isCurrentlyStreaming = isLast && isStreaming && !isUser;
   const hasContent = !!message.content;
 
@@ -54,6 +65,39 @@ export default function Message({ message, isLast, isStreaming }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+  };
+
+  const comparisonCards = (comparisonOrder.length > 0 ? comparisonOrder : comparisonAnswers).map((slot) => {
+    const mode = slot.mode || slot;
+    const answer = comparisonAnswers.find((item) => item.mode === mode) || null;
+    return {
+      mode,
+      label: slot.label || answer?.label || mode,
+      answer,
+      status: answer ? 'done' : currentCompareMode === mode ? 'running' : 'waiting',
+    };
+  });
+
+  const toggleComparisonCard = (mode) => {
+    setExpandedComparisonCards((prev) => ({ ...prev, [mode]: !prev[mode] }));
+  };
+
+  const toggleFocusedComparisonMode = (mode) => {
+    setFocusedComparisonMode((current) => (current === mode ? null : mode));
+  };
+
+  const resizeComparisonCardWidth = (mode, delta) => {
+    setComparisonWidths((prev) => {
+      const next = (prev[mode] ?? 0) + delta;
+      return { ...prev, [mode]: Math.max(-2, Math.min(3, next)) };
+    });
+  };
+
+  const resizeComparisonCardHeight = (mode, delta) => {
+    setComparisonHeights((prev) => {
+      const next = (prev[mode] ?? 0) + delta;
+      return { ...prev, [mode]: Math.max(-1, Math.min(4, next)) };
+    });
   };
 
   return (
@@ -141,7 +185,182 @@ export default function Message({ message, isLast, isStreaming }) {
         )}
 
         {/* ── Message Text ── */}
-        {(hasContent || (!isCurrentlyStreaming)) && (
+        {isComparison ? (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
+              <Sparkles className="h-3.5 w-3.5 text-primary" />
+              Retrieval comparison for this query
+              {currentCompareMode && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-primary">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Running {comparisonCards.find((card) => card.mode === currentCompareMode)?.label || currentCompareMode}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:overflow-x-auto lg:pb-2">
+              {comparisonCards.map((card, idx) => (
+                <div
+                  key={idx}
+                  className={cn(
+                    'rounded-xl border bg-background/70 p-3 space-y-3 min-h-[26rem] flex flex-col transition-all',
+                    focusedComparisonMode === card.mode && 'min-h-[34rem]',
+                    focusedComparisonMode && focusedComparisonMode !== card.mode && 'opacity-90'
+                  )}
+                  style={{
+                    width: focusedComparisonMode === card.mode
+                      ? 'min(100%, 42rem)'
+                      : '100%',
+                    minWidth: focusedComparisonMode === card.mode
+                      ? 'min(100%, 42rem)'
+                      : `min(100%, ${22 + ((comparisonWidths[card.mode] ?? 0) * 5)}rem)`,
+                    flexBasis: focusedComparisonMode === card.mode
+                      ? '42rem'
+                      : `${22 + ((comparisonWidths[card.mode] ?? 0) * 5)}rem`,
+                    flexGrow: focusedComparisonMode === card.mode ? 1.35 : 1,
+                    flexShrink: 0,
+                  }}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                        {card.label}
+                      </span>
+                      {card.answer ? (
+                        <span className={cn(
+                          'inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium',
+                          card.answer.confidence >= 0.8
+                            ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                            : card.answer.confidence >= 0.5
+                              ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300'
+                              : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                        )}>
+                          <Shield className="h-3 w-3 flex-shrink-0" />
+                          {Math.round((card.answer.confidence || 0) * 100)}%
+                        </span>
+                      ) : (
+                        <span className={cn(
+                          'inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium',
+                          card.status === 'running'
+                            ? 'bg-primary/10 text-primary'
+                            : 'bg-muted text-muted-foreground'
+                        )}>
+                          {card.status === 'running' ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                          {card.status === 'running' ? 'Running' : 'Waiting'}
+                        </span>
+                      )}
+                      {card.answer?.retrieval_stats?.elapsed_ms !== undefined && (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+                          {card.answer.retrieval_stats?.result_count ?? 0} hits • {Math.round(card.answer.retrieval_stats.elapsed_ms)}ms
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <div className="flex items-center gap-1 rounded-md border border-border/60 bg-background/70 p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => resizeComparisonCardWidth(card.mode, -1)}
+                          className="text-[11px] rounded px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                        >
+                          Narrower
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => resizeComparisonCardWidth(card.mode, 1)}
+                          className="text-[11px] rounded px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                        >
+                          Wider
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-1 rounded-md border border-border/60 bg-background/70 p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => resizeComparisonCardHeight(card.mode, -1)}
+                          className="text-[11px] rounded px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                        >
+                          Shorter
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => resizeComparisonCardHeight(card.mode, 1)}
+                          className="text-[11px] rounded px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                        >
+                          Taller
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => toggleFocusedComparisonMode(card.mode)}
+                        className={cn(
+                          'text-[11px] rounded-md border px-2 py-1 transition-colors',
+                          focusedComparisonMode === card.mode
+                            ? 'border-primary/40 bg-primary/10 text-primary'
+                            : 'border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground'
+                        )}
+                      >
+                        {focusedComparisonMode === card.mode ? 'Unfocus' : 'Focus'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleComparisonCard(card.mode)}
+                        className="text-[11px] rounded-md border border-border/60 px-2 py-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                      >
+                        {expandedComparisonCards[card.mode] ? 'Collapse' : 'Expand'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className={cn(
+                    'rounded-lg border border-border/40 bg-background/60 p-3 overflow-y-auto',
+                  )}
+                  style={{
+                    maxHeight: `${
+                      (focusedComparisonMode === card.mode ? 48 : expandedComparisonCards[card.mode] ? 38 : 18)
+                      + ((comparisonHeights[card.mode] ?? 0) * 8)
+                    }rem`,
+                  }}>
+                    <div className="prose prose-sm dark:prose-invert max-w-none
+                    prose-headings:mt-3 prose-headings:mb-2 prose-headings:font-semibold
+                    prose-h1:text-lg prose-h2:text-base prose-h3:text-sm
+                    prose-p:my-1.5 prose-p:leading-relaxed
+                    prose-ul:my-1.5 prose-ol:my-1.5
+                    prose-li:my-0.5
+                    prose-table:my-2 prose-table:text-sm
+                    prose-th:px-3 prose-th:py-1.5 prose-th:bg-muted/50 prose-th:font-medium prose-th:text-left
+                    prose-td:px-3 prose-td:py-1.5 prose-td:border-t
+                    prose-strong:font-semibold
+                    prose-code:text-xs prose-code:bg-muted/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:font-mono
+                    prose-a:text-primary prose-a:no-underline hover:prose-a:underline
+                    prose-blockquote:border-primary/30 prose-blockquote:text-muted-foreground
+                    [&>*:first-child]:mt-0 [&>*:last-child]:mb-0
+                    ">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {card.answer?.answer || (card.status === 'running' ? 'Generating answer...' : 'Waiting for this retrieval flow to start...')}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+
+                  {card.answer?.citations?.length > 0 && (
+                    <div className="pt-2 border-t border-border/40 space-y-1 mt-auto">
+                      <p className="text-[11px] font-medium text-muted-foreground">Sources</p>
+                      {card.answer.citations.slice(0, 4).map((c, citationIdx) => (
+                        <a
+                          key={citationIdx}
+                          href={c.source}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1.5 text-xs text-primary hover:underline truncate rounded-md px-1 py-0.5 hover:bg-primary/5 transition-colors"
+                        >
+                          <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                          <span className="truncate">{c.metadata?.title || c.source}</span>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (hasContent || (!isCurrentlyStreaming)) && (
           <div className={cn(
             'max-w-none',
             isCurrentlyStreaming ? 'animate-pulse' : ''
@@ -173,7 +392,7 @@ export default function Message({ message, isLast, isStreaming }) {
         )}
 
         {/* ── Metadata badges ── */}
-        {!isUser && metadata.confidence !== undefined && (
+        {!isUser && metadata.confidence !== undefined && !isComparison && (
           <div className="flex flex-wrap items-center gap-2 mt-3 pt-2.5 border-t border-border/40">
             <span className={cn(
               'inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium',
@@ -191,11 +410,16 @@ export default function Message({ message, isLast, isStreaming }) {
                 {metadata.method}
               </span>
             )}
+            {retrievalStats.elapsed_ms !== undefined && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+                {retrievalStats.result_count ?? 0} hits • {Math.round(retrievalStats.elapsed_ms)}ms
+              </span>
+            )}
           </div>
         )}
 
         {/* ── Citations ── */}
-        {citations.length > 0 && (
+        {citations.length > 0 && !isComparison && (
           <div className="mt-2">
             <button
               onClick={() => setShowCitations(!showCitations)}

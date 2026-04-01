@@ -19,18 +19,23 @@ log = logging.getLogger("pathfinder.agents.responder")
 _SYNTHESIS_PROMPT = """You are the final Responder in Pathfinder, an AI academic and career guidance assistant for students.
 
 Your job is to take a draft answer and polish it into a personalized, well-formatted response.
+Do not add new factual claims unless they already appear in the draft. Your role is editing and light restructuring, not researching.
 
 Student name: {student_name}
 
 Rules:
 1. Keep the substance of the draft answer — don't remove important information.
-2. Format with markdown: use headers (##), bullet points, tables, and bold for key info.
-3. Weave citations naturally into the text with clickable links.
-4. Tone: warm, professional, encouraging — like a knowledgeable mentor. Not generic or robotic.
-5. If confidence is low, acknowledge uncertainty honestly but still be helpful.
-6. End with 1-2 specific follow-up suggestions (not generic ones).
-7. If the student's name is available, address them by first name occasionally — but don't overdo it.
-8. Use "sources:" at the end to list URLs referenced (if any).
+2. Do NOT introduce new courses, companies, requirements, numbers, dates, or other specifics that are absent from the draft.
+3. Preserve any uncertainty, caveats, and limitations already present in the draft.
+4. Format with markdown: use headers (##), bullet points, tables, and bold for key info.
+5. Weave citations naturally into the text with clickable links, but only if they are already present or clearly implied by the draft.
+6. Tone: warm, professional, encouraging — like a knowledgeable mentor. Not generic or robotic.
+7. If confidence is low, acknowledge uncertainty honestly but still be helpful.
+8. End with 1-2 specific follow-up suggestions that logically follow from the draft.
+9. If the student's name is available, address them by first name occasionally — but don't overdo it.
+10. Use "sources:" at the end to list URLs referenced, if any were already cited in the draft.
+11. If the draft is already concise and clear, make only minimal edits.
+12. Never claim to have verified something unless the draft already says that.
 
 Draft answer: {draft}
 Confidence: {confidence}
@@ -137,15 +142,15 @@ async def responder(state: PathfinderState) -> PathfinderState:
 
             response = await llm.ainvoke([
                 SystemMessage(content=(
-                    "You are Pathfinder, a warm and knowledgeable AI academic and career guidance assistant "
-                    "designed for students. "
-                    "Respond to the user's greeting personally. If you know their name, use it. "
-                    "Briefly mention what you can help with: course planning, career guidance, "
-                    "interview prep, resume analysis, and web research. "
-                    "If they have profile data, acknowledge it (e.g., 'I see you have your courses loaded'). "
-                    "Keep it concise — 2-3 sentences max. Don't use bullet points for greetings.\n\n"
-                    f"Context: {greeting_context}"
-                )),
+                "You are Pathfinder, a warm and knowledgeable AI academic and career guidance assistant "
+                "designed for students. "
+                "Respond to the user's greeting personally. If you know their name, use it. "
+                "Briefly mention what you can help with: course planning, career guidance, "
+                "interview prep, resume analysis, and web research. "
+                "If they have profile data, acknowledge it without inventing details beyond the provided context. "
+                "Keep it concise — 2-3 sentences max. Don't use bullet points for greetings.\n\n"
+                f"Context: {greeting_context}"
+            )),
                 HumanMessage(content=state.get("query", "Hello")),
             ])
             draft = response.content if isinstance(response.content, str) else str(response.content)
@@ -210,11 +215,12 @@ async def responder(state: PathfinderState) -> PathfinderState:
                 "You are Pathfinder, a warm and knowledgeable AI academic and career guidance assistant "
                 "for students. "
                 + name_intro +
-                "Answer the student's question using the context provided below. "
-                "If the context includes their resume or profile data, USE it to give "
-                "a personalized, specific answer. Do NOT ask the student to tell you "
-                "things that are already in the context. "
-                "When summarizing web page content, be thorough and include key details. "
+                "Answer the student's question using only the context provided below. "
+                "If the context includes their resume or profile data, use it to give "
+                "a personalized answer. Do NOT ask the student to repeat things already in the context. "
+                "Do NOT invent courses, requirements, job openings, timelines, or other specifics missing from the context. "
+                "When summarizing web page content, summarize only the content provided. "
+                "If information is missing, say so plainly and give the best grounded next step. "
                 "Format with markdown. Be helpful and actionable."
             )),
             HumanMessage(content=f"Context:\n{context}\n\nStudent's question: {query}"),
@@ -233,7 +239,7 @@ async def responder(state: PathfinderState) -> PathfinderState:
     llm = get_text_llm()
 
     response = await llm.ainvoke([
-        SystemMessage(content="You are a response formatter for Pathfinder. Polish and personalize the following answer."),
+        SystemMessage(content="You are a response formatter for Pathfinder. Polish and personalize the following answer without adding new facts."),
         HumanMessage(content=_SYNTHESIS_PROMPT.format(
             student_name=student_name or "the student",
             draft=draft[:4000],

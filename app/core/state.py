@@ -30,6 +30,8 @@ class PathfinderState(TypedDict, total=False):
     session_id: str                           # Chat session ID
     student_id: str                           # Student identifier
     is_global_upload: bool                    # Whether uploaded docs go to global profile
+    retrieval_mode: str                       # Active retrieval strategy for this turn
+    compare_mode: bool                        # Whether this turn is a 3-way retrieval comparison
 
     # ── Orchestrator output ─────────────────────────────────────
     intent: str                               # Classified intent
@@ -43,6 +45,8 @@ class PathfinderState(TypedDict, total=False):
     graph_results: list[dict[str, Any]]       # Structured results from graph queries
     web_results: list[dict[str, Any]]         # Results from web search
     extracted_entities: list[dict[str, Any]]  # Entities extracted from documents
+    retrieval_stats: dict[str, Any]           # Stats for the selected retrieval mode
+    retrieval_comparison: dict[str, Any]      # Optional side-by-side retrieval benchmark data
 
     # ── Evaluation ──────────────────────────────────────────────
     draft_answer: str                         # Answer before evaluation

@@ -10,16 +10,18 @@ const API_BASE = '/api/v1';
 /**
  * Send a chat message and receive SSE stream.
  * @param {Object} params - { query, sessionId, files, isGlobalUpload }
- * @param {Object} callbacks - { onProgress, onToken, onDone, onError }
+ * @param {Object} callbacks - { onProgress, onToken, onCompareResult, onDone, onError }
  * @returns {AbortController} - call .abort() to cancel
  */
-export function chatSSE({ query, sessionId, files = [], isGlobalUpload = false, replaceFilenames = [] }, callbacks) {
+export function chatSSE({ query, sessionId, files = [], isGlobalUpload = false, replaceFilenames = [], retrievalMode = null, compareMode = false }, callbacks) {
   const controller = new AbortController();
 
   const formData = new FormData();
   formData.append('query', query);
   if (sessionId) formData.append('session_id', sessionId);
   formData.append('is_global_upload', isGlobalUpload.toString());
+  if (retrievalMode) formData.append('retrieval_mode', retrievalMode);
+  formData.append('compare_mode', compareMode ? 'true' : 'false');
   if (replaceFilenames.length > 0) {
     formData.append('replace_filenames', replaceFilenames.join(','));
   }
@@ -56,6 +58,7 @@ export function chatSSE({ query, sessionId, files = [], isGlobalUpload = false, 
             const data = JSON.parse(line.slice(6));
             if (eventType === 'progress') callbacks.onProgress?.(data);
             else if (eventType === 'token') callbacks.onToken?.(data);
+            else if (eventType === 'compare_result') callbacks.onCompareResult?.(data);
             else if (eventType === 'done') callbacks.onDone?.(data);
             else if (eventType === 'error') callbacks.onError?.(data.error);
           } catch {
@@ -183,6 +186,16 @@ export async function updateSettings(updates) {
     body: JSON.stringify(updates),
   });
   if (!response.ok) throw new Error(`Failed to update settings: ${response.status}`);
+  return response.json();
+}
+
+export async function compareRetrieval(query, sessionId = null) {
+  const response = await fetch(`${API_BASE}/retrieval/compare`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, session_id: sessionId }),
+  });
+  if (!response.ok) throw new Error(`Failed to compare retrieval: ${response.status}`);
   return response.json();
 }
 

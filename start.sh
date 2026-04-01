@@ -27,4 +27,13 @@ mkdir -p data
 
 # 4. Start FastAPI
 echo "[3/3] Starting Pathfinder API server..."
-uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+if [ -x "venv/bin/uvicorn" ]; then
+    VENV_UVICORN="venv/bin/uvicorn"
+elif [ -x ".venv/bin/uvicorn" ]; then
+    VENV_UVICORN=".venv/bin/uvicorn"
+else
+    echo "No project virtualenv uvicorn found in venv/ or .venv/"
+    exit 1
+fi
+
+"$VENV_UVICORN" app.main:app --host 0.0.0.0 --port 8001 --reload

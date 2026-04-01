@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+import httpx
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, AIMessage
 
@@ -29,9 +30,29 @@ log = logging.getLogger("pathfinder.llm")
 
 _text_llm: Optional["LoggingChatOpenAI"] = None
 _vision_llm: Optional["LoggingChatOpenAI"] = None
+_text_model_name: Optional[str] = None
+_vision_model_name: Optional[str] = None
+_model_cache: dict[str, Any] = {"ts": 0.0, "models": []}
+_manual_text_model: Optional[str] = None
+_available_model_cache: dict[str, Any] = {"ts": 0.0, "models": []}
+
+_MODEL_ALIASES: dict[str, list[str]] = {
+    "openai/gpt-oss-20b": [
+        "openai/gpt-oss-20b",
+        "gpt-oss-20b",
+    ],
+    "Qwen3-14B-MLX-8bit": [
+        "Qwen3-14B-MLX-8bit",
+        "qwen/qwen3-14b",
+        "qwen3-14b",
+        "lmstudio-community/Qwen3-14B-MLX-8bit",
+        "lmstudio-community/qwen3-14b-mlx-8bit",
+    ],
+}
 
 # Debug log file path
 _DEBUG_LOG_PATH = Path("data/llm_debug.log")
+_MODEL_CACHE_TTL_SECONDS = 5.0
 
 
 # ── Logging wrapper ─────────────────────────────────────────────────
@@ -145,12 +166,14 @@ def _write_debug(text: str) -> None:
 
 
 def get_text_llm() -> LoggingChatOpenAI:
-    """Return the singleton text LLM (gpt-oss-20b)."""
-    global _text_llm
-    if _text_llm is None:
+    """Return the singleton text LLM using the currently loaded LM Studio model if available."""
+    global _text_llm, _text_model_name
+    requested_model = _resolve_requested_text_model()
+    model_name = _ensure_lmstudio_model_loaded(requested_model)
+    if _text_llm is None or _text_model_name != model_name:
         _text_llm = LoggingChatOpenAI(
             llm_label="text",
-            model=settings.LLM_MODEL,
+            model=model_name,
             base_url=settings.LLM_BASE_URL,
             api_key=settings.LLM_API_KEY,
             temperature=settings.LLM_TEMPERATURE,
@@ -161,16 +184,19 @@ def get_text_llm() -> LoggingChatOpenAI:
                 "presence_penalty": settings.LLM_PRESENCE_PENALTY,
             },
         )
+        _text_model_name = model_name
     return _text_llm
 
 
 def get_vision_llm() -> LoggingChatOpenAI:
-    """Return the singleton vision LLM (qwen3-vl-8b)."""
-    global _vision_llm
-    if _vision_llm is None:
+    """Return the singleton vision LLM, preferring a loaded multimodal model when available."""
+    global _vision_llm, _vision_model_name
+    requested_model = _resolve_lmstudio_model(kind="vision")
+    model_name = _ensure_lmstudio_model_loaded(requested_model)
+    if _vision_llm is None or _vision_model_name != model_name:
         _vision_llm = LoggingChatOpenAI(
             llm_label="vision",
-            model=settings.VISION_MODEL,
+            model=model_name,
             base_url=settings.LLM_BASE_URL,
             api_key=settings.LLM_API_KEY,
             temperature=0.1,
@@ -181,7 +207,218 @@ def get_vision_llm() -> LoggingChatOpenAI:
                 "presence_penalty": settings.LLM_PRESENCE_PENALTY,
             },
         )
+        _vision_model_name = model_name
     return _vision_llm
+
+
+def _resolve_lmstudio_model(kind: str = "text") -> str:
+    """Pick a loaded LM Studio model when available, else fall back to configured defaults."""
+    models = _get_loaded_lmstudio_models()
+    if not models:
+        fallback = settings.VISION_MODEL if kind == "vision" else (_manual_text_model or settings.LLM_MODEL)
+        log.info("LM Studio returned no loaded models; falling back to configured %s model %s", kind, fallback)
+        return fallback
+
+    if kind == "vision":
+        for model_id in models:
+            lowered = model_id.lower()
+            if any(token in lowered for token in ("vision", "vl", "llava", "minicpm-v", "qwen2.5-vl", "qwen3-vl")):
+                return model_id
+        fallback = settings.VISION_MODEL
+        if fallback in models:
+            return fallback
+        return models[0]
+
+    preferred = _manual_text_model or settings.LLM_MODEL
+    if preferred in models:
+        return preferred
+    return models[0]
+
+
+def _resolve_requested_text_model() -> str:
+    """Resolve the preferred text model to an LM Studio model key."""
+    requested = _manual_text_model or settings.LLM_MODEL
+    for candidate in _candidate_model_keys(requested):
+        resolved = _resolve_model_key(candidate)
+        if resolved:
+            return resolved
+    return requested
+
+
+def _get_loaded_lmstudio_models() -> list[str]:
+    """Fetch currently loaded LM Studio model ids with a short cache."""
+    now = time.time()
+    if now - _model_cache["ts"] < _MODEL_CACHE_TTL_SECONDS:
+        return list(_model_cache["models"])
+
+    base = settings.LLM_BASE_URL.rstrip("/")
+    models_url = f"{base[:-3] if base.endswith('/v1') else base}/v1/models"
+
+    try:
+        with httpx.Client(timeout=2.5) as client:
+            response = client.get(models_url)
+            response.raise_for_status()
+        payload = response.json()
+        models = [
+            item.get("id", "")
+            for item in payload.get("data", [])
+            if isinstance(item, dict) and item.get("id")
+        ]
+        _model_cache["ts"] = now
+        _model_cache["models"] = models
+        return list(models)
+    except Exception as exc:
+        log.debug("Could not fetch LM Studio loaded models: %s", exc)
+        _model_cache["ts"] = now
+        _model_cache["models"] = []
+        return []
+
+
+def _get_available_lmstudio_models() -> list[dict[str, Any]]:
+    """Fetch available LM Studio models from the native REST API."""
+    now = time.time()
+    if now - _available_model_cache["ts"] < _MODEL_CACHE_TTL_SECONDS:
+        return list(_available_model_cache["models"])
+
+    base = settings.LLM_BASE_URL.rstrip("/")
+    models_url = f"{base[:-3] if base.endswith('/v1') else base}/api/v1/models"
+
+    try:
+        with httpx.Client(timeout=2.5) as client:
+            response = client.get(models_url)
+            response.raise_for_status()
+        payload = response.json()
+        models = payload.get("models", [])
+        if not isinstance(models, list):
+            models = []
+        _available_model_cache["ts"] = now
+        _available_model_cache["models"] = models
+        return list(models)
+    except Exception as exc:
+        log.debug("Could not fetch LM Studio available models: %s", exc)
+        _available_model_cache["ts"] = now
+        _available_model_cache["models"] = []
+        return []
+
+
+def _resolve_model_key(requested: str | None) -> str | None:
+    """Resolve a requested display name or key to LM Studio's model key."""
+    if not requested:
+        return None
+
+    available = _get_available_lmstudio_models()
+    if not available:
+        return requested
+
+    requested_lower = requested.strip().lower()
+
+    for item in available:
+        key = str(item.get("key", "")).strip()
+        display_name = str(item.get("display_name", "")).strip()
+        if requested == key or requested == display_name:
+            return key or requested
+        if requested_lower == key.lower() or requested_lower == display_name.lower():
+            return key or requested
+
+    normalized_requested = requested_lower.replace("-", "").replace("_", "").replace(" ", "")
+    for item in available:
+        key = str(item.get("key", "")).strip()
+        display_name = str(item.get("display_name", "")).strip()
+        normalized_key = key.lower().replace("-", "").replace("_", "").replace(" ", "")
+        normalized_display = display_name.lower().replace("-", "").replace("_", "").replace(" ", "")
+        if normalized_requested in normalized_key or normalized_requested in normalized_display:
+            return key or requested
+
+    return requested
+
+
+def _candidate_model_keys(requested: str | None) -> list[str]:
+    """Return candidate model identifiers to try for a selected option."""
+    if not requested:
+        return []
+    candidates = [requested]
+    for candidate in _MODEL_ALIASES.get(requested, []):
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _ensure_lmstudio_model_loaded(model_name: str) -> str:
+    """Load the requested LM Studio model into memory if needed and return the actual model id."""
+    loaded_models = _get_loaded_lmstudio_models()
+    resolved_candidates = []
+    for candidate in _candidate_model_keys(model_name):
+        resolved = _resolve_model_key(candidate) or candidate
+        if resolved not in resolved_candidates:
+            resolved_candidates.append(resolved)
+    for candidate in resolved_candidates:
+        if candidate in loaded_models:
+            return candidate
+
+    base = settings.LLM_BASE_URL.rstrip("/")
+    load_url = f"{base[:-3] if base.endswith('/v1') else base}/api/v1/models/load"
+    headers = {"Content-Type": "application/json"}
+    api_key = settings.LLM_API_KEY.strip()
+    if api_key and api_key != "sk-no-key":
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    last_error: Exception | None = None
+    for resolved_model in resolved_candidates:
+        payload = {
+            "model": resolved_model,
+            "context_length": settings.LLM_MAX_TOKENS,
+        }
+        try:
+            with httpx.Client(timeout=settings.LLM_REQUEST_TIMEOUT) as client:
+                response = client.post(load_url, headers=headers, json=payload)
+                response.raise_for_status()
+            log.info("Requested LM Studio to load model: %s", resolved_model)
+            _model_cache["ts"] = 0.0
+            _model_cache["models"] = []
+            _available_model_cache["ts"] = 0.0
+            _available_model_cache["models"] = []
+            # Give LM Studio a brief moment to surface the loaded model id.
+            deadline = time.time() + 8.0
+            while time.time() < deadline:
+                time.sleep(0.25)
+                loaded_models = _get_loaded_lmstudio_models()
+                for candidate in resolved_candidates:
+                    if candidate in loaded_models:
+                        return candidate
+                if resolved_model in loaded_models:
+                    return resolved_model
+            # If the loaded-models endpoint is slow to update, continue with the
+            # key that LM Studio accepted for loading.
+            return resolved_model
+        except Exception as exc:
+            last_error = exc
+            log.warning("Failed to load LM Studio model candidate %s: %s", resolved_model, exc)
+
+    if last_error:
+        raise RuntimeError(f"Could not load LM Studio model '{model_name}'") from last_error
+    return model_name
+
+
+def set_text_model(model_name: str | None) -> None:
+    """Set the preferred text model for chat generation."""
+    global _text_llm, _text_model_name, _manual_text_model
+    _manual_text_model = model_name or None
+    _text_llm = None
+    _text_model_name = None
+
+
+def get_text_model() -> str:
+    """Return the currently selected text model preference."""
+    return _manual_text_model or settings.LLM_MODEL
+
+
+def get_text_model_options() -> list[str]:
+    """Return user-selectable text model options."""
+    options = []
+    for model in settings.LLM_AVAILABLE_MODELS:
+        if model and model not in options:
+            options.append(model)
+    return options
 
 
 # ── Output Quality Guards ───────────────────────────────────────────

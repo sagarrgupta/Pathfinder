@@ -12,6 +12,7 @@ import base64
 import io
 import logging
 import os
+import re
 from typing import Any
 
 from pypdf import PdfReader
@@ -48,15 +49,25 @@ async def extract_text_from_pdf(file_bytes: bytes, filename: str = "document.pdf
     pages: list[dict[str, Any]] = []
 
     for page_num, page in enumerate(reader.pages, start=1):
-        text = (page.extract_text() or "").strip()
+        pypdf_text = _normalize_extracted_text((page.extract_text() or "").strip())
+        fitz_text = _normalize_extracted_text(_extract_page_with_fitz_text(file_bytes, page_num))
 
-        if len(text) >= _MIN_CHARS_PER_PAGE:
-            pages.append({"page": page_num, "text": text, "method": "pypdf"})
+        best_text, method = _select_best_page_text(pypdf_text, fitz_text)
+
+        if _page_text_quality(best_text) >= _MIN_CHARS_PER_PAGE:
+            pages.append({"page": page_num, "text": best_text, "method": method})
         else:
             # Fall back to vision model
-            log.info("Page %d of %s: low text (%d chars), using vision model", page_num, filename, len(text))
+            log.info(
+                "Page %d of %s: low-quality text (pypdf=%d, fitz=%d), using vision model",
+                page_num,
+                filename,
+                _page_text_quality(pypdf_text),
+                _page_text_quality(fitz_text),
+            )
             vision_text = await _extract_page_with_vision(file_bytes, page_num, filename)
-            pages.append({"page": page_num, "text": vision_text or text, "method": "vision"})
+            fallback_text = _normalize_extracted_text(vision_text) or best_text
+            pages.append({"page": page_num, "text": fallback_text, "method": "vision"})
 
     log.info("Extracted %d pages from %s", len(pages), filename)
     return pages
@@ -245,3 +256,67 @@ def get_file_type(filename: str) -> str:
     if ext == ".docx":
         return "docx"
     return "unknown"
+
+
+def _extract_page_with_fitz_text(pdf_bytes: bytes, page_number: int) -> str:
+    """Extract page text with PyMuPDF preserving block order where possible."""
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        if page_number > len(doc):
+            doc.close()
+            return ""
+
+        page = doc[page_number - 1]
+        blocks = page.get_text("blocks")
+        doc.close()
+
+        if not blocks:
+            return ""
+
+        # Sort top-to-bottom, then left-to-right to better preserve multi-column layouts.
+        ordered = sorted(blocks, key=lambda b: (round(b[1], 1), round(b[0], 1)))
+        texts = []
+        for block in ordered:
+            if len(block) < 5:
+                continue
+            text = str(block[4]).strip()
+            if text:
+                texts.append(text)
+        return "\n".join(texts)
+    except Exception:
+        return ""
+
+
+def _normalize_extracted_text(text: str) -> str:
+    """Clean extraction noise while keeping document structure readable."""
+    if not text:
+        return ""
+    text = text.replace("\r", "\n").replace("\x00", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _page_text_quality(text: str) -> int:
+    """Heuristic quality score for extracted page text."""
+    if not text:
+        return 0
+    alpha_num = sum(ch.isalnum() for ch in text)
+    line_count = len([line for line in text.splitlines() if line.strip()])
+    return alpha_num + (line_count * 5)
+
+
+def _select_best_page_text(pypdf_text: str, fitz_text: str) -> tuple[str, str]:
+    """Choose the stronger page extraction between pypdf and PyMuPDF."""
+    pypdf_score = _page_text_quality(pypdf_text)
+    fitz_score = _page_text_quality(fitz_text)
+
+    if fitz_score > pypdf_score * 1.15:
+        return fitz_text, "pymupdf"
+    if pypdf_score > 0:
+        return pypdf_text, "pypdf"
+    if fitz_score > 0:
+        return fitz_text, "pymupdf"
+    return "", "empty"

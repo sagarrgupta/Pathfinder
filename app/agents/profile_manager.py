@@ -23,8 +23,8 @@ from app.adapters.neo4j.graph_store import (
     store_extracted_entities,
     update_student,
 )
-from app.adapters.neo4j.vector_store import hybrid_search
 from app.core.state import PathfinderState
+from app.services.retrieval import retrieve_documents
 
 log = logging.getLogger("pathfinder.agents.profile_manager")
 
@@ -52,6 +52,7 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
     query = state.get("query", "")
     student_id = state.get("student_id", "default")
     session_id = state.get("session_id", "")
+    retrieval_mode = state.get("retrieval_mode", "hybrid")
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Checking your academic profile...")
@@ -64,12 +65,13 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
 
     # Semantic search over stored documents
     step_progress.append("Searching your documents...")
-    retrieved = await hybrid_search(
+    retrieval = await retrieve_documents(
         query=query,
-        k=5,
         student_id=student_id,
         session_id=session_id,
+        mode=retrieval_mode,
     )
+    retrieved = retrieval["documents"]
 
     step_progress.append(
         f"Found {len(retrieved)} relevant document chunks, "
@@ -88,6 +90,7 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
         **state,
         "profile_data": profile,
         "retrieved_documents": retrieved,
+        "retrieval_stats": retrieval["stats"],
         "step_progress": step_progress,
         "next_node": _determine_next(state),
     }

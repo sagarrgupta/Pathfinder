@@ -26,7 +26,8 @@ log = logging.getLogger("pathfinder.agents.web_researcher")
 _QUERY_GEN_PROMPT = """You are a search query optimizer. Generate 2-3 specific, targeted web search queries
 to find information that will help answer this student's question.
 
-Use their profile data to craft precise queries — include university name, program, specific skills, etc.
+Use only details that appear in the supplied profile summary or question.
+Do not invent university names, programs, job titles, companies, or dates.
 Each query should target a different angle or source of information.
 
 Student Profile:
@@ -48,6 +49,8 @@ IMPORTANT — Decide whether to incorporate the student's profile based on the q
 - If the question connects the URL to the student personally (e.g., "is this school good for me",
   "based on my skills, which programs fit", "compare this with my university"),
   then USE the student's profile to craft relevant queries.
+
+Do not invent facts that are not present in the URL list, profile summary, or question.
 
 Student Profile:
 {profile_summary}

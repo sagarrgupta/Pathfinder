@@ -213,6 +213,8 @@ async def store_document_node(
     student_id: str = "default",
     session_id: str | None = None,
     doc_type: str = "other",
+    file_path: str | None = None,
+    pageindex_doc_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a Document node linked to the student."""
     driver = await get_driver()
@@ -226,6 +228,8 @@ async def store_document_node(
                 scope: $scope,
                 session_id: $session_id,
                 type: $doc_type,
+                file_path: $file_path,
+                pageindex_doc_id: $pageindex_doc_id,
                 uploaded_at: datetime()
             })
             RETURN d {.*} AS doc
@@ -236,9 +240,51 @@ async def store_document_node(
             scope=scope,
             session_id=session_id,
             doc_type=doc_type,
+            file_path=file_path,
+            pageindex_doc_id=pageindex_doc_id,
         )
         record = await result.single()
         return _sanitize(dict(record["doc"])) if record else {}
+
+
+async def update_document(document_id: str, **props: Any) -> dict[str, Any]:
+    """Update properties on a Document node."""
+    if not props:
+        return {}
+    driver = await get_driver()
+    async with driver.session() as session:
+        set_clauses = ", ".join(f"d.{k} = ${k}" for k in props)
+        result = await session.run(
+            f"""
+            MATCH (d:Document {{id: $document_id}})
+            SET {set_clauses}
+            RETURN d {{.*}} AS doc
+            """,
+            document_id=document_id,
+            **props,
+        )
+        record = await result.single()
+        return _sanitize(dict(record["doc"])) if record else {}
+
+
+async def get_student_documents(
+    student_id: str = "default",
+    session_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return documents available to the student for retrieval."""
+    driver = await get_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (s:Student {id: $student_id})-[:UPLOADED]->(d:Document)
+            WHERE d.scope = 'global' OR ($session_id <> '' AND d.session_id = $session_id)
+            RETURN d {.*} AS doc
+            ORDER BY d.uploaded_at DESC
+            """,
+            student_id=student_id,
+            session_id=session_id or "",
+        )
+        return [_sanitize(dict(record["doc"])) async for record in result]
 
 
 async def find_document_by_filename(

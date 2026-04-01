@@ -39,6 +39,14 @@ class EntityUpdate(BaseModel):
 class SettingsUpdate(BaseModel):
     """Update application settings."""
     topic_guard_enabled: Optional[bool] = None
+    retrieval_mode: Optional[str] = None
+    text_model: Optional[str] = None
+
+
+class RetrievalCompareRequest(BaseModel):
+    """Request body for comparing retrieval strategies."""
+    query: str = Field(..., min_length=1, max_length=5000)
+    session_id: Optional[str] = None
 
 
 # ── Response Models ─────────────────────────────────────────────
@@ -118,4 +126,8 @@ class HealthResponse(BaseModel):
 class SettingsResponse(BaseModel):
     """Current settings."""
     topic_guard_enabled: bool = True
+    retrieval_mode: str = "hybrid"
+    retrieval_modes: list[str] = Field(default_factory=list)
+    text_model: str = "openai/gpt-oss-20b"
+    text_model_options: list[str] = Field(default_factory=list)
     models: dict[str, str] = Field(default_factory=dict)

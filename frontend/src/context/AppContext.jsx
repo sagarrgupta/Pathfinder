@@ -16,7 +16,7 @@ function loadPersistedState() {
         sessions: saved.sessions || [],
         activeSessionId: saved.activeSessionId || null,
         messagesBySession: saved.messagesBySession || {},
-        settings: saved.settings || { topic_guard_enabled: true },
+        settings: saved.settings || { topic_guard_enabled: true, retrieval_mode: 'hybrid', text_model: 'openai/gpt-oss-20b', text_model_options: [] },
         theme: saved.theme || 'system',
       };
     }
@@ -67,7 +67,7 @@ const initialState = {
   profileLoading: false,
 
   // Settings
-  settings: persisted?.settings || { topic_guard_enabled: true },
+  settings: persisted?.settings || { topic_guard_enabled: true, retrieval_mode: 'hybrid', text_model: 'openai/gpt-oss-20b', text_model_options: [] },
 
   // Theme
   theme: persisted?.theme || 'system',
