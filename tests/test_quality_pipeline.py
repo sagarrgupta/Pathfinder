@@ -1,18 +1,24 @@
 from app.agents.course_planner import _heuristic_course_payload
 from app.agents.evaluator import _validate_decision_payload
 from app.agents.fact_extractor import _heuristic_records
+from app.agents.eligibility_reasoner import _heuristic_eligibility_payload
 from app.agents.orchestrator import _ensure_quality_course_plan
 from app.agents.program_advisor import _heuristic_program_payload
 from app.agents.career_matcher import _heuristic_career_payload
 from app.agents.web_researcher import _preferred_domains, _result_score
 from app.core.quality import (
     analyze_query_focus,
+    build_task_graph,
     build_session_summary,
     build_source_policy,
     classify_web_source,
+    compact_session_state,
     extract_course_entries,
     group_evidence_records,
+    infer_evidence_tiers,
+    infer_student_workflow,
     infer_target_entity,
+    summarize_trace,
 )
 
 
@@ -48,22 +54,69 @@ def test_target_entity_and_source_policy_are_dynamic_for_program_queries():
     )
     focus = analyze_query_focus("What are the admission requirements for my program?")
     entity = infer_target_entity({"personal": {"university": "Boston University", "program": "Data Science MS"}}, summary, "What are the admission requirements for my program?", focus)
-    policy = build_source_policy(focus, entity, ["bu.edu"])
+    policy = build_source_policy(focus, entity, "program_understanding", ["bu.edu"])
 
     assert entity["kind"] == "program"
     assert entity["program"] == "Data Science MS"
     assert "degree_page" in policy["primary_source_types"]
     assert "admissions_page" in policy["primary_source_types"]
     assert policy["prefer_pdfs"] is True
+    assert policy["strict_primary_only"] is True
 
 
 def test_target_entity_and_source_policy_shift_for_job_queries():
     focus = analyze_query_focus("What jobs fit me based on my profile?")
     entity = infer_target_entity({}, {}, "What jobs fit me based on my profile?", focus)
-    policy = build_source_policy(focus, entity, [])
+    policy = build_source_policy(focus, entity, "career_alignment", [])
 
     assert entity["kind"] == "job_role"
     assert policy["primary_source_types"] == ["job_page", "profile_doc"]
+    assert policy["strict_primary_only"] is False
+
+
+def test_build_task_graph_for_academic_planning_is_dependency_aware():
+    focus = analyze_query_focus("Which courses can I enroll in next semester?")
+    graph = build_task_graph(
+        "Which courses can I enroll in next semester?",
+        "academic_planning",
+        focus,
+        {"kind": "program", "program": "Computer Science", "level": "graduate"},
+    )
+
+    ids = [task["id"] for task in graph]
+    assert ids[0] == "load_student_state"
+    assert "load_conversation_state" in ids
+    assert "determine_decision_goal" in ids
+    assert "retrieve_primary_sources" in ids
+    assert "retrieve_live_schedule" in ids
+    assert "extract_requirements" in ids
+    assert "extract_courses" in ids
+    assert "compare_to_student_state" in ids
+    assert "rank_options" in ids
+    assert graph[-1]["id"] == "render_final_answer"
+
+
+def test_workflow_inference_is_general_for_student_questions():
+    assert infer_student_workflow(
+        "Can I take this course next semester?",
+        analyze_query_focus("Can I take this course next semester?"),
+        [],
+        {"kind": "program", "program": "Computer Science", "level": "graduate"},
+    ) == "eligibility_check"
+
+    assert infer_student_workflow(
+        "Can I finish in 2 years?",
+        analyze_query_focus("Can I finish in 2 years?"),
+        [],
+        {"kind": "program", "program": "Computer Science", "level": "graduate"},
+    ) == "academic_planning"
+
+    assert infer_student_workflow(
+        "Compare these two programs for me",
+        analyze_query_focus("Compare these two programs for me"),
+        [],
+        {"kind": "program", "program": "Computer Science", "level": "graduate"},
+    ) == "comparison_guidance"
 
 
 def test_course_plan_path_prunes_extra_program_agents():
@@ -155,6 +208,29 @@ def test_fact_extractor_emits_richer_schema_fields():
     assert roles
     assert roles[0]["value"]["work_mode"] == "remote"
     assert deadlines == []
+
+
+def test_infer_evidence_tiers_distinguishes_official_vs_third_party():
+    official = infer_evidence_tiers(
+        "https://catalog.csus.edu/ms-in-computer-science",
+        "degree_page",
+        "Computer Science",
+        "graduate",
+        "MS in Computer Science",
+        "Official graduate program requirements",
+    )
+    third_party = infer_evidence_tiers(
+        "https://www.shiksha.com/ms-in-computer-science",
+        "general_web",
+        "Computer Science",
+        "graduate",
+        "MS in Computer Science Overview",
+        "Third-party summary page",
+    )
+
+    assert official[0] == "primary_official"
+    assert official[1] == "direct"
+    assert third_party[0] == "third_party"
 
 
 def test_fact_extractor_uses_course_catalog_page_for_grad_course_entries():
@@ -416,7 +492,12 @@ def test_career_matcher_builds_structured_role_and_gap_guidance():
 
 def test_web_result_scoring_prefers_degree_page_for_requirements():
     focus = analyze_query_focus("What are the MS CS requirements at Sacramento State?")
-    policy = build_source_policy(focus, {"kind": "program", "program": "Computer Science", "level": "graduate"}, ["csus.edu"])
+    policy = build_source_policy(
+        focus,
+        {"kind": "program", "program": "Computer Science", "level": "graduate"},
+        "program_understanding",
+        ["csus.edu"],
+    )
     degree_score = _result_score(
         {
             "url": "https://catalog.csus.edu/ms-in-computer-science",
@@ -451,7 +532,12 @@ def test_web_result_scoring_prefers_degree_page_for_requirements():
 
 def test_web_result_scoring_prefers_schedule_for_live_availability():
     focus = analyze_query_focus("Which classes can I enroll in next semester?")
-    policy = build_source_policy(focus, {"kind": "program", "program": "Computer Science", "level": "graduate"}, ["csus.edu"])
+    policy = build_source_policy(
+        focus,
+        {"kind": "program", "program": "Computer Science", "level": "graduate"},
+        "academic_planning",
+        ["csus.edu"],
+    )
     schedule_score = _result_score(
         {
             "url": "https://www.csus.edu/schedule",
@@ -496,3 +582,83 @@ def test_preferred_domains_are_inferred_from_generic_profile_fields():
     )
 
     assert "bu.edu" in domains
+
+
+def test_trace_summary_reports_completed_blocked_and_source_counts():
+    trace = summarize_trace(
+        {
+            "target_entity": {"kind": "program", "program": "Computer Science"},
+            "workflow": "academic_planning",
+            "task_graph": [
+                {"id": "load_student_state", "status": "completed"},
+                {"id": "retrieve_primary_sources", "status": "blocked"},
+            ],
+            "working_memory": {
+                "source_audit": [
+                    {"action": "selected"},
+                    {"action": "selected"},
+                    {"action": "rejected"},
+                ]
+            },
+            "blocked_reasons": ["No live schedule source was found."],
+            "web_results": [{"url": "https://catalog.csus.edu"}],
+            "profile_data": {"personal": {"name": "Sagar"}},
+            "evidence_records": [{"entity_type": "course"}],
+            "decision_payload": {"decision_type": "course_planning"},
+            "confidence_score": 0.7,
+        }
+    )
+
+    assert trace["completed_tasks"] == ["load_student_state"]
+    assert trace["blocked_tasks"] == ["retrieve_primary_sources"]
+    assert trace["selected_sources"] == 2
+    assert trace["rejected_sources"] == 1
+
+
+def test_eligibility_reasoner_builds_structured_known_assumed_missing_output():
+    summary = {
+        "completed_courses": {"value": ["CSC 201"]},
+        "assumptions": [],
+    }
+    evidence = [
+        {
+            "source_type": "degree_page",
+            "entity_type": "requirement",
+            "value": {"summary": "Requires fully classified status"},
+            "source_url": "https://catalog.csus.edu/ms",
+            "source_title": "MS in Computer Science",
+            "excerpt": "Students must be fully classified.",
+        },
+        {
+            "source_type": "degree_page",
+            "entity_type": "program_constraint",
+            "value": {"summary": "Prerequisite completion may be required"},
+            "source_url": "https://catalog.csus.edu/ms",
+            "source_title": "MS in Computer Science",
+            "excerpt": "Students with deficiencies may need to remove them.",
+        },
+    ]
+
+    payload = _heuristic_eligibility_payload(summary, group_evidence_records(evidence, {}))
+
+    assert payload["decision_type"] == "eligibility_check"
+    assert payload["recommended_items"]
+    assert payload["blocked_or_uncertain_items"]
+
+
+def test_compacted_session_preserves_student_state_for_follow_ups():
+    summary = {
+        "institution": {"value": "Boston University", "source": "user"},
+        "program": {"value": "Data Science", "source": "user"},
+        "goals": {"value": ["product manager"], "source": "conversation"},
+        "preferences": {"value": ["remote"], "source": "conversation"},
+        "assumptions": [],
+        "current_skills": {"value": ["SQL"], "source": "profile"},
+        "recent_decisions": {"value": ["Apply for internship"], "source": "conversation"},
+    }
+    compacted = compact_session_state(summary, {"planner_blockers": ["Need transcript"]})
+
+    assert compacted["stable_facts"]["institution"] == "Boston University"
+    assert compacted["stable_facts"]["program"] == "Data Science"
+    assert "product manager" in compacted["evolving_goals"]
+    assert "Need transcript" in compacted["unresolved_blockers"]

@@ -15,17 +15,21 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.adapters.llm.lmstudio import get_text_llm
 from app.core.quality import (
     EvidenceRecord,
+    add_working_memory_item,
     academic_source_relevance,
     analyze_query_focus,
     classify_web_source,
+    complete_task,
     course_code_matches_level,
     extract_course_entries,
     extract_course_codes,
     extract_terms,
     extract_units,
     has_deadline_language,
+    infer_evidence_tiers,
     infer_target_level,
     infer_target_program,
+    init_working_memory,
     is_academic_source_relevant,
     looks_like_course_catalog_source,
 )
@@ -74,6 +78,8 @@ async def fact_extractor(state: PathfinderState) -> PathfinderState:
     query_focus = analyze_query_focus(query)
     program_text = infer_target_program(profile, session_summary, query)
     level = infer_target_level(profile, session_summary, query)
+    working_memory = init_working_memory(state.get("working_memory", {}))
+    task_graph = state.get("task_graph", [])
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Extracting grounded facts from sources...")
@@ -86,6 +92,33 @@ async def fact_extractor(state: PathfinderState) -> PathfinderState:
         program_text,
         level,
     )
+    evidence_records = [_annotate_record_tiers(record, program_text, level) for record in evidence_records]
+
+    for record in evidence_records:
+        bucket = "facts_confirmed" if record.get("trust_tier") in {"primary_official", "user_profile"} and record.get("fit_tier") == "direct" else "facts_secondary"
+        working_memory = add_working_memory_item(working_memory, bucket, {
+            "entity_type": record.get("entity_type", ""),
+            "source_title": record.get("source_title", ""),
+            "value": record.get("value", {}),
+        })
+
+    if not any(record.get("trust_tier") == "primary_official" and record.get("fit_tier") == "direct" for record in evidence_records):
+        working_memory = add_working_memory_item(
+            working_memory,
+            "missing_primary_evidence",
+            "No direct primary official evidence was extracted for the current question.",
+        )
+
+    if any(record.get("entity_type") == "requirement" for record in evidence_records):
+        task_graph = complete_task(task_graph, "extract_requirements")
+    if any(record.get("entity_type") == "course" for record in evidence_records):
+        task_graph = complete_task(task_graph, "extract_courses")
+    if any(record.get("entity_type") in {"program_constraint", "prerequisite"} for record in evidence_records):
+        task_graph = complete_task(task_graph, "extract_constraints")
+    if any(record.get("entity_type") in {"deadline", "program_policy", "admission_constraint", "classification_constraint"} for record in evidence_records):
+        task_graph = complete_task(task_graph, "extract_deadlines_or_policies")
+    if any(record.get("entity_type") in {"job_role", "skill"} and record.get("source_type") == "job_page" for record in evidence_records):
+        task_graph = complete_task(task_graph, "extract_job_requirements")
 
     step_progress.append(f"Structured {len(evidence_records)} evidence records")
     log.info("Fact extractor produced %d evidence records", len(evidence_records))
@@ -93,6 +126,8 @@ async def fact_extractor(state: PathfinderState) -> PathfinderState:
     return {
         **state,
         "evidence_records": evidence_records,
+        "working_memory": working_memory,
+        "task_graph": task_graph,
         "step_progress": step_progress,
         "next_node": _determine_next(state),
     }
@@ -409,6 +444,28 @@ def _dedupe_records(records: list[EvidenceRecord]) -> list[EvidenceRecord]:
         deduped.append(record)
 
     return deduped
+
+
+def _annotate_record_tiers(
+    record: EvidenceRecord,
+    program_text: str,
+    level: str,
+) -> EvidenceRecord:
+    """Attach trust/fit/freshness tiers to an evidence record."""
+    source_type = str(record.get("source_type", "general_web"))
+    trust_tier, fit_tier, freshness_tier = infer_evidence_tiers(
+        record.get("source_url", ""),
+        source_type,
+        program_text,
+        level,
+        record.get("source_title", ""),
+        record.get("excerpt", ""),
+    )
+    enriched = dict(record)
+    enriched["trust_tier"] = trust_tier
+    enriched["fit_tier"] = fit_tier
+    enriched["freshness_tier"] = freshness_tier
+    return enriched
 
 
 def _extract_work_mode(text: str) -> str:

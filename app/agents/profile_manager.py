@@ -24,7 +24,16 @@ from app.adapters.neo4j.graph_store import (
     update_student,
 )
 from app.adapters.neo4j.vector_store import hybrid_search
-from app.core.quality import analyze_query_focus, build_session_summary, build_source_policy, infer_target_entity
+from app.core.quality import (
+    analyze_query_focus,
+    build_session_summary,
+    build_source_policy,
+    compact_session_state,
+    complete_task,
+    infer_student_workflow,
+    infer_target_entity,
+    init_working_memory,
+)
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.profile_manager")
@@ -89,7 +98,22 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
     session_summary = build_session_summary(profile, state.get("messages", []), query)
     query_focus = analyze_query_focus(query)
     target_entity = infer_target_entity(profile, session_summary, query, query_focus)
-    source_policy = build_source_policy(query_focus, target_entity, state.get("source_policy", {}).get("preferred_domains", []))
+    workflow = state.get("workflow") or infer_student_workflow(
+        query,
+        query_focus,
+        state.get("files", []),
+        target_entity,
+    )
+    source_policy = build_source_policy(
+        query_focus,
+        target_entity,
+        workflow,
+        state.get("source_policy", {}).get("preferred_domains", []),
+    )
+    working_memory = init_working_memory(state.get("working_memory", {}))
+    task_graph = state.get("task_graph", [])
+    for task_id in ("load_student_state", "load_conversation_state", "determine_decision_goal"):
+        task_graph = complete_task(task_graph, task_id)
 
     next_node = _determine_next(state)
     log.info("Profile manager completed; next=%s", next_node)
@@ -99,7 +123,11 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
         "profile_data": profile,
         "session_summary": session_summary,
         "target_entity": target_entity,
+        "workflow": workflow,
         "source_policy": source_policy,
+        "working_memory": working_memory,
+        "task_graph": task_graph,
+        "compacted_session": compact_session_state(session_summary, working_memory),
         "retrieved_documents": retrieved,
         "step_progress": step_progress,
         "next_node": next_node,

@@ -14,9 +14,10 @@ def test_quality_path_reflects_structured_pipeline():
         "evidence_records": [{"entity_type": "course"}],
         "decision_payload": {"decision_type": "course_planning"},
         "confidence_score": 0.8,
+        "workflow": "academic_planning",
     })
 
-    assert path == "profile+web+facts+planner+eval"
+    assert path == "profile+web+facts+planner+eval+academic_planning"
 
 
 def test_rendered_payload_does_not_override_existing_safe_draft():

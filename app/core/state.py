@@ -37,8 +37,17 @@ class PathfinderState(TypedDict, total=False):
     next_node: str                            # Next node to route to
     missing_info: list[str]                   # Info the system needs but doesn't have
     session_summary: dict[str, Any]           # Normalized summary of session/profile context
+    workflow: str                             # General student workflow for this turn
     target_entity: dict[str, Any]             # Normalized target the user is asking about
     source_policy: dict[str, Any]             # Retrieval/extraction strategy for the current query
+    task_graph: list[dict[str, Any]]          # Ordered dependency-aware task graph for the current turn
+    working_memory: dict[str, Any]            # Shared reasoning substrate across nodes
+    source_audit: list[dict[str, Any]]        # Selected/rejected source audit trail
+    dependency_status: dict[str, Any]         # Health snapshot for external dependencies
+    blocked_reasons: list[str]                # Explicit blockers surfaced by planners/evaluator
+    trace_summary: dict[str, Any]             # Compact execution trace for debugging/UX
+    compacted_session: dict[str, Any]         # Long-term condensed advising state
+    stop_reason: str                          # Why a turn stopped early or partially
 
     # ── Data gathered by nodes ──────────────────────────────────
     profile_data: dict[str, Any]              # Student profile from Neo4j KG

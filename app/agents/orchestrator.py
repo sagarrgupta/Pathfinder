@@ -14,7 +14,16 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import get_full_profile
-from app.core.quality import analyze_query_focus, build_session_summary, infer_target_entity, build_source_policy
+from app.core.quality import (
+    analyze_query_focus,
+    build_session_summary,
+    infer_target_entity,
+    build_source_policy,
+    build_task_graph,
+    compact_session_state,
+    infer_student_workflow,
+    init_working_memory,
+)
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.orchestrator")
@@ -165,7 +174,11 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     session_summary = build_session_summary(profile_snapshot, messages, query)
     query_focus = analyze_query_focus(query)
     target_entity = infer_target_entity(profile_snapshot, session_summary, query, query_focus)
-    source_policy = build_source_policy(query_focus, target_entity)
+    workflow = infer_student_workflow(query, query_focus, files, target_entity)
+    source_policy = build_source_policy(query_focus, target_entity, workflow)
+    task_graph = build_task_graph(query, workflow, query_focus, target_entity)
+    working_memory = init_working_memory(state.get("working_memory", {}))
+    compacted_session = compact_session_state(session_summary, working_memory)
 
     # ── Guardrail: ensure profile_manager is included for personal queries ──
     personal_intents = {"academic", "career", "interview", "profile"}
@@ -218,28 +231,13 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         plan.insert(0 if "profile_manager" not in plan else plan.index("profile_manager") + 1, "web_researcher")
         log.info("Guardrail: inserted web_researcher for URL query")
 
-    # ── Guardrail: intent MUST have a matching advisory agent ──
-    # Without this, the plan can end at web_researcher with no agent
-    # that actually generates a draft_answer.
-    _intent_to_agent = {
-        "career": "career_matcher",
-        "academic": "program_advisor",
-        "interview": "interview_prep",
-        "research": "program_advisor",
-    }
-    if intent in _intent_to_agent:
-        required_agent = _intent_to_agent[intent]
-        if required_agent not in plan:
-            plan.append(required_agent)
-            log.info("Guardrail: inserted %s for %s intent", required_agent, intent)
-
-    if _is_course_planning_query(query_lower):
-        intent = "academic"
-        plan = _ensure_quality_course_plan(plan)
-    elif intent == "academic" and "web_researcher" in plan:
-        plan = _ensure_academic_fact_plan(plan)
-    elif intent == "career":
-        plan = _replace_agent(plan, "career_planner", "career_matcher")
+    workflow_plan = _plan_for_workflow(workflow, plan)
+    if workflow_plan:
+        plan = workflow_plan
+        if workflow in {"academic_planning", "program_understanding", "eligibility_check", "comparison_guidance", "document_guidance"}:
+            intent = "academic"
+        elif workflow == "career_alignment":
+            intent = "career"
 
     # Determine next node
     if intent == "greeting":
@@ -263,8 +261,8 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         "clarifier": "Clarify",
     }
     plan_display = " → ".join(_plan_labels.get(p, p) for p in plan) if plan else "direct response"
-    step_progress.append(f"Intent: {intent} — Plan: {plan_display}")
-    log.info("Orchestrator: intent=%s plan=%s next=%s", intent, plan, next_node)
+    step_progress.append(f"Intent: {intent} — Workflow: {workflow} — Plan: {plan_display}")
+    log.info("Orchestrator: intent=%s workflow=%s plan=%s next=%s", intent, workflow, plan, next_node)
 
     return {
         **state,
@@ -273,8 +271,13 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         "next_node": next_node,
         "missing_info": missing_info,
         "session_summary": session_summary,
+        "workflow": workflow,
         "target_entity": target_entity,
         "source_policy": source_policy,
+        "task_graph": task_graph,
+        "working_memory": working_memory,
+        "compacted_session": compacted_session,
+        "stop_reason": "",
         "step_progress": step_progress,
     }
 
@@ -307,6 +310,21 @@ def _is_course_planning_query(query_lower: str) -> bool:
         "register", "take next", "course plan", "semester plan",
     ]
     return any(keyword in query_lower for keyword in keywords)
+
+
+def _plan_for_workflow(workflow: str, plan: list[str]) -> list[str]:
+    workflow_nodes = {
+        "academic_planning": ["profile_manager", "web_researcher", "fact_extractor", "course_planner"],
+        "program_understanding": ["profile_manager", "web_researcher", "fact_extractor", "program_advisor"],
+        "eligibility_check": ["profile_manager", "web_researcher", "fact_extractor", "eligibility_reasoner"],
+        "comparison_guidance": ["profile_manager", "web_researcher", "fact_extractor", "program_advisor"],
+        "career_alignment": ["profile_manager", "web_researcher", "fact_extractor", "career_matcher"],
+        "document_guidance": ["doc_analyst", "profile_manager", "web_researcher", "fact_extractor", "program_advisor"],
+        "student_state_update": ["profile_manager", "evaluator"],
+        "general_guidance": plan or ["profile_manager"],
+    }
+    ordered = workflow_nodes.get(workflow, plan or ["profile_manager"])
+    return _merge_ordered_plan(plan, ordered)
 
 
 def _ensure_quality_course_plan(plan: list[str]) -> list[str]:
