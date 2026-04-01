@@ -22,6 +22,7 @@ from app.agents.fact_extractor import fact_extractor
 from app.agents.course_planner import course_planner
 from app.agents.program_advisor import program_advisor
 from app.agents.career_matcher import career_matcher
+from app.agents.eligibility_reasoner import eligibility_reasoner
 from app.agents.academic_advisor import academic_advisor
 from app.agents.career_planner import career_planner
 from app.agents.interview_prep import interview_prep
@@ -50,6 +51,7 @@ def route_after_orchestrator(state: PathfinderState) -> str:
     valid_nodes = {
         "clarifier", "doc_analyst", "profile_manager", "web_researcher",
         "fact_extractor", "course_planner", "program_advisor", "career_matcher",
+        "eligibility_reasoner",
         "academic_advisor", "career_planner", "interview_prep",
         "evaluator", "responder",
     }
@@ -63,7 +65,7 @@ def route_after_agent(state: PathfinderState) -> str:
     next_node = state.get("next_node", "evaluator")
     valid_nodes = {
         "profile_manager", "web_researcher", "academic_advisor",
-        "fact_extractor", "course_planner", "program_advisor", "career_matcher",
+        "fact_extractor", "course_planner", "program_advisor", "career_matcher", "eligibility_reasoner",
         "career_planner", "interview_prep", "evaluator", "responder",
     }
     if next_node in valid_nodes:
@@ -89,6 +91,7 @@ def build_graph() -> StateGraph:
     graph.add_node("course_planner", course_planner)
     graph.add_node("program_advisor", program_advisor)
     graph.add_node("career_matcher", career_matcher)
+    graph.add_node("eligibility_reasoner", eligibility_reasoner)
     graph.add_node("academic_advisor", academic_advisor)
     graph.add_node("career_planner", career_planner)
     graph.add_node("interview_prep", interview_prep)
@@ -118,6 +121,7 @@ def build_graph() -> StateGraph:
             "course_planner": "course_planner",
             "program_advisor": "program_advisor",
             "career_matcher": "career_matcher",
+            "eligibility_reasoner": "eligibility_reasoner",
             "academic_advisor": "academic_advisor",
             "career_planner": "career_planner",
             "interview_prep": "interview_prep",
@@ -137,6 +141,7 @@ def build_graph() -> StateGraph:
         "course_planner": "course_planner",
         "program_advisor": "program_advisor",
         "career_matcher": "career_matcher",
+        "eligibility_reasoner": "eligibility_reasoner",
         "academic_advisor": "academic_advisor",
         "career_planner": "career_planner",
         "interview_prep": "interview_prep",
@@ -151,6 +156,7 @@ def build_graph() -> StateGraph:
         "course_planner": "course_planner",
         "program_advisor": "program_advisor",
         "career_matcher": "career_matcher",
+        "eligibility_reasoner": "eligibility_reasoner",
         "academic_advisor": "academic_advisor",
         "career_planner": "career_planner",
         "interview_prep": "interview_prep",
@@ -164,6 +170,7 @@ def build_graph() -> StateGraph:
         "course_planner": "course_planner",
         "program_advisor": "program_advisor",
         "career_matcher": "career_matcher",
+        "eligibility_reasoner": "eligibility_reasoner",
         "academic_advisor": "academic_advisor",
         "career_planner": "career_planner",
         "interview_prep": "interview_prep",
@@ -187,6 +194,7 @@ def build_graph() -> StateGraph:
     graph.add_edge("course_planner", "evaluator")
     graph.add_edge("program_advisor", "evaluator")
     graph.add_edge("career_matcher", "evaluator")
+    graph.add_edge("eligibility_reasoner", "evaluator")
     graph.add_edge("academic_advisor", "evaluator")
     graph.add_edge("career_planner", "evaluator")
     graph.add_edge("interview_prep", "evaluator")

@@ -16,12 +16,15 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.adapters.llm.lmstudio import get_text_llm
 from app.core.quality import (
     DecisionPayload,
+    add_working_memory_item,
     academic_source_relevance,
     build_support_ref,
+    complete_task,
     course_code_matches_level,
     group_evidence_records,
     infer_target_level,
     infer_target_program,
+    init_working_memory,
 )
 from app.core.state import PathfinderState
 
@@ -76,6 +79,9 @@ async def course_planner(state: PathfinderState) -> PathfinderState:
     evidence_groups = group_evidence_records(evidence_records, state.get("profile_data", {}))
     target_program = infer_target_program(state.get("profile_data", {}), summary, query)
     target_level = infer_target_level(state.get("profile_data", {}), summary, query)
+    working_memory = init_working_memory(state.get("working_memory", {}))
+    task_graph = state.get("task_graph", [])
+    blocked_reasons = list(state.get("blocked_reasons", []))
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Building a ranked course plan...")
@@ -85,6 +91,29 @@ async def course_planner(state: PathfinderState) -> PathfinderState:
 
     merged = _merge_payloads(decision_payload, llm_payload)
     draft = _render_course_draft(merged)
+
+    if merged.get("blocked_or_uncertain_items"):
+        for item in merged.get("blocked_or_uncertain_items", []):
+            if item.get("kind") in {"blocked", "needs_verification"}:
+                blocked_reasons.append(item.get("reason", ""))
+                working_memory = add_working_memory_item(working_memory, "planner_blockers", item.get("reason", ""))
+
+    if merged.get("assumptions"):
+        for assumption in merged.get("assumptions", []):
+            working_memory = add_working_memory_item(working_memory, "active_assumptions", assumption)
+
+    if merged.get("recommended_items"):
+        working_memory = add_working_memory_item(
+            working_memory,
+            "ranking_rationale",
+            "Course planner ranked recommendations from typed evidence groups.",
+        )
+
+    task_graph = complete_task(task_graph, "compare_to_student_state")
+    if blocked_reasons:
+        task_graph = complete_task(task_graph, "check_blockers")
+    if merged.get("recommended_items"):
+        task_graph = complete_task(task_graph, "rank_options")
 
     step_progress.append("Course plan prepared")
     log.info(
@@ -96,6 +125,10 @@ async def course_planner(state: PathfinderState) -> PathfinderState:
         **state,
         "decision_payload": merged,
         "draft_answer": draft,
+        "working_memory": working_memory,
+        "task_graph": task_graph,
+        "blocked_reasons": [reason for reason in blocked_reasons if reason],
+        "stop_reason": state.get("stop_reason", "") or ("partial_answer" if blocked_reasons else ""),
         "step_progress": step_progress,
         "next_node": "evaluator",
     }
@@ -168,6 +201,16 @@ def _heuristic_course_payload(
         for record in course_records + availability_records
         if _record_matches_program_context(record, target_program, target_level)
     ]
+    direct_primary_courses = [
+        record for record in candidate_records
+        if (
+            (record.get("trust_tier") == "primary_official" and record.get("fit_tier") in {"direct", ""})
+            or (
+                not record.get("trust_tier")
+                and record.get("source_type") in {"degree_page", "schedule_page", "admissions_page"}
+            )
+        )
+    ]
 
     for record in candidate_records:
         code = record.get("value", {}).get("code", "")
@@ -203,6 +246,23 @@ def _heuristic_course_payload(
 
     if not live_codes:
         assumptions.append("Current open sections were not directly verified in retrieved schedule sources.")
+
+    if not direct_primary_courses:
+        return {
+            "decision_type": "course_planning",
+            "answer_outline": [
+                "I found some potentially relevant evidence, but not enough direct primary official program evidence to safely rank your next-semester course options.",
+            ],
+            "recommended_items": [],
+            "blocked_or_uncertain_items": [{
+                "label": "Primary official course evidence missing",
+                "reason": "The retrieved sources do not yet contain enough direct official program/course evidence for a safe ranked recommendation.",
+                "kind": "blocked",
+            }],
+            "assumptions": assumptions,
+            "next_best_action": "Retrieve the official program page, official course catalog, or current graduate schedule and then rank the next-semester options.",
+            "source_refs": _dedupe_source_refs(support_refs)[:8],
+        }
 
     if not recommended_items:
         return {

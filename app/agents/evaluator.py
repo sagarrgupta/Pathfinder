@@ -15,7 +15,13 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import store_extracted_entities, update_student
-from app.core.quality import DecisionPayload
+from app.core.quality import (
+    DecisionPayload,
+    add_working_memory_item,
+    complete_task,
+    init_working_memory,
+    summarize_trace,
+)
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.evaluator")
@@ -106,6 +112,9 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     web_results = state.get("web_results", [])
     evidence_records = state.get("evidence_records", [])
     decision_payload = state.get("decision_payload", {})
+    working_memory = init_working_memory(state.get("working_memory", {}))
+    task_graph = state.get("task_graph", [])
+    blocked_reasons = list(state.get("blocked_reasons", []))
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Verifying answer quality...")
@@ -171,6 +180,10 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     validated_payload = _validate_decision_payload(decision_payload, evidence_records)
     if validated_payload:
         decision_payload = validated_payload
+        for item in validated_payload.get("blocked_or_uncertain_items", []):
+            if item.get("kind") in {"blocked", "needs_verification"}:
+                blocked_reasons.append(item.get("reason", ""))
+                working_memory = add_working_memory_item(working_memory, "planner_blockers", item.get("reason", ""))
 
     must_rewrite = (confidence < 0.65) or (not is_grounded)
     if must_rewrite:
@@ -184,6 +197,7 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
                 "Please check the official catalog or share the specific program page you want me to analyze."
             )
             final_draft = warning
+            blocked_reasons.append(warning)
     elif needs_disclaimer and disclaimer:
         final_draft = f"{draft}\n\n⚠️ *{disclaimer}*"
 
@@ -223,6 +237,15 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
             log.warning("Evaluator: failed to persist profile updates: %s", exc)
 
     step_progress.append(f"Confidence: {confidence:.0%} — Grounded: {'Yes' if is_grounded else 'Needs review'}")
+    task_graph = complete_task(task_graph, "render_answer")
+    trace_summary = summarize_trace({
+        **state,
+        "task_graph": task_graph,
+        "working_memory": working_memory,
+        "blocked_reasons": [reason for reason in blocked_reasons if reason],
+        "confidence_score": confidence,
+        "decision_payload": decision_payload,
+    })
 
     log.info("Evaluator: confidence=%.2f grounded=%s updates=%d issues=%s",
              confidence, is_grounded, len(profile_updates), issues)
@@ -234,6 +257,10 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
         "is_grounded": is_grounded,
         "profile_updates": profile_updates,
         "decision_payload": decision_payload,
+        "working_memory": working_memory,
+        "task_graph": task_graph,
+        "blocked_reasons": [reason for reason in blocked_reasons if reason],
+        "trace_summary": trace_summary,
         "step_progress": step_progress,
         "next_node": "responder",
     }

@@ -13,7 +13,14 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
-from app.core.quality import DecisionPayload, build_support_ref, group_evidence_records
+from app.core.quality import (
+    DecisionPayload,
+    add_working_memory_item,
+    build_support_ref,
+    complete_task,
+    group_evidence_records,
+    init_working_memory,
+)
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.career_matcher")
@@ -59,6 +66,9 @@ async def career_matcher(state: PathfinderState) -> PathfinderState:
     profile = state.get("profile_data", {})
     evidence_records = state.get("evidence_records", [])
     evidence_groups = group_evidence_records(evidence_records, profile)
+    working_memory = init_working_memory(state.get("working_memory", {}))
+    task_graph = state.get("task_graph", [])
+    blocked_reasons = list(state.get("blocked_reasons", []))
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Matching your profile to career options...")
@@ -66,6 +76,21 @@ async def career_matcher(state: PathfinderState) -> PathfinderState:
     baseline = _heuristic_career_payload(summary, profile, evidence_groups)
     llm_payload = await _llm_career_payload(query, summary, profile, evidence_groups)
     merged = _merge_payloads(baseline, llm_payload)
+    for assumption in merged.get("assumptions", []):
+        working_memory = add_working_memory_item(working_memory, "active_assumptions", assumption)
+    for item in merged.get("blocked_or_uncertain_items", []):
+        if item.get("kind") in {"blocked", "needs_verification"}:
+            blocked_reasons.append(item.get("reason", ""))
+            working_memory = add_working_memory_item(working_memory, "planner_blockers", item.get("reason", ""))
+    working_memory = add_working_memory_item(
+        working_memory,
+        "ranking_rationale",
+        "Career matcher compared typed role evidence against profile skills and goals.",
+    )
+    task_graph = complete_task(task_graph, "compare_to_student_state")
+    if blocked_reasons:
+        task_graph = complete_task(task_graph, "check_blockers")
+    task_graph = complete_task(task_graph, "rank_options")
 
     step_progress.append("Career matching prepared")
     log.info(
@@ -77,6 +102,10 @@ async def career_matcher(state: PathfinderState) -> PathfinderState:
         **state,
         "decision_payload": merged,
         "draft_answer": "",
+        "working_memory": working_memory,
+        "task_graph": task_graph,
+        "blocked_reasons": [reason for reason in blocked_reasons if reason],
+        "stop_reason": state.get("stop_reason", "") or ("partial_answer" if blocked_reasons else ""),
         "step_progress": step_progress,
         "next_node": "evaluator",
     }

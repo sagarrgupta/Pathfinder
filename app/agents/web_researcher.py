@@ -21,11 +21,16 @@ from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.web_search.fallback_chain import search
 from app.adapters.web_search.url_fetcher import extract_urls, fetch_url_content
 from app.core.quality import (
+    add_working_memory_item,
     academic_source_relevance,
     analyze_query_focus,
     classify_web_source,
+    complete_task,
+    infer_evidence_tiers,
     infer_target_level,
     infer_target_program,
+    init_working_memory,
+    record_source_audit,
 )
 from app.core.state import PathfinderState
 
@@ -86,6 +91,8 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     source_policy = state.get("source_policy", {})
     if source_policy.get("preferred_domains"):
         preferred_domains = list(dict.fromkeys(list(source_policy.get("preferred_domains", [])) + preferred_domains))
+    working_memory = init_working_memory(state.get("working_memory", {}))
+    task_graph = state.get("task_graph", [])
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Searching the web for relevant information...")
@@ -105,6 +112,30 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
             if result:
                 seen_urls.add(url)
                 all_results.append(result)
+                source_type, time_scope = classify_web_source(
+                    result.get("url", ""),
+                    result.get("title", ""),
+                    result.get("content", ""),
+                )
+                trust_tier, fit_tier, freshness_tier = infer_evidence_tiers(
+                    result.get("url", ""),
+                    source_type,
+                    target_program,
+                    target_level,
+                    result.get("title", ""),
+                    result.get("content", ""),
+                )
+                working_memory = record_source_audit(working_memory, {
+                    "url": result.get("url", ""),
+                    "title": result.get("title", ""),
+                    "source_type": source_type,
+                    "action": "selected",
+                    "reason": "Direct URL provided by the user.",
+                    "score": 10.0,
+                    "trust_tier": trust_tier,
+                    "fit_tier": fit_tier,
+                    "freshness_tier": freshness_tier,
+                })
                 log.info("Fetched URL content: %s (%d chars)", url, len(result.get("content", "")))
             else:
                 log.warning("Could not fetch URL: %s", url)
@@ -144,7 +175,40 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     # ── Step 4: Fetch full content for the strongest search hits ─────
     fetched_results = list(all_results)
     candidates = sorted(all_results, key=lambda r: r.get("score", 0), reverse=True)
-    fetch_budget = 8 if intent in {"academic", "research"} else 5
+    fetch_budget = int(source_policy.get("fetch_budget", 8 if intent in {"academic", "research"} else 5))
+
+    strict_official = bool(source_policy.get("strict_primary_only")) and query_focus.get("primary") == "academic"
+    if strict_official:
+        filtered_candidates = []
+        for candidate in candidates:
+            source_type, _ = classify_web_source(
+                candidate.get("url", ""),
+                candidate.get("title", ""),
+                candidate.get("content", ""),
+            )
+            trust_tier, fit_tier, freshness_tier = infer_evidence_tiers(
+                candidate.get("url", ""),
+                source_type,
+                target_program,
+                target_level,
+                candidate.get("title", ""),
+                candidate.get("content", ""),
+            )
+            if trust_tier == "third_party":
+                working_memory = record_source_audit(working_memory, {
+                    "url": candidate.get("url", ""),
+                    "title": candidate.get("title", ""),
+                    "source_type": source_type,
+                    "action": "rejected",
+                    "reason": "Third-party source rejected for strict academic planning.",
+                    "score": float(candidate.get("score", 0.0) or 0.0),
+                    "trust_tier": trust_tier,
+                    "fit_tier": fit_tier,
+                    "freshness_tier": freshness_tier,
+                })
+                continue
+            filtered_candidates.append(candidate)
+        candidates = filtered_candidates
 
     for candidate in candidates[:fetch_budget]:
         url = candidate.get("url", "")
@@ -160,6 +224,14 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
             )
             if source_policy.get("primary_source_types") and source_type in source_policy.get("primary_source_types", []):
                 fetched["score"] += 0.5
+            trust_tier, fit_tier, freshness_tier = infer_evidence_tiers(
+                fetched.get("url", ""),
+                source_type,
+                target_program,
+                target_level,
+                fetched.get("title", ""),
+                fetched.get("content", ""),
+            )
             fetched["metadata"] = {
                 "title": candidate.get("title", ""),
                 "search_source": candidate.get("source", ""),
@@ -167,12 +239,82 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                 "source_type": source_type,
                 "time_scope": time_scope,
                 "selection_reason": _selection_reason(source_type, query_focus),
+                "trust_tier": trust_tier,
+                "fit_tier": fit_tier,
+                "freshness_tier": freshness_tier,
             }
             fetched_results.append(fetched)
+            working_memory = record_source_audit(working_memory, {
+                "url": fetched.get("url", ""),
+                "title": fetched.get("title", ""),
+                "source_type": source_type,
+                "action": "selected",
+                "reason": _selection_reason(source_type, query_focus),
+                "score": float(fetched.get("score", 0.0) or 0.0),
+                "trust_tier": trust_tier,
+                "fit_tier": fit_tier,
+                "freshness_tier": freshness_tier,
+            })
+        else:
+            source_type, time_scope = classify_web_source(
+                candidate.get("url", ""),
+                candidate.get("title", ""),
+                candidate.get("content", ""),
+            )
+            trust_tier, fit_tier, freshness_tier = infer_evidence_tiers(
+                candidate.get("url", ""),
+                source_type,
+                target_program,
+                target_level,
+                candidate.get("title", ""),
+                candidate.get("content", ""),
+            )
+            working_memory = record_source_audit(working_memory, {
+                "url": candidate.get("url", ""),
+                "title": candidate.get("title", ""),
+                "source_type": source_type,
+                "action": "rejected",
+                "reason": "Page fetch failed or returned no usable content.",
+                "score": float(candidate.get("score", 0.0) or 0.0),
+                "trust_tier": trust_tier,
+                "fit_tier": fit_tier,
+                "freshness_tier": freshness_tier,
+            })
 
     # Sort by score (highest first) and keep a deeper evidence pool
     fetched_results.sort(key=lambda r: r.get("score", 0), reverse=True)
     results = _dedupe_results(fetched_results)[:8]
+
+    if query_focus.get("primary") == "academic":
+        official_results = []
+        secondary_results = []
+        for result in results:
+            source_type, _ = classify_web_source(result.get("url", ""), result.get("title", ""), result.get("content", ""))
+            trust_tier, fit_tier, _ = infer_evidence_tiers(
+                result.get("url", ""),
+                source_type,
+                target_program,
+                target_level,
+                result.get("title", ""),
+                result.get("content", ""),
+            )
+            if trust_tier == "primary_official" and fit_tier != "weak":
+                official_results.append(result)
+            elif trust_tier != "third_party" or not strict_official:
+                secondary_results.append(result)
+            else:
+                working_memory = record_source_audit(working_memory, {
+                    "url": result.get("url", ""),
+                    "title": result.get("title", ""),
+                    "source_type": source_type,
+                    "action": "rejected",
+                    "reason": "Removed from final evidence pool because a stronger official source exists.",
+                    "score": float(result.get("score", 0.0) or 0.0),
+                    "trust_tier": trust_tier,
+                    "fit_tier": fit_tier,
+                    "freshness_tier": "live" if source_type == "schedule_page" else "unclear",
+                })
+        results = (official_results + secondary_results)[:8]
 
     if results:
         step_progress.append(f"Found {len(results)} web results")
@@ -192,10 +334,20 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     log.info("Web researcher: %d total results from %d queries + %d direct URLs",
              len(results), len(search_queries), len(user_urls))
 
+    task_graph = complete_task(task_graph, "retrieve_primary_sources")
+    if query_focus.get("wants_live_availability"):
+        if any(classify_web_source(r.get("url", ""), r.get("title", ""), r.get("content", ""))[0] == "schedule_page" for r in results):
+            task_graph = complete_task(task_graph, "retrieve_live_schedule")
+        else:
+            working_memory = add_working_memory_item(working_memory, "missing_primary_evidence", "No live official schedule source was found for this enrollment-style query.")
+
     return {
         **state,
         "web_results": results,
         "citations": citations,
+        "working_memory": working_memory,
+        "task_graph": task_graph,
+        "source_audit": working_memory.get("source_audit", []),
         "step_progress": step_progress,
         "next_node": _determine_next(state),
     }

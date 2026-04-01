@@ -28,7 +28,7 @@ from app.adapters.neo4j.graph_store import (
 from app.agents.profile_manager import process_free_text
 from app.config.settings import settings
 from app.core.graph import get_compiled_graph
-from app.core.quality import infer_quality_path
+from app.core.quality import build_task_graph, infer_quality_path, summarize_trace
 from app.core.state import PathfinderState
 from app.schemas.models import (
     ChatResponse,
@@ -96,6 +96,7 @@ async def chat(
     async def event_stream():
         try:
             graph = await get_compiled_graph()
+            dependency_status = await _dependency_status()
 
             # Reset ALL computed state fields to prevent stale data from
             # previous turns leaking via the checkpointer.
@@ -115,8 +116,17 @@ async def chat(
                 "intent": "",
                 "missing_info": [],
                 "session_summary": {},
+                "workflow": "",
                 "target_entity": {},
                 "source_policy": {},
+                "task_graph": [],
+                "working_memory": {},
+                "compacted_session": {},
+                "source_audit": [],
+                "dependency_status": dependency_status,
+                "blocked_reasons": [],
+                "stop_reason": "",
+                "trace_summary": {},
                 "draft_answer": "",
                 "final_answer": "",
                 "is_blocked": False,
@@ -158,6 +168,7 @@ async def chat(
             final_answer = final_state.get("final_answer", "I couldn't generate a response.")
             confidence = final_state.get("confidence_score", 0.5)
             citations = final_state.get("citations", [])
+            trace_summary = final_state.get("trace_summary") or summarize_trace(final_state)
 
             # Stream tokens (simulate word-by-word for UX)
             words = final_answer.split(" ")
@@ -165,7 +176,7 @@ async def chat(
                 yield f"event: token\ndata: {json.dumps({'content': word + ' '})}\n\n"
 
             # Done event
-            yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'confidence': confidence, 'citations': citations, 'method': _determine_method(final_state), 'quality_path': infer_quality_path(final_state)})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'confidence': confidence, 'citations': citations, 'method': _determine_method(final_state), 'quality_path': infer_quality_path(final_state), 'trace_summary': trace_summary, 'blocked_reasons': final_state.get('blocked_reasons', []), 'dependency_status': final_state.get('dependency_status', dependency_status), 'stop_reason': final_state.get('stop_reason', '')})}\n\n"
 
         except Exception as exc:
             log.error("Chat error: %s", exc, exc_info=True)
@@ -382,37 +393,10 @@ async def update_settings(update: SettingsUpdate):
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
     """Check system health: Neo4j, LM Studio, Ollama."""
-    neo4j_status = "unknown"
-    lm_studio_status = "unknown"
-    ollama_status = "unknown"
-
-    # Check Neo4j
-    try:
-        from app.adapters.neo4j.graph_store import get_driver
-        driver = await get_driver()
-        async with driver.session() as session:
-            await session.run("RETURN 1")
-        neo4j_status = "connected"
-    except Exception:
-        neo4j_status = "disconnected"
-
-    # Check LM Studio
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.LLM_BASE_URL.replace('/v1', '')}/v1/models")
-            lm_studio_status = "connected" if resp.status_code == 200 else "error"
-    except Exception:
-        lm_studio_status = "disconnected"
-
-    # Check Ollama
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.OLLAMA_URL}/api/tags")
-            ollama_status = "connected" if resp.status_code == 200 else "error"
-    except Exception:
-        ollama_status = "disconnected"
+    statuses = await _dependency_status()
+    neo4j_status = statuses.get("neo4j", "unknown")
+    lm_studio_status = statuses.get("llm", "unknown")
+    ollama_status = statuses.get("embeddings", "unknown")
 
     overall = "ok" if all(
         s == "connected" for s in [neo4j_status, lm_studio_status, ollama_status]
@@ -439,3 +423,49 @@ def _determine_method(state: dict[str, Any]) -> str:
     if state.get("web_results"):
         methods.append("web")
     return "+".join(methods) if methods else "direct"
+
+
+async def _dependency_status() -> dict[str, str]:
+    """Check live dependency health for the current turn."""
+    neo4j_status = "unknown"
+    llm_status = "unknown"
+    embeddings_status = "unknown"
+    web_search_status = "unknown"
+
+    try:
+        from app.adapters.neo4j.graph_store import get_driver
+        driver = await get_driver()
+        async with driver.session() as session:
+            await session.run("RETURN 1")
+        neo4j_status = "connected"
+    except Exception:
+        neo4j_status = "disconnected"
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{settings.LLM_BASE_URL.replace('/v1', '')}/v1/models")
+            llm_status = "connected" if resp.status_code == 200 else "error"
+    except Exception:
+        llm_status = "disconnected"
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{settings.OLLAMA_URL}/api/tags")
+            embeddings_status = "connected" if resp.status_code == 200 else "error"
+    except Exception:
+        embeddings_status = "disconnected"
+
+    web_search_status = "configured" if any([
+        settings.TAVILY_API_KEY,
+        settings.GOOGLE_CSE_API_KEY,
+        settings.BRAVE_API_KEY,
+    ]) else "fallback_only"
+
+    return {
+        "neo4j": neo4j_status,
+        "llm": llm_status,
+        "embeddings": embeddings_status,
+        "web_search": web_search_status,
+    }
