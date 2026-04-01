@@ -12,6 +12,7 @@ from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm, strip_repetition, is_garbage_output
+from app.core.quality import classify_web_source
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.academic_advisor")
@@ -40,16 +41,31 @@ CRITICAL RULES:
 4. Always acknowledge what data you DO have vs what you're MISSING.
 5. Cite web sources with URLs when using external information.
 6. Be encouraging but realistic.
-7. Provide actionable next steps — be specific, not vague.
-8. Format using markdown for readability (headers, tables, bullet points).
-9. Address the student by name if available.
-10. When analyzing web page content (reviews, articles), provide a thorough summary with key takeaways.
+7. Default to a direct answer first. Keep it concise unless the user explicitly asks for a detailed plan.
+8. Use recent conversation and known profile facts. Do NOT ask for facts the user already told you.
+9. If the user corrects the university, program, or similar fact, use the corrected fact and ignore the old one.
+10. If information is missing, ask at most ONE targeted follow-up question, and only when that missing detail is actually blocking the answer.
+11. Never pad the answer with generic college-success advice, scholarship lists, thesis guidance, or unrelated checklists unless the user asked for them.
+12. If the user asks which courses they can enroll in next semester and you do not have verified current schedule/section data, say that clearly.
+13. If you DO have official catalog or degree-program pages, still answer with the specific courses that are part of the program or likely next-semester candidates, but label them as "catalog-based options" or "courses to plan for", not as confirmed open sections.
+14. When both catalog data and current schedule data are available, separate them clearly: what the catalog says exists vs what the current schedule says is actually offered now.
+15. For first-semester or early-program students, prioritize required core courses and the courses most aligned with their stated goal.
+16. If the student states a career goal, specialization, or target field, prioritize officially supported courses that align with that goal.
+17. Format using simple markdown for readability, but do not force headers or tables for short answers.
+18. Address the student by name if available.
+19. When analyzing web page content, summarize only what is relevant to the user's question.
 
 Student Profile:
 {profile}
 
+Recent Conversation:
+{recent_messages}
+
 Web Research Results:
 {web_results}
+
+Current Schedule Verified:
+{has_live_schedule}
 
 Retrieved Document Context:
 {documents}
@@ -69,16 +85,19 @@ What's MISSING:
 - Their specific focus areas within their program
 
 YOUR TASK:
-Generate a helpful response that:
-1. Acknowledges what you know about them (name, GPA, skills, goals) — be brief.
-2. Explains WHY you need their full course history before recommending specific courses.
-3. Asks them to do ONE of these:
-   - Upload their academic transcript (PDF) using the file upload button
-   - OR type out the courses they've already completed
-4. Mention that once you have their course history, you can give much better, personalized recommendations.
-5. Keep the tone warm, helpful, and encouraging.
-6. Do NOT provide any specific course recommendations — that comes AFTER they share their history.
-7. Format using markdown.
+Generate a response that:
+1. Uses only the known facts in the profile and recent conversation.
+2. Is short: 2-4 sentences total.
+3. Clearly says what you CAN already infer and what single missing detail is blocking a personalized recommendation.
+4. Asks for ONE thing only:
+   - either the courses already completed
+   - or a transcript upload
+5. Do NOT ask for university/program/major if already known.
+6. Do NOT provide generic checklists, unrelated resources, or invented course names.
+7. If verified web results contain official course offerings, mention that you can use those after they share completed prerequisites.
+
+Recent Conversation:
+{recent_messages}
 """
 
 
@@ -96,6 +115,7 @@ async def academic_advisor(state: PathfinderState) -> PathfinderState:
 
     # Format context
     profile_text = _format_profile(profile)
+    recent_messages = _format_recent_messages(state.get("messages", []))
     web_text = _format_web_results(web_results)
     doc_text = _format_documents(documents)
 
@@ -103,13 +123,18 @@ async def academic_advisor(state: PathfinderState) -> PathfinderState:
     courses = profile.get("courses", [])
     is_course_query = _is_course_recommendation_query(query)
 
-    if is_course_query and len(courses) < 4:
+    has_verified_course_sources = _has_verified_course_sources(web_results, documents)
+
+    if is_course_query and len(courses) < 4 and not has_verified_course_sources:
         # Insufficient data — ask for more info before recommending
         step_progress.append("Need more course history — asking for clarification")
         log.info("Academic advisor: insufficient course data (%d courses), asking for more", len(courses))
 
         response = await llm.ainvoke([
-            SystemMessage(content=_INSUFFICIENT_DATA_PROMPT.format(profile=profile_text)),
+            SystemMessage(content=_INSUFFICIENT_DATA_PROMPT.format(
+                profile=profile_text,
+                recent_messages=recent_messages,
+            )),
             HumanMessage(content=query),
         ])
 
@@ -124,10 +149,14 @@ async def academic_advisor(state: PathfinderState) -> PathfinderState:
         }
 
     # Sufficient data — provide full advice
+    has_live_schedule = _has_live_schedule_sources(web_results)
+
     response = await llm.ainvoke([
         SystemMessage(content=_SYSTEM_PROMPT.format(
             profile=profile_text,
+            recent_messages=recent_messages,
             web_results=web_text,
+            has_live_schedule="yes" if has_live_schedule else "no",
             documents=doc_text,
         )),
         HumanMessage(content=query),
@@ -223,3 +252,61 @@ def _format_documents(documents: list[dict[str, Any]]) -> str:
     for d in documents[:5]:
         parts.append(f"[{d.get('filename', 'doc')} p.{d.get('page_number', '?')}]: {d.get('text', '')[:300]}")
     return "\n".join(parts)
+
+
+def _format_recent_messages(messages: list[Any]) -> str:
+    """Format recent conversation turns for follow-up awareness."""
+    if not messages:
+        return "No recent conversation available."
+
+    history_lines = []
+    for msg in messages[:-1]:
+        if isinstance(msg, tuple) and len(msg) == 2:
+            role, content = msg
+            history_lines.append(f"{role}: {str(content)[:200]}")
+        elif hasattr(msg, "content"):
+            role = getattr(msg, "type", "unknown")
+            history_lines.append(f"{role}: {str(msg.content)[:200]}")
+
+    return "\n".join(history_lines[-6:]) if history_lines else "No recent conversation available."
+
+
+def _has_verified_course_sources(
+    web_results: list[dict[str, Any]], documents: list[dict[str, Any]]
+) -> bool:
+    """Return True when we have sources strong enough to answer a course question."""
+    if documents:
+        return True
+
+    for result in web_results:
+        source_type, _ = classify_web_source(
+            result.get("url", ""),
+            result.get("title", ""),
+            result.get("content", ""),
+        )
+        combined = f"{result.get('title', '')} {result.get('content', '')}".lower()
+
+        if source_type in {"degree_page", "schedule_page", "certificate_page"} and any(
+            keyword in combined for keyword in ("course", "catalog", "curriculum", "section", "requirements")
+        ):
+            return True
+
+    return False
+
+
+def _has_live_schedule_sources(web_results: list[dict[str, Any]]) -> bool:
+    """Detect whether current-term schedule pages appear in retrieved web sources."""
+    for result in web_results:
+        _, time_scope = classify_web_source(
+            result.get("url", ""),
+            result.get("title", ""),
+            result.get("content", ""),
+        )
+        combined = f"{result.get('title', '')} {result.get('content', '')}".lower()
+
+        if time_scope == "live_schedule" and any(
+            keyword in combined for keyword in ("section", "open seats", "registration", "class schedule")
+        ):
+            return True
+
+    return False

@@ -13,12 +13,20 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.web_search.fallback_chain import search
 from app.adapters.web_search.url_fetcher import extract_urls, fetch_url_content
+from app.core.quality import (
+    academic_source_relevance,
+    analyze_query_focus,
+    classify_web_source,
+    infer_target_level,
+    infer_target_program,
+)
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.web_researcher")
@@ -28,6 +36,9 @@ to find information that will help answer this student's question.
 
 Use their profile data to craft precise queries — include university name, program, specific skills, etc.
 Each query should target a different angle or source of information.
+Prefer exact institution names from the profile or recent conversation.
+Do NOT substitute a similar university or campus.
+If the question is about course enrollment, prioritize official catalog, schedule, or department pages.
 
 Student Profile:
 {profile_summary}
@@ -36,7 +47,7 @@ Student Question: {query}
 Intent: {intent}
 
 Return ONLY a JSON array of search query strings, nothing else.
-Example: ["CSUS computer science masters course catalog 2026", "AI machine learning graduate courses California State Sacramento"]
+Example: ["official university course catalog data science masters", "site:university.edu program requirements next semester"]
 """
 
 _QUERY_GEN_URL_PROMPT = """You are a search query optimizer. The student has provided specific URL(s) in their question.
@@ -67,6 +78,14 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     query = state.get("query", "")
     intent = state.get("intent", "general")
     profile = state.get("profile_data", {})
+    session_summary = state.get("session_summary", {})
+    query_focus = analyze_query_focus(query)
+    target_program = infer_target_program(profile, session_summary, query)
+    target_level = infer_target_level(profile, session_summary, query)
+    preferred_domains = _preferred_domains(profile, query)
+    source_policy = state.get("source_policy", {})
+    if source_policy.get("preferred_domains"):
+        preferred_domains = list(dict.fromkeys(list(source_policy.get("preferred_domains", [])) + preferred_domains))
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Searching the web for relevant information...")
@@ -101,24 +120,59 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     else:
         search_queries = await _generate_smart_queries(query, intent, profile)
 
+    search_queries = _expand_queries(search_queries, query, intent, preferred_domains, source_policy)
+
     log.info("Web researcher: running %d queries: %s", len(search_queries), search_queries)
 
     # ── Step 3: Execute search queries through the fallback chain ────
     for sq in search_queries:
         try:
-            results = await search(sq, max_results=3)
+            max_results = 6 if intent in {"academic", "research"} else 4
+            results = await search(sq, max_results=max_results)
             for r in results:
                 url = r.get("url", "")
                 if url and url not in seen_urls:
                     seen_urls.add(url)
-                    all_results.append(r)
+                    enriched = dict(r)
+                    enriched["score"] = _result_score(
+                        enriched, query, preferred_domains, query_focus, target_program, target_level, source_policy
+                    )
+                    all_results.append(enriched)
         except Exception as exc:
             log.debug("Search query failed: %s — %s", sq[:60], exc)
 
-    # Sort by score (highest first) and take top results
-    # Direct URL fetches (score=1.0) will naturally rank first
-    all_results.sort(key=lambda r: r.get("score", 0), reverse=True)
-    results = all_results[:5]
+    # ── Step 4: Fetch full content for the strongest search hits ─────
+    fetched_results = list(all_results)
+    candidates = sorted(all_results, key=lambda r: r.get("score", 0), reverse=True)
+    fetch_budget = 8 if intent in {"academic", "research"} else 5
+
+    for candidate in candidates[:fetch_budget]:
+        url = candidate.get("url", "")
+        if not url or candidate.get("source") == "direct_url":
+            continue
+        fetched = await fetch_url_content(url)
+        if fetched:
+            fetched["score"] = max(candidate.get("score", 0.0), 0.0) + 0.35
+            source_type, time_scope = classify_web_source(
+                fetched.get("url", ""),
+                fetched.get("title", ""),
+                fetched.get("content", ""),
+            )
+            if source_policy.get("primary_source_types") and source_type in source_policy.get("primary_source_types", []):
+                fetched["score"] += 0.5
+            fetched["metadata"] = {
+                "title": candidate.get("title", ""),
+                "search_source": candidate.get("source", ""),
+                "fetched_from_search": True,
+                "source_type": source_type,
+                "time_scope": time_scope,
+                "selection_reason": _selection_reason(source_type, query_focus),
+            }
+            fetched_results.append(fetched)
+
+    # Sort by score (highest first) and keep a deeper evidence pool
+    fetched_results.sort(key=lambda r: r.get("score", 0), reverse=True)
+    results = _dedupe_results(fetched_results)[:8]
 
     if results:
         step_progress.append(f"Found {len(results)} web results")
@@ -301,6 +355,215 @@ def _build_fallback_queries(
             seen.add(q_lower)
             unique.append(q.strip())
     return unique[:3]
+
+
+def _preferred_domains(profile: dict[str, Any], query: str) -> list[str]:
+    """Infer official or high-trust domains from the student's context."""
+    domains: list[str] = []
+    personal = profile.get("personal", {})
+    candidates = [
+        personal.get("website"),
+        personal.get("university_website"),
+        personal.get("portal_url"),
+        personal.get("email"),
+    ]
+
+    for url_or_email in candidates:
+        domain = _extract_domain_candidate(url_or_email or "")
+        if domain and domain not in domains:
+            domains.append(domain)
+
+    for url in extract_urls(query):
+        domain = _extract_domain_candidate(url)
+        if domain and domain not in domains:
+            domains.append(domain)
+
+    return domains[:4]
+
+
+def _expand_queries(
+    search_queries: list[str], query: str, intent: str, preferred_domains: list[str], source_policy: dict[str, Any]
+) -> list[str]:
+    """Add deterministic official-site queries to the model-generated query set."""
+    expanded = list(search_queries)
+
+    if intent in {"academic", "research"} and preferred_domains:
+        domain = preferred_domains[0]
+        expanded.append(f"site:{domain} {query}")
+        expanded.append(f"site:{domain} official catalog {query}")
+        expanded.append(f"site:{domain} schedule requirements {query}")
+        if source_policy.get("prefer_pdfs"):
+            expanded.append(f"site:{domain} filetype:pdf {query}")
+
+    expanded.append(query)
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for q in expanded:
+        cleaned = q.strip()
+        lowered = cleaned.lower()
+        if cleaned and lowered not in seen:
+            seen.add(lowered)
+            unique.append(cleaned)
+    return unique[:6]
+
+
+def _result_score(
+    result: dict[str, Any],
+    query: str,
+    preferred_domains: list[str],
+    query_focus: dict[str, Any],
+    target_program: str = "",
+    target_level: str = "unknown",
+    source_policy: dict[str, Any] | None = None,
+) -> float:
+    """Heuristic ranking for search results before full-page fetch."""
+    score = float(result.get("score", 0.0) or 0.0)
+    url = result.get("url", "")
+    title = (result.get("title", "") or "").lower()
+    content = (result.get("content", "") or "").lower()
+    domain = urlparse(url).netloc.lower()
+    query_terms = [term for term in query.lower().split() if len(term) > 2]
+    source_type, time_scope = classify_web_source(url, result.get("title", ""), result.get("content", ""))
+    source_policy = source_policy or {}
+
+    if any(domain.endswith(pref) for pref in preferred_domains):
+        score += 2.0
+    elif domain.endswith(".edu"):
+        score += 0.6
+
+    matched_terms = sum(1 for term in query_terms if term in title or term in content)
+    score += min(1.5, matched_terms * 0.15)
+
+    if any(word in title for word in ("catalog", "schedule", "curriculum", "computer science", "graduate")):
+        score += 0.5
+
+    if query_focus.get("primary") == "academic":
+        score += academic_source_relevance(
+            result.get("title", ""),
+            result.get("content", ""),
+            url,
+            target_program,
+            target_level,
+        )
+
+    if source_type in source_policy.get("primary_source_types", []):
+        score += 1.2
+    elif source_type in source_policy.get("secondary_source_types", []):
+        score += 0.3
+    elif source_policy.get("primary_source_types"):
+        score -= 0.6
+
+    if source_policy.get("prefer_pdfs") and url.lower().endswith(".pdf"):
+        score += 0.8
+
+    score += _source_type_bonus(source_type, time_scope, query_focus)
+    score -= _source_type_penalty(source_type, query_focus)
+
+    return score
+
+
+def _source_type_bonus(source_type: str, time_scope: str, query_focus: dict[str, Any]) -> float:
+    bonus = 0.0
+    primary = query_focus.get("primary", "")
+
+    if primary == "academic":
+        if query_focus.get("wants_live_availability"):
+            if source_type == "schedule_page":
+                bonus += 3.4
+            elif source_type == "degree_page":
+                bonus += 0.7
+            elif source_type == "certificate_page":
+                bonus += 0.3
+        elif query_focus.get("wants_requirements"):
+            if source_type == "degree_page":
+                bonus += 2.3
+            elif source_type == "admissions_page":
+                bonus += 1.5
+            elif source_type == "certificate_page":
+                bonus += 0.4
+        else:
+            if source_type == "degree_page":
+                bonus += 2.0
+            elif source_type == "schedule_page":
+                bonus += 0.8
+            elif source_type == "certificate_page":
+                bonus += 0.5
+
+    if primary == "career":
+        if source_type == "job_page":
+            bonus += 2.2
+        elif source_type == "general_web":
+            bonus += 0.4
+
+    if primary == "comparison":
+        if source_type in {"degree_page", "admissions_page"}:
+            bonus += 1.8
+
+    if primary == "summary":
+        if source_type != "general_web":
+            bonus += 0.8
+
+    if time_scope == "live_schedule" and query_focus.get("wants_live_availability"):
+        bonus += 0.7
+
+    return bonus
+
+
+def _source_type_penalty(source_type: str, query_focus: dict[str, Any]) -> float:
+    penalty = 0.0
+    primary = query_focus.get("primary", "")
+
+    if primary == "academic" and query_focus.get("wants_requirements") and source_type == "certificate_page":
+        penalty += 0.8
+    if primary == "academic" and query_focus.get("wants_live_availability") and source_type == "degree_page":
+        penalty += 0.8
+    if primary == "academic" and not query_focus.get("wants_live_availability") and source_type == "schedule_page":
+        penalty += 0.2
+    if primary == "career" and source_type in {"degree_page", "certificate_page"}:
+        penalty += 0.6
+
+    return penalty
+
+
+def _selection_reason(source_type: str, query_focus: dict[str, Any]) -> str:
+    primary = query_focus.get("primary", "")
+    if primary == "academic" and query_focus.get("wants_live_availability") and source_type == "schedule_page":
+        return "Selected because the query asks about current availability."
+    if primary == "academic" and source_type == "degree_page":
+        return "Selected as a primary official program source."
+    if primary == "career" and source_type == "job_page":
+        return "Selected as a direct role-matching source."
+    if source_type == "certificate_page":
+        return "Selected as a secondary specialization source."
+    return "Selected as a relevant supporting source."
+
+
+def _dedupe_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the highest-scoring result for each URL."""
+    deduped: dict[str, dict[str, Any]] = {}
+    for result in results:
+        url = result.get("url", "")
+        if not url:
+            continue
+        existing = deduped.get(url)
+        if not existing or result.get("score", 0) > existing.get("score", 0):
+            deduped[url] = result
+    return list(deduped.values())
+
+
+def _extract_domain_candidate(value: str) -> str:
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    if "@" in text and "://" not in text:
+        text = text.split("@", 1)[1]
+    if "://" not in text:
+        text = f"https://{text}"
+    domain = urlparse(text).netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return domain
 
 
 def _determine_next(state: PathfinderState) -> str:

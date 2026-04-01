@@ -36,6 +36,9 @@ class PathfinderState(TypedDict, total=False):
     plan: list[str]                           # Ordered list of agent nodes to execute
     next_node: str                            # Next node to route to
     missing_info: list[str]                   # Info the system needs but doesn't have
+    session_summary: dict[str, Any]           # Normalized summary of session/profile context
+    target_entity: dict[str, Any]             # Normalized target the user is asking about
+    source_policy: dict[str, Any]             # Retrieval/extraction strategy for the current query
 
     # ── Data gathered by nodes ──────────────────────────────────
     profile_data: dict[str, Any]              # Student profile from Neo4j KG
@@ -43,6 +46,8 @@ class PathfinderState(TypedDict, total=False):
     graph_results: list[dict[str, Any]]       # Structured results from graph queries
     web_results: list[dict[str, Any]]         # Results from web search
     extracted_entities: list[dict[str, Any]]  # Entities extracted from documents
+    evidence_records: list[dict[str, Any]]    # Typed evidence extracted from web/profile/doc sources
+    decision_payload: dict[str, Any]          # Structured planner output used for final response
 
     # ── Evaluation ──────────────────────────────────────────────
     draft_answer: str                         # Answer before evaluation

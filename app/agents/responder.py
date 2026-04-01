@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from langchain_core.messages import AIMessage
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm, strip_repetition, is_garbage_output
@@ -24,13 +25,17 @@ Student name: {student_name}
 
 Rules:
 1. Keep the substance of the draft answer — don't remove important information.
-2. Format with markdown: use headers (##), bullet points, tables, and bold for key info.
-3. Weave citations naturally into the text with clickable links.
-4. Tone: warm, professional, encouraging — like a knowledgeable mentor. Not generic or robotic.
-5. If confidence is low, acknowledge uncertainty honestly but still be helpful.
-6. End with 1-2 specific follow-up suggestions (not generic ones).
-7. If the student's name is available, address them by first name occasionally — but don't overdo it.
-8. Use "sources:" at the end to list URLs referenced (if any).
+2. Preserve brevity. If the draft is already direct and clear, make only light edits.
+3. Use simple markdown only when it helps. Do NOT add headers or tables to short answers.
+4. Weave citations naturally into the text with clickable links when present.
+5. Tone: warm, professional, encouraging. Never generic, inflated, or lecture-like.
+6. Do not expand the answer with new advice that was not in the draft.
+7. Do not turn a narrow answer into a long roadmap.
+8. If the draft asks a follow-up question, keep it to one targeted question.
+9. If confidence is low, acknowledge uncertainty honestly but still be helpful.
+10. End with at most one specific next step, and only if it adds value.
+11. If the student's name is available, use it sparingly.
+12. Use "Sources:" at the end only when there are actual URLs to list.
 
 Draft answer: {draft}
 Confidence: {confidence}
@@ -46,6 +51,7 @@ async def responder(state: PathfinderState) -> PathfinderState:
     confidence = state.get("confidence_score", 0.5)
     is_blocked = state.get("is_blocked", False)
     block_reason = state.get("block_reason", "")
+    decision_payload = state.get("decision_payload", {})
 
     step_progress = list(state.get("step_progress", []))
 
@@ -54,6 +60,7 @@ async def responder(state: PathfinderState) -> PathfinderState:
         return {
             **state,
             "final_answer": block_reason,
+            "messages": [AIMessage(content=block_reason)],
             "step_progress": step_progress,
         }
 
@@ -62,6 +69,7 @@ async def responder(state: PathfinderState) -> PathfinderState:
         step_progress.append("Response ready!")
         return {
             **state,
+            "messages": [AIMessage(content=final_already)],
             "step_progress": step_progress,
         }
 
@@ -108,6 +116,7 @@ async def responder(state: PathfinderState) -> PathfinderState:
             **state,
             "final_answer": draft,
             "confidence_score": 0.95,
+            "messages": [AIMessage(content=draft)],
             "step_progress": step_progress,
         }
 
@@ -115,6 +124,11 @@ async def responder(state: PathfinderState) -> PathfinderState:
     profile = state.get("profile_data", {})
     personal = profile.get("personal", {}) if profile else {}
     student_name = personal.get("name", "").split()[0] if personal.get("name") else ""
+
+    citations = _merge_citations_with_payload(state.get("citations", []), decision_payload)
+
+    if decision_payload and not draft:
+        draft = _render_decision_payload(decision_payload, confidence)
 
     # If it's a greeting, generate a personalized welcome
     if intent == "greeting":
@@ -154,6 +168,8 @@ async def responder(state: PathfinderState) -> PathfinderState:
             **state,
             "final_answer": draft,
             "confidence_score": 1.0,
+            "citations": citations,
+            "messages": [AIMessage(content=draft)],
             "step_progress": step_progress,
         }
 
@@ -214,8 +230,10 @@ async def responder(state: PathfinderState) -> PathfinderState:
                 "If the context includes their resume or profile data, USE it to give "
                 "a personalized, specific answer. Do NOT ask the student to tell you "
                 "things that are already in the context. "
-                "When summarizing web page content, be thorough and include key details. "
-                "Format with markdown. Be helpful and actionable."
+                "When summarizing web page content, include only what is relevant to the question. "
+                "Be concise by default. Do not invent facts, course names, or requirements. "
+                "If context is insufficient, say exactly what is missing in one short follow-up question. "
+                "Use simple markdown only if it improves readability."
             )),
             HumanMessage(content=f"Context:\n{context}\n\nStudent's question: {query}"),
         ])
@@ -225,6 +243,8 @@ async def responder(state: PathfinderState) -> PathfinderState:
             **state,
             "final_answer": draft,
             "confidence_score": 0.6,
+            "citations": citations,
+            "messages": [AIMessage(content=draft)],
             "step_progress": step_progress,
         }
 
@@ -233,7 +253,10 @@ async def responder(state: PathfinderState) -> PathfinderState:
     llm = get_text_llm()
 
     response = await llm.ainvoke([
-        SystemMessage(content="You are a response formatter for Pathfinder. Polish and personalize the following answer."),
+        SystemMessage(content=(
+            "You are a response formatter for Pathfinder. "
+            "Polish lightly, preserve meaning, and prefer concise direct answers over elaborate formatting."
+        )),
         HumanMessage(content=_SYNTHESIS_PROMPT.format(
             student_name=student_name or "the student",
             draft=draft[:4000],
@@ -253,6 +276,8 @@ async def responder(state: PathfinderState) -> PathfinderState:
     return {
         **state,
         "final_answer": final,
+        "citations": citations,
+        "messages": [AIMessage(content=final)],
         "step_progress": step_progress,
     }
 
@@ -266,4 +291,73 @@ def _determine_method(state: PathfinderState) -> str:
         methods.append("graph")
     if state.get("web_results"):
         methods.append("web")
+    if state.get("evidence_records"):
+        methods.append("facts")
+    if state.get("decision_payload"):
+        methods.append("planner")
     return "+".join(methods) if methods else "direct"
+
+
+def _render_decision_payload(payload: dict[str, Any], confidence: float) -> str:
+    """Render a structured planner payload into the final answer body."""
+    lines = []
+
+    for line in payload.get("answer_outline", [])[:2]:
+        if line:
+            lines.append(line)
+
+    recommended = payload.get("recommended_items", [])
+    if recommended:
+        lines.append("\n**Recommended options**")
+        for item in recommended[:5]:
+            status = item.get("status", "")
+            status_label = {
+                "confirmed_open": "confirmed open",
+                "likely_next": "strong next-step option",
+                "catalog_option": "catalog-based option",
+            }.get(status, status)
+            reason = item.get("reason", "")
+            label = item.get("label", "")
+            lines.append(f"- **{label}**: {reason}" + (f" ({status_label})" if status_label else ""))
+
+    blocked = payload.get("blocked_or_uncertain_items", [])
+    if blocked:
+        lines.append("\n**Blocked or uncertain**")
+        for item in blocked[:4]:
+            lines.append(f"- **{item.get('label', '')}**: {item.get('reason', '')}")
+
+    assumptions = payload.get("assumptions", [])
+    if assumptions:
+        lines.append("\n**Assumptions**")
+        for assumption in assumptions[:3]:
+            lines.append(f"- {assumption}")
+
+    next_best_action = payload.get("next_best_action", "")
+    if next_best_action:
+        lines.append(f"\n**Next step:** {next_best_action}")
+
+    return "\n".join(lines).strip()
+
+
+def _merge_citations_with_payload(
+    citations: list[dict[str, Any]], payload: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Ensure payload support refs are surfaced as citations."""
+    merged = list(citations)
+    seen = {(c.get("source", ""), c.get("metadata", {}).get("title", "")) for c in merged}
+    for ref in payload.get("source_refs", []):
+        key = (ref.get("url", ""), ref.get("title", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append({
+            "source": ref.get("url", ""),
+            "content": ref.get("excerpt", ""),
+            "score": 0.8,
+            "metadata": {
+                "title": ref.get("title", ""),
+                "search_source": ref.get("source_type", ""),
+                "entity_type": ref.get("entity_type", ""),
+            },
+        })
+    return merged

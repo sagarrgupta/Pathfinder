@@ -195,30 +195,23 @@ _GARBAGE_PATTERNS = (
     "```json",  # Sometimes the model wraps its entire answer in a code block
 )
 
-# Minimum length for a "real" prose answer from an advisory agent
-_MIN_ANSWER_LEN = 80
-
-
 def is_garbage_output(text: str) -> bool:
     """Return True if the LLM output looks like garbage rather than a real answer.
 
     Detects:
     - Model control tokens (``<|channel|>``, ``<|im_end|>``, etc.)
-    - Extremely short outputs (< 80 chars) that are not valid prose
     - Outputs that are entirely JSON when prose was expected
     """
     if not text or not text.strip():
         return True
     stripped = text.strip()
-    if len(stripped) < _MIN_ANSWER_LEN:
-        # Very short — could still be valid for JSON-only agents, but
-        # advisory agents should produce longer answers.
-        log.debug("Output too short (%d chars): %s", len(stripped), stripped[:100])
-        return True
     for pattern in _GARBAGE_PATTERNS:
         if pattern in stripped:
             log.warning("Garbage pattern %r detected in output: %s", pattern, stripped[:120])
             return True
+    if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
+        log.debug("Output appears to be raw structured data, not prose: %s", stripped[:120])
+        return True
     return False
 
 
