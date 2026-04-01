@@ -78,7 +78,7 @@ _TEXT_EXTRACTION_PROMPT = PROFILE_MANAGER_TEXT_EXTRACTION_PROMPT
 async def profile_manager(state: PathfinderState) -> PathfinderState:
     """Load profile, search documents, and enrich state with personal data."""
     query = state.get("query", "")
-    student_id = state.get("student_id", "default")
+    student_id = state.get("student_id", "")
     session_id = state.get("session_id", "")
 
     step_progress = list(state.get("step_progress", []))
@@ -227,7 +227,7 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
 
 
 async def process_free_text(
-    text: str, student_id: str = "default"
+    text: str, student_id: str
 ) -> dict[str, Any]:
     """Process free-text input from the My Profile page.
 
@@ -323,14 +323,10 @@ def _fallback_student_updates(text: str) -> dict[str, Any]:
     uni_match = re.search(r"\b(?:university|college|school)\s*[:\-]\s*([^\n.;]{3,120})", raw, flags=re.IGNORECASE)
     if uni_match:
         updates["university"] = uni_match.group(1).strip()
-    elif "california state university" in lowered and "sacramento" in lowered:
-        updates["university"] = "California State University - Sacramento"
 
     program_match = re.search(r"\b(?:program|major|degree)\s*[:\-]\s*([^\n.;]{2,120})", raw, flags=re.IGNORECASE)
     if program_match:
         updates["program"] = program_match.group(1).strip()
-    elif "masters in computer science" in lowered or "ms in computer science" in lowered:
-        updates["program"] = "MS in Computer Science"
 
     gpa_match = re.search(r"\bgpa\s*(?:is|=|:)?\s*([0-4](?:\.\d{1,2})?)", lowered)
     if gpa_match:

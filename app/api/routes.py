@@ -27,6 +27,7 @@ from app.adapters.neo4j.graph_store import (
     list_saved_recommendations,
     promote_document_to_global,
     reset_student_data,
+    reset_all_data,
     run_cypher,
     store_memory_item,
     update_entity,
@@ -35,6 +36,7 @@ from app.adapters.neo4j.graph_store import (
 from app.agents.profile_manager import process_free_text
 from app.config.settings import settings
 from app.core.graph import get_compiled_graph
+from app.core.memory import reset_checkpointer_storage
 from app.core.quality import build_task_graph, infer_quality_path, summarize_trace
 from app.core.state import PathfinderState
 from app.services.conflict_autoresolve import (
@@ -62,7 +64,7 @@ from app.schemas.models import (
     SettingsResponse,
     SettingsUpdate,
 )
-from app.utils.ids import generate_session_id
+from app.utils.ids import generate_session_id, generate_student_id
 
 log = logging.getLogger("pathfinder.api")
 
@@ -405,6 +407,17 @@ async def reset_all_profile_data(student_id: Optional[str] = Query(default=None)
     return {"deleted": deleted, "message": "All profile data has been reset."}
 
 
+@router.delete("/settings/delete-all-data")
+async def delete_all_data_everywhere():
+    """Delete all profiles, graph data, and persisted chat sessions for all profiles."""
+    deleted_nodes = await reset_all_data()
+    await reset_checkpointer_storage()
+    return {
+        "deleted_nodes": deleted_nodes,
+        "message": "All profiles, Neo4j data, and chat sessions have been deleted.",
+    }
+
+
 @router.post("/profile/text")
 async def add_profile_text(input_data: ProfileTextInput, student_id: Optional[str] = Query(default=None)):
     """Process free-text input and add extracted entities to profile."""
@@ -674,13 +687,13 @@ async def _dependency_status() -> dict[str, str]:
 
 
 async def _resolve_student_id(student_id: str | None, create_if_missing: bool = True) -> str:
-    """Resolve the active student profile, creating the default one if needed."""
+    """Resolve the active student profile, creating a runtime ID if needed."""
     if student_id:
         if create_if_missing:
             await ensure_student(student_id)
         return student_id
-    if create_if_missing:
-        await ensure_student("default")
-        return "default"
-    existing = await get_student("default")
-    return existing.get("id", "default") if existing else "default"
+    if not create_if_missing:
+        return ""
+    runtime_student_id = generate_student_id()
+    await ensure_student(runtime_student_id)
+    return runtime_student_id

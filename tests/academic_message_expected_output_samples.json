@@ -1,502 +1,704 @@
+// local resume/transcript paths omitted intentionally
+
 [
   {
     "type": "college_fit",
-    "message": "Based on my GPA and internship experience, which universities are a good fit for me?",
+    "preMessageInfo": "The system already has my GPA, transcript, and internship experience.",
+    "message": "Which Master of Science in Computer Science programs in California would be a good fit for me?",
+    "expected_output": "A list of suitable California Master of Science in Computer Science programs grouped by fit level, with short reasons based on the stored academic profile and experience.",
     "id": 1
   },
   {
     "type": "college_fit",
-    "message": "Can you suggest safe, moderate, and ambitious universities for my profile?",
+    "preMessageInfo": "The system already has my academic background and target major.",
+    "message": "Can you suggest safe, moderate, and ambitious universities for me in the United States?",
+    "expected_output": "Three groups of universities based on admissions fit for the student's stored profile and target major.",
     "id": 2
   },
   {
     "type": "college_fit",
-    "message": "Which graduate programs match my academic background best?",
+    "preMessageInfo": "The system already has my transcript, resume, and work experience.",
+    "message": "Which graduate programs match my profile best if I want to stay close to software engineering roles?",
+    "expected_output": "A ranked list of graduate programs that align with the stored transcript, resume, and career direction.",
     "id": 3
   },
   {
     "type": "college_fit",
-    "message": "Which universities are realistic for me if I want a strong Computer Science program?",
+    "preMessageInfo": "The system already knows that I want a Computer Science program and prefer practical coursework.",
+    "message": "Which universities in the United States are realistic for me?",
+    "expected_output": "A list of realistic universities with strong Computer Science programs and applied learning opportunities.",
     "id": 4
   },
   {
     "type": "college_fit",
-    "message": "Can you rank universities for me based on my grades, projects, and work experience?",
+    "preMessageInfo": "The system already has my grades, projects, and work experience.",
+    "message": "Can you rank ten universities for me?",
+    "expected_output": "A ranked list of ten universities with reasoning tied to grades, project strength, and professional experience.",
     "id": 5
   },
   {
     "type": "admissions_chance",
+    "preMessageInfo": "The system already has my academic profile and target program information.",
     "message": "Do I have a strong chance of getting into Boston University for a Master of Science in Computer Science?",
+    "expected_output": "An estimated admission likelihood for Boston University with a short explanation of strengths and weak points.",
     "id": 6
   },
   {
     "type": "admissions_chance",
+    "preMessageInfo": "The system already has my GPA, projects, internship experience, and research history.",
     "message": "What are my chances of admission to top 50 Computer Science programs?",
+    "expected_output": "A realistic assessment of competitiveness for top 50 Computer Science programs, including major risk factors.",
     "id": 7
   },
   {
     "type": "admissions_chance",
-    "message": "Which parts of my profile make me a weak candidate for competitive graduate schools?",
+    "preMessageInfo": "The system already has my full profile and the universities I am targeting.",
+    "message": "Which parts of my profile make me look weak for these universities?",
+    "expected_output": "A breakdown of weak parts of the profile in the context of the selected universities.",
     "id": 8
   },
   {
     "type": "admissions_chance",
-    "message": "How likely am I to get admitted if I apply this cycle with my current profile?",
+    "preMessageInfo": "The system already has my current application profile.",
+    "message": "How likely am I to get admitted if I apply this cycle?",
+    "expected_output": "An admission estimate for the current cycle that considers the stored profile and target level.",
     "id": 9
   },
   {
     "type": "admissions_chance",
+    "preMessageInfo": "The system already has my profile and the five universities I selected.",
     "message": "Can you estimate my admission chances for these five universities?",
+    "expected_output": "A university by university estimate with a concise explanation for each one.",
     "id": 10
   },
   {
     "type": "major_selection",
+    "preMessageInfo": null,
     "message": "I enjoy learning about space but I struggle with math. What major should I choose?",
+    "expected_output": "A list of suitable majors with reasons based on interests and weaknesses, along with possible career paths.",
     "id": 11
   },
   {
     "type": "major_selection",
+    "preMessageInfo": "The system already has my transcript and interest areas.",
     "message": "Should I choose Computer Science, Data Science, or Information Systems?",
+    "expected_output": "A comparison of the three majors with a recommendation based on the stored academic record and interests.",
     "id": 12
   },
   {
     "type": "major_selection",
-    "message": "Which major fits my strengths based on my transcript?",
+    "preMessageInfo": "The system already has my transcript.",
+    "message": "Which major fits my strengths best?",
+    "expected_output": "A recommended major or shortlist of majors mapped to performance patterns in the transcript.",
     "id": 13
   },
   {
     "type": "major_selection",
+    "preMessageInfo": null,
     "message": "What majors are best for someone who likes problem solving and coding?",
+    "expected_output": "A list of majors related to problem solving and coding, with short differences between them.",
     "id": 14
   },
   {
     "type": "major_selection",
-    "message": "Can you suggest majors for me if I want strong job opportunities after graduation?",
+    "preMessageInfo": null,
+    "message": "Which majors usually lead to strong job opportunities after graduation?",
+    "expected_output": "A list of majors with strong job prospects and a short explanation for each one.",
     "id": 15
   },
   {
     "type": "skill_planning",
+    "preMessageInfo": "The system already has my resume and target role.",
     "message": "What skills should I build in the next six months for software engineering internships?",
+    "expected_output": "A six month skill plan with priority areas, projects, and learning goals tied to the target role.",
     "id": 16
   },
   {
     "type": "skill_planning",
-    "message": "Which technical skills should I improve before applying for iOS developer roles?",
+    "preMessageInfo": "The system already knows that I want iOS developer roles.",
+    "message": "Which technical skills should I improve before applying?",
+    "expected_output": "A targeted list of iOS related skills such as Swift, UIKit, SwiftUI, architecture, testing, and deployment.",
     "id": 17
   },
   {
     "type": "skill_planning",
+    "preMessageInfo": null,
     "message": "What should I learn first if I want to move into machine learning?",
+    "expected_output": "A beginner friendly skill path starting from foundations to practical machine learning topics.",
     "id": 18
   },
   {
     "type": "skill_planning",
-    "message": "Can you create a skill roadmap for me based on my current resume?",
+    "preMessageInfo": "The system already has my current resume.",
+    "message": "Can you create a skill roadmap for me?",
+    "expected_output": "A personalized roadmap that identifies current strengths, gaps, and next skills to build.",
     "id": 19
   },
   {
     "type": "skill_planning",
-    "message": "Which tools and technologies should I focus on for my target career path?",
+    "preMessageInfo": "The system already knows my target career path.",
+    "message": "Which tools and technologies should I focus on?",
+    "expected_output": "A list of relevant tools and technologies prioritized for the stored career goal.",
     "id": 20
   },
   {
     "type": "course_guidance",
-    "message": "Which courses should I take next semester if I want machine learning internships?",
+    "preMessageInfo": "The system already knows that I want machine learning internships.",
+    "message": "Which courses should I take next semester?",
+    "expected_output": "A recommended semester course list aligned with machine learning internship preparation.",
     "id": 21
   },
   {
     "type": "course_guidance",
+    "preMessageInfo": "The system already has my academic history.",
     "message": "Can you suggest a balanced course plan for next term?",
+    "expected_output": "A balanced next term course plan with a mix of difficult and moderate subjects.",
     "id": 22
   },
   {
     "type": "course_guidance",
+    "preMessageInfo": "The system already has my transcript and graduate school goal.",
     "message": "Which electives will strengthen my profile for graduate school applications?",
+    "expected_output": "A list of electives that improve graduate school readiness, with reasons for each.",
     "id": 23
   },
   {
     "type": "course_guidance",
-    "message": "What classes should I prioritize if I want a career in mobile development?",
+    "preMessageInfo": "The system already knows that I want a career in mobile development.",
+    "message": "What classes should I prioritize?",
+    "expected_output": "A set of relevant classes such as mobile development, software design, user interface, and systems courses.",
     "id": 24
   },
   {
     "type": "course_guidance",
+    "preMessageInfo": "The system already has my interests and career goals.",
     "message": "Can you help me choose courses that match both my interests and career goals?",
+    "expected_output": "A course recommendation set that balances interest areas with long term goals.",
     "id": 25
   },
   {
     "type": "resume_analysis",
+    "preMessageInfo": "The system already has my resume.",
     "message": "What does my resume say about the kind of graduate programs I should apply to?",
+    "expected_output": "An analysis of the resume that maps profile strengths to fitting types of graduate programs.",
     "id": 26
   },
   {
     "type": "resume_analysis",
+    "preMessageInfo": "The system already has my resume and target internship roles.",
     "message": "What gaps in my resume should I fix before internship applications?",
+    "expected_output": "A list of missing or weak areas in the resume and specific ways to improve them.",
     "id": 27
   },
   {
     "type": "resume_analysis",
+    "preMessageInfo": "The system already has my resume.",
     "message": "Can you review my resume and tell me what is missing for software roles?",
+    "expected_output": "A resume review with missing skills, project evidence, or wording improvements relevant to software roles.",
     "id": 28
   },
   {
     "type": "resume_analysis",
+    "preMessageInfo": "The system already has my resume.",
     "message": "Which achievements on my resume are strongest for graduate admissions?",
+    "expected_output": "A shortlist of the strongest resume achievements for graduate admissions with reasons.",
     "id": 29
   },
   {
     "type": "resume_analysis",
+    "preMessageInfo": "The system already has my resume and target research programs.",
     "message": "How can I improve my resume for better chances at research programs?",
+    "expected_output": "Recommendations for adding research focused content, publications, projects, or technical depth.",
     "id": 30
   },
   {
     "type": "financial_aid",
-    "message": "Which universities on my list are most affordable for international students?",
+    "preMessageInfo": "The system already has my university list and knows that I am an international student.",
+    "message": "Which universities on my list are most affordable for me?",
+    "expected_output": "A comparison of universities by tuition and likely living cost, focused on international affordability.",
     "id": 31
   },
   {
     "type": "financial_aid",
-    "message": "What scholarships match my academic record and background?",
+    "preMessageInfo": "The system already has my academic background and student profile.",
+    "message": "What scholarships match my profile?",
+    "expected_output": "A list of matching scholarship categories or opportunities with short eligibility reasons.",
     "id": 32
   },
   {
     "type": "financial_aid",
+    "preMessageInfo": "The system already has my shortlisted universities.",
     "message": "Can you compare tuition and living costs for these universities?",
+    "expected_output": "A structured cost comparison of tuition and estimated living expenses across the selected universities.",
     "id": 33
   },
   {
     "type": "financial_aid",
+    "preMessageInfo": "The system already has my profile and target universities.",
     "message": "Which universities offer the best assistantship opportunities for someone like me?",
+    "expected_output": "A list of universities that are more likely to offer assistantships, with short reasoning.",
     "id": 34
   },
   {
     "type": "financial_aid",
-    "message": "How can I reduce the cost of graduate school based on my profile?",
+    "preMessageInfo": "The system already has my profile and budget concerns.",
+    "message": "How can I reduce the cost of graduate school?",
+    "expected_output": "Specific ways to lower cost through assistantships, scholarships, lower cost schools, or application strategy.",
     "id": 35
   },
   {
     "type": "campus_life",
-    "message": "What do students say about dining costs at this university?",
+    "preMessageInfo": "The system already knows which university I am asking about.",
+    "message": "What do students say about dining costs there?",
+    "expected_output": "A summary of student reviews or external information about dining cost and value at the given university.",
     "id": 36
   },
   {
     "type": "campus_life",
-    "message": "What do reviews say about housing quality for international students?",
+    "preMessageInfo": "The system already knows which university I am asking about and that I am an international student.",
+    "message": "What do reviews say about housing quality for students like me?",
+    "expected_output": "A review summary focused on housing quality and challenges relevant to international students.",
     "id": 37
   },
   {
     "type": "campus_life",
-    "message": "How do students describe the social environment at this campus?",
+    "preMessageInfo": "The system already knows which campus I mean.",
+    "message": "How do students describe the social environment there?",
+    "expected_output": "A concise summary of the campus social environment based on reviews or public student discussions.",
     "id": 38
   },
   {
     "type": "campus_life",
-    "message": "Are students generally satisfied with academic support services here?",
+    "preMessageInfo": "The system already knows which university I mean.",
+    "message": "Are students generally satisfied with the academic support services there?",
+    "expected_output": "A summary of how students describe academic support, advising, tutoring, and responsiveness.",
     "id": 39
   },
   {
     "type": "campus_life",
-    "message": "What do student reviews say about safety and transportation near campus?",
+    "preMessageInfo": "The system already knows which campus I am asking about.",
+    "message": "What do student reviews say about safety and transportation near the campus?",
+    "expected_output": "A short external summary about campus area safety and transportation convenience.",
     "id": 40
   },
   {
     "type": "university_comparison",
+    "preMessageInfo": "The system already has the three universities I selected.",
     "message": "Compare these three universities for cost, curriculum, and job outcomes.",
+    "expected_output": "A side by side comparison that highlights cost, curriculum strengths, and likely job outcomes.",
     "id": 41
   },
   {
     "type": "university_comparison",
-    "message": "Which university is a better fit for me based on my goals and budget?",
+    "preMessageInfo": "The system already has my goals, budget, and selected schools.",
+    "message": "Which university is a better fit for me?",
+    "expected_output": "A best fit recommendation among the listed universities with reasons tied to goals and budget.",
     "id": 42
   },
   {
     "type": "university_comparison",
+    "preMessageInfo": "The system already has my shortlisted programs.",
     "message": "Can you compare these programs for research, internships, and faculty support?",
+    "expected_output": "A comparison of the programs on research opportunities, internship access, and faculty support quality.",
     "id": 43
   },
   {
     "type": "university_comparison",
+    "preMessageInfo": "The system already has my chosen universities and budget preferences.",
     "message": "Which of these schools gives me the best return on investment?",
+    "expected_output": "A return on investment style comparison using cost, brand value, and employment outcomes.",
     "id": 44
   },
   {
     "type": "university_comparison",
+    "preMessageInfo": "The system already has the set of universities I am comparing.",
     "message": "How do these universities compare for international student support?",
+    "expected_output": "A comparison focused on visa support, community, campus services, and affordability for international students.",
     "id": 45
   },
   {
     "type": "career_alignment",
-    "message": "If I want to become an iOS engineer, which academic path fits me best?",
+    "preMessageInfo": "The system already knows that I want to become an iOS engineer.",
+    "message": "Which academic path fits me best?",
+    "expected_output": "A recommended academic path including major, electives, and project focus for becoming an iOS engineer.",
     "id": 46
   },
   {
     "type": "career_alignment",
-    "message": "Which major and electives will help me become a data engineer?",
+    "preMessageInfo": "The system already knows that I am considering a data engineering career.",
+    "message": "Which major and electives will help me most?",
+    "expected_output": "A major recommendation and list of helpful electives for data engineering.",
     "id": 47
   },
   {
     "type": "career_alignment",
+    "preMessageInfo": null,
     "message": "What should I study if I want to get a job quickly after graduation?",
+    "expected_output": "A practical study direction with majors, skills, and course priorities for near term employability.",
     "id": 48
   },
   {
     "type": "career_alignment",
-    "message": "Which path is better for me if I want a mix of software and product work?",
+    "preMessageInfo": "The system already has my profile and interest in both software and product work.",
+    "message": "Which path is better for me?",
+    "expected_output": "A comparison of suitable academic or career paths for a mix of software and product oriented work.",
     "id": 49
   },
   {
     "type": "career_alignment",
+    "preMessageInfo": "The system already has my academic and work profile.",
     "message": "Can you map my current profile to possible career options?",
+    "expected_output": "A set of possible career options with a reason for fit and any missing skills for each option.",
     "id": 50
   },
   {
     "type": "interview_preparation",
-    "message": "What interview topics should I focus on first based on my background?",
+    "preMessageInfo": "The system already has my background and target roles.",
+    "message": "What interview topics should I focus on first?",
+    "expected_output": "A prioritized list of interview topics based on the stored background and role goals.",
     "id": 51
   },
   {
     "type": "interview_preparation",
+    "preMessageInfo": "The system already has my resume and target role.",
     "message": "Which technical areas am I weakest in for software interviews?",
+    "expected_output": "An evaluation of weak interview areas based on the resume and role expectations.",
     "id": 52
   },
   {
     "type": "interview_preparation",
+    "preMessageInfo": "The system already has my profile and job target.",
     "message": "Can you create an interview preparation plan for me for the next two months?",
+    "expected_output": "A two month plan broken into topics, practice targets, and milestones.",
     "id": 53
   },
   {
     "type": "interview_preparation",
-    "message": "What should I study for mobile developer interviews?",
+    "preMessageInfo": "The system already knows that I want mobile developer roles.",
+    "message": "What should I study for interviews?",
+    "expected_output": "A focused preparation list for mobile interviews including platform, architecture, and coding topics.",
     "id": 54
   },
   {
     "type": "interview_preparation",
+    "preMessageInfo": "The system already has my work and project experience.",
     "message": "How can I prepare for behavioral interviews using my own experience?",
+    "expected_output": "Behavioral interview preparation advice using examples from the stored work and project history.",
     "id": 55
   },
   {
     "type": "application_strategy",
-    "message": "How many universities should I apply to based on my profile?",
+    "preMessageInfo": "The system already has my profile.",
+    "message": "How many universities should I apply to?",
+    "expected_output": "A recommended application count and mix based on competitiveness and budget.",
     "id": 56
   },
   {
     "type": "application_strategy",
+    "preMessageInfo": "The system already has my profile and target program area.",
     "message": "Can you help me build an application list with safe, moderate, and ambitious schools?",
+    "expected_output": "A categorized application list with a rationale for each choice.",
     "id": 57
   },
   {
     "type": "application_strategy",
+    "preMessageInfo": "The system already has my university shortlist and preferences.",
     "message": "Which universities should I remove from my list because they are not a good fit?",
+    "expected_output": "A recommendation on which schools to remove and the reasons they do not fit.",
     "id": 58
   },
   {
     "type": "application_strategy",
-    "message": "What is the best strategy for applying with my current GPA and experience?",
+    "preMessageInfo": "The system already has my GPA and experience.",
+    "message": "What is the best strategy for applying with my current profile?",
+    "expected_output": "A practical application approach covering school selection, profile framing, and risk management.",
     "id": 59
   },
   {
     "type": "application_strategy",
-    "message": "How should I prioritize my applications if I have a limited budget?",
+    "preMessageInfo": "The system already knows that I have a limited application budget.",
+    "message": "How should I prioritize my applications?",
+    "expected_output": "A prioritized application order that maximizes value while staying within budget.",
     "id": 60
   },
   {
     "type": "personalized_recommendation",
-    "message": "Using my transcript and resume, recommend five graduate programs and explain why.",
+    "preMessageInfo": "The system already has my transcript and resume.",
+    "message": "Recommend five graduate programs for me and explain why.",
+    "expected_output": "Five personalized graduate program recommendations with reasons tied directly to the transcript and resume.",
     "id": 61
   },
   {
     "type": "personalized_recommendation",
-    "message": "Can you suggest career options based on my academic record and interests?",
+    "preMessageInfo": "The system already has my academic record and interests.",
+    "message": "Can you suggest career options for me?",
+    "expected_output": "A list of possible career options linked to academic strengths and interests.",
     "id": 62
   },
   {
     "type": "personalized_recommendation",
-    "message": "Which universities fit my GPA, budget, and location preferences?",
+    "preMessageInfo": "The system already has my GPA, budget, and location preferences.",
+    "message": "Which universities fit my preferences best?",
+    "expected_output": "A filtered list of universities that satisfy the stored academic and personal constraints.",
     "id": 63
   },
   {
     "type": "personalized_recommendation",
-    "message": "Can you recommend programs that match my strengths but avoid heavy theory?",
+    "preMessageInfo": "The system already knows my strengths and my dislike for heavy theory.",
+    "message": "Can you recommend programs that would suit me well?",
+    "expected_output": "A list of programs with more applied focus and less theory, mapped to the stored strengths.",
     "id": 64
   },
   {
     "type": "personalized_recommendation",
-    "message": "What are the best academic options for someone with my background and goals?",
+    "preMessageInfo": "The system already has my background and goals.",
+    "message": "What are the best academic options for me?",
+    "expected_output": "A set of academic options such as majors or graduate programs that best fit the stored profile.",
     "id": 65
   },
   {
     "type": "student_reviews",
+    "preMessageInfo": "The system already knows which program I am asking about.",
     "message": "What do students say about workload in this program?",
+    "expected_output": "A concise summary of external student opinions about workload in the specified program.",
     "id": 66
   },
   {
     "type": "student_reviews",
+    "preMessageInfo": "The system already knows which department I mean.",
     "message": "What are common complaints from students in this department?",
+    "expected_output": "A summary of recurring complaints found in public reviews or discussions about the department.",
     "id": 67
   },
   {
     "type": "student_reviews",
+    "preMessageInfo": "The system already knows which program I am asking about.",
     "message": "Do students think this program is worth the cost?",
+    "expected_output": "A review based value summary showing whether students feel the program justifies its cost.",
     "id": 68
   },
   {
     "type": "student_reviews",
-    "message": "What do reviews say about internship support at this university?",
+    "preMessageInfo": "The system already knows which university I mean.",
+    "message": "What do reviews say about internship support there?",
+    "expected_output": "A summary of external student feedback about internship support and career services.",
     "id": 69
   },
   {
     "type": "student_reviews",
+    "preMessageInfo": "The system already knows which program I mean.",
     "message": "How do students rate the teaching quality in this program?",
+    "expected_output": "A teaching quality summary based on available student feedback.",
     "id": 70
   },
   {
     "type": "graduate_school_planning",
+    "preMessageInfo": "The system already has my graduate school goal and current profile.",
     "message": "What should I do over the next year to prepare for graduate school applications?",
+    "expected_output": "A one year preparation plan including academics, projects, letters, tests, and deadlines.",
     "id": 71
   },
   {
     "type": "graduate_school_planning",
+    "preMessageInfo": "The system already has my current status and target programs.",
     "message": "Can you create a step by step plan for my graduate school journey?",
+    "expected_output": "A step by step timeline from current stage to application submission.",
     "id": 72
   },
   {
     "type": "graduate_school_planning",
+    "preMessageInfo": null,
     "message": "When should I take tests, request letters, and submit applications?",
+    "expected_output": "A timeline of major graduate application tasks in the right order.",
     "id": 73
   },
   {
     "type": "graduate_school_planning",
-    "message": "What milestones should I complete before applying to Master of Science programs?",
+    "preMessageInfo": "The system already knows that I am targeting Master of Science programs.",
+    "message": "What milestones should I complete before applying?",
+    "expected_output": "A checklist of milestones such as GPA targets, projects, recommendations, and documents.",
     "id": 74
   },
   {
     "type": "graduate_school_planning",
+    "preMessageInfo": "The system already has my profile and next application cycle target.",
     "message": "How can I strengthen my profile before the next application cycle?",
+    "expected_output": "A focused improvement plan for the next cycle based on profile gaps.",
     "id": 75
   },
   {
     "type": "academic_strengths",
-    "message": "What are my strongest academic areas based on my transcript?",
+    "preMessageInfo": "The system already has my transcript.",
+    "message": "What are my strongest academic areas?",
+    "expected_output": "A summary of strongest subjects or themes identified from the transcript.",
     "id": 76
   },
   {
     "type": "academic_strengths",
+    "preMessageInfo": "The system already has my transcript.",
     "message": "Which subjects seem to match my strengths the most?",
+    "expected_output": "A list of subjects that align best with the transcript performance patterns.",
     "id": 77
   },
   {
     "type": "academic_strengths",
+    "preMessageInfo": "The system already has my grades.",
     "message": "Can you tell me which patterns in my grades stand out?",
+    "expected_output": "An analysis of positive academic patterns such as consistency or strong performance clusters.",
     "id": 78
   },
   {
     "type": "academic_strengths",
+    "preMessageInfo": "The system already has my transcript.",
     "message": "What do my grades suggest about the kinds of programs I should target?",
+    "expected_output": "A mapping from grade trends to suitable types of programs or specializations.",
     "id": 79
   },
   {
     "type": "academic_strengths",
+    "preMessageInfo": "The system already has my academic record.",
     "message": "Which of my academic strengths should I highlight in applications?",
+    "expected_output": "A shortlist of strengths to emphasize in applications, supported by the academic record.",
     "id": 80
   },
   {
     "type": "academic_weaknesses",
+    "preMessageInfo": "The system already has my transcript.",
     "message": "What weaknesses do you notice in my academic record?",
+    "expected_output": "A clear summary of weak academic areas, patterns, or prerequisites that may matter.",
     "id": 81
   },
   {
     "type": "academic_weaknesses",
+    "preMessageInfo": "The system already has my grades.",
     "message": "Which low grades are most likely to hurt my applications?",
+    "expected_output": "A focused explanation of the most risky low grades and why they matter.",
     "id": 82
   },
   {
     "type": "academic_weaknesses",
+    "preMessageInfo": "The system already has my transcript and application goal.",
     "message": "How can I address weak areas in my transcript before applying?",
+    "expected_output": "A plan to reduce the impact of transcript weaknesses through courses, projects, or explanation.",
     "id": 83
   },
   {
     "type": "academic_weaknesses",
+    "preMessageInfo": "The system already has my grades and intended majors.",
     "message": "Do any patterns in my grades suggest that I should avoid certain majors?",
+    "expected_output": "Advice on majors that may not fit well due to repeated weak performance in related subjects.",
     "id": 84
   },
   {
     "type": "academic_weaknesses",
+    "preMessageInfo": "The system already has my academic record.",
     "message": "What academic weaknesses should I explain in my statement of purpose?",
+    "expected_output": "A shortlist of weaknesses that may need explanation in an application essay.",
     "id": 85
   },
   {
     "type": "memory_context",
+    "preMessageInfo": null,
     "message": "Remember that I prefer affordable universities near large cities.",
+    "expected_output": "The system should store the user's location and cost preference and use it in future recommendations.",
     "id": 86
   },
   {
     "type": "memory_context",
+    "preMessageInfo": null,
     "message": "Remember that I want programs with strong internship support.",
+    "expected_output": "The system should save the internship support preference for future recommendation filtering.",
     "id": 87
   },
   {
     "type": "memory_context",
+    "preMessageInfo": null,
     "message": "Use my updated transcript when making future recommendations.",
+    "expected_output": "The system should update the user profile context to use the latest transcript in later responses.",
     "id": 88
   },
   {
     "type": "memory_context",
+    "preMessageInfo": null,
     "message": "Remember that I want to avoid programs with very high tuition.",
+    "expected_output": "The system should store the tuition preference and apply it in future comparisons and recommendations.",
     "id": 89
   },
   {
     "type": "memory_context",
+    "preMessageInfo": null,
     "message": "Keep in mind that I prefer course based programs over thesis based ones.",
+    "expected_output": "The system should save the program style preference for future academic recommendations.",
     "id": 90
   },
   {
     "type": "follow_up_reasoning",
-    "message": "Last time you suggested Data Science. Does that still make sense after looking at my new grades?",
+    "preMessageInfo": "The system previously recommended Data Science and now also has my new grades.",
+    "message": "Does that recommendation still make sense?",
+    "expected_output": "A follow up answer that compares the old recommendation with new transcript evidence and updates the advice if needed.",
     "id": 91
   },
   {
     "type": "follow_up_reasoning",
-    "message": "Has your recommendation changed after I added my internship experience?",
+    "preMessageInfo": "The system already has my earlier profile and the new internship experience I added.",
+    "message": "Has your recommendation changed now?",
+    "expected_output": "An updated recommendation that explains whether the new internship changes earlier advice.",
     "id": 92
   },
   {
     "type": "follow_up_reasoning",
-    "message": "Which universities should I reconsider after updating my resume?",
+    "preMessageInfo": "The system already has my updated resume and previous school recommendations.",
+    "message": "Which universities should I reconsider now?",
+    "expected_output": "A revised university list showing which schools move up or down based on the updated resume.",
     "id": 93
   },
   {
     "type": "follow_up_reasoning",
-    "message": "Do your earlier suggestions still hold after including my budget limits?",
+    "preMessageInfo": "The system already has my earlier recommendations and my budget limits.",
+    "message": "Do your earlier suggestions still hold?",
+    "expected_output": "A review of previous suggestions with a note on which ones remain valid after budget filtering.",
     "id": 94
   },
   {
     "type": "follow_up_reasoning",
-    "message": "Can you update your advice now that I shared my career goal?",
+    "preMessageInfo": "The system already has my profile and newly added career goal.",
+    "message": "Can you update your advice now?",
+    "expected_output": "An updated answer that changes recommendations based on the newly stored career goal.",
     "id": 95
   },
   {
     "type": "external_data_query",
-    "message": "What do course catalogs say about artificial intelligence electives in this program?",
+    "preMessageInfo": "The system already knows which program I am asking about.",
+    "message": "What does the course catalog say about artificial intelligence electives in this program?",
+    "expected_output": "A summary of relevant artificial intelligence electives from the program's public course catalog.",
     "id": 96
   },
   {
     "type": "external_data_query",
-    "message": "Can you summarize financial aid information for this university?",
+    "preMessageInfo": "The system already knows which university I mean.",
+    "message": "Can you summarize the financial aid information for this university?",
+    "expected_output": "A concise summary of public financial aid information relevant to the university.",
     "id": 97
   },
   {
     "type": "external_data_query",
-    "message": "What outside reviews say this program has the best faculty support?",
+    "preMessageInfo": "The system already has the university and program context.",
+    "message": "What do outside reviews say about faculty support in this program?",
+    "expected_output": "A review based answer that highlights what external sources say about faculty support in the program.",
     "id": 98
   },
   {
     "type": "external_data_query",
-    "message": "Can you check program details and tell me whether internships are built into the curriculum?",
+    "preMessageInfo": "The system already knows which program I am asking about.",
+    "message": "Do the official program details mention internships as part of the curriculum?",
+    "expected_output": "A yes or no style answer with a short explanation based on public program details.",
     "id": 99
   },
   {
     "type": "external_data_query",
+    "preMessageInfo": "The system already knows which degree program I mean.",
     "message": "What do public student reviews say about the value of this degree?",
+    "expected_output": "A summary of public student sentiment about whether the degree feels worth the investment.",
     "id": 100
   }
 ]

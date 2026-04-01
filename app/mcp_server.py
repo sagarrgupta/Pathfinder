@@ -14,6 +14,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
+from app.utils.ids import generate_student_id
+
 log = logging.getLogger("pathfinder.mcp")
 
 # Create the MCP server
@@ -31,7 +33,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Natural language query about the student's profile"},
-                    "student_id": {"type": "string", "description": "Student ID (default: 'default')"},
+                    "student_id": {"type": "string", "description": "Student ID"},
                 },
                 "required": ["query"],
             },
@@ -44,6 +46,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
                     "k": {"type": "integer", "description": "Number of results (default: 5)"},
+                    "student_id": {"type": "string", "description": "Student ID"},
                 },
                 "required": ["query"],
             },
@@ -66,7 +69,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "student_id": {"type": "string", "description": "Student ID (default: 'default')"},
+                    "student_id": {"type": "string", "description": "Student ID"},
                 },
             },
         ),
@@ -90,16 +93,20 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Execute a Pathfinder tool."""
     try:
         if name == "search_knowledge_graph":
-            from app.adapters.neo4j.graph_store import get_full_profile
-            student_id = arguments.get("student_id", "default")
+            from app.adapters.neo4j.graph_store import ensure_student, get_full_profile
+            student_id = arguments.get("student_id") or generate_student_id()
+            await ensure_student(student_id)
             profile = await get_full_profile(student_id)
             return [TextContent(type="text", text=json.dumps(profile, default=str))]
 
         elif name == "search_documents":
+            from app.adapters.neo4j.graph_store import ensure_student
             from app.adapters.neo4j.vector_store import similarity_search
             query = arguments["query"]
             k = arguments.get("k", 5)
-            results = await similarity_search(query, k=k)
+            student_id = arguments.get("student_id") or generate_student_id()
+            await ensure_student(student_id)
+            results = await similarity_search(query, k=k, student_id=student_id)
             return [TextContent(type="text", text=json.dumps(results, default=str))]
 
         elif name == "search_web":
@@ -110,8 +117,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(results, default=str))]
 
         elif name == "get_student_profile":
-            from app.adapters.neo4j.graph_store import get_full_profile
-            student_id = arguments.get("student_id", "default")
+            from app.adapters.neo4j.graph_store import ensure_student, get_full_profile
+            student_id = arguments.get("student_id") or generate_student_id()
+            await ensure_student(student_id)
             profile = await get_full_profile(student_id)
             return [TextContent(type="text", text=json.dumps(profile, default=str))]
 

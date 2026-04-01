@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
-import { getSettings, updateSettings, getHealth, resetAllData } from '@/services/api';
+import { getSettings, updateSettings, getHealth, resetAllData, deleteAllDataEverywhere } from '@/services/api';
 import {
   Settings, Shield, Monitor, Server, Loader2,
   CheckCircle2, XCircle, Trash2, AlertTriangle, X,
@@ -31,6 +31,7 @@ export default function SettingsPage() {
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showResetModal, setShowResetModal] = useState(false);
+  const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -237,7 +238,7 @@ export default function SettingsPage() {
           <h2 className="font-semibold flex items-center gap-2 mb-4 text-destructive">
             <AlertTriangle className="h-4 w-4" /> Danger Zone
           </h2>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between mb-4">
             <div>
               <p className="text-sm font-medium">Reset All Data</p>
               <p className="text-xs text-muted-foreground">
@@ -252,6 +253,21 @@ export default function SettingsPage() {
               Reset
             </button>
           </div>
+          <div className="flex items-center justify-between pt-4 border-t border-destructive/20">
+            <div>
+              <p className="text-sm font-medium">Delete All Data (All Profiles)</p>
+              <p className="text-xs text-muted-foreground">
+                Permanently delete every profile, all Neo4j graph data, and all chat history across profiles.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowDeleteAllModal(true)}
+              className="px-4 py-2 text-sm rounded-lg border-2 border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground transition-all flex items-center gap-1.5 font-medium active:scale-95"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete All
+            </button>
+          </div>
         </div>
       </div>
 
@@ -264,6 +280,17 @@ export default function SettingsPage() {
             dispatch({ type: 'CLEAR_STUDENT_DATA', payload: state.activeStudentId });
             await refreshProfiles().catch(() => {});
             await refreshProfile(state.activeStudentId).catch(() => {});
+            toast.success(msg);
+          }}
+        />
+      )}
+
+      {showDeleteAllModal && (
+        <DeleteAllModal
+          onClose={() => setShowDeleteAllModal(false)}
+          onSuccess={async (msg) => {
+            dispatch({ type: 'CLEAR_ALL_LOCAL_DATA' });
+            await refreshProfiles().catch(() => {});
             toast.success(msg);
           }}
         />
@@ -370,6 +397,101 @@ function ResetModal({ studentId, onClose, onSuccess }) {
           >
             {isResetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
             {isResetting ? 'Deleting...' : 'Yes'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeleteAllModal({ onClose, onSuccess }) {
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [error, setError] = useState('');
+  const backdropRef = useRef(null);
+
+  const handleDeleteAll = async () => {
+    setIsDeleting(true);
+    setError('');
+    try {
+      await deleteAllDataEverywhere();
+      onSuccess('All profiles, graph data, and chats have been deleted.');
+      onClose();
+    } catch (err) {
+      setError(`Delete all failed: ${err.message}`);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleBackdropClick = (e) => {
+    if (e.target === backdropRef.current) onClose();
+  };
+
+  useEffect(() => {
+    const handleKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  return (
+    <div
+      ref={backdropRef}
+      onClick={handleBackdropClick}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
+    >
+      <div className="bg-card border rounded-2xl shadow-2xl max-w-md w-full mx-4 animate-fade-in-up">
+        <div className="flex items-center justify-between p-5 pb-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
+              <AlertTriangle className="h-5 w-5 text-destructive" />
+            </div>
+            <h3 className="text-lg font-bold">Delete All Data</h3>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            This will permanently delete <strong className="text-destructive">everything for all profiles</strong>:
+          </p>
+          <ul className="text-sm space-y-2 pl-1">
+            {[
+              'All student profiles',
+              'All Neo4j nodes and relationships',
+              'All persisted chat history',
+              'All uploaded documents and extracted entities',
+            ].map((text, i) => (
+              <li key={i} className="flex items-center gap-2.5 text-muted-foreground">
+                <span className="w-1.5 h-1.5 rounded-full bg-destructive flex-shrink-0" />
+                {text}
+              </li>
+            ))}
+          </ul>
+          <div className="p-3 rounded-lg bg-destructive/5 border border-destructive/20">
+            <p className="text-xs text-destructive font-medium flex items-center gap-1.5">
+              <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+              This action cannot be undone.
+            </p>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </div>
+
+        <div className="flex justify-end gap-2 p-5 pt-0">
+          <button
+            onClick={onClose}
+            className="px-4 py-2.5 text-sm rounded-lg border hover:bg-accent transition-colors font-medium"
+          >
+            No
+          </button>
+          <button
+            onClick={handleDeleteAll}
+            disabled={isDeleting}
+            className="px-4 py-2.5 text-sm rounded-lg bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-40 transition-all flex items-center gap-1.5 font-medium active:scale-95"
+          >
+            {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+            {isDeleting ? 'Deleting...' : 'Yes, Delete All'}
           </button>
         </div>
       </div>

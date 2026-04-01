@@ -104,7 +104,7 @@ async def similarity_search(
     k: int = 5,
     scope: str | None = None,
     session_id: str | None = None,
-    student_id: str = "default",
+    student_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Semantic similarity search over Chunk nodes.
 
@@ -121,6 +121,9 @@ async def similarity_search(
     student_id : str
         Student to scope results to.
     """
+    if not student_id:
+        raise ValueError("student_id is required for similarity_search")
+
     embeddings = get_embeddings()
     try:
         query_embedding = await asyncio.wait_for(
@@ -203,7 +206,7 @@ async def similarity_search(
 async def hybrid_search(
     query: str,
     k: int = 5,
-    student_id: str = "default",
+    student_id: str | None = None,
     session_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Combine vector similarity with graph context.
@@ -211,6 +214,9 @@ async def hybrid_search(
     Returns vector search results enriched with connected graph entities.
     """
     # Step 1: vector search
+    if not student_id:
+        raise ValueError("student_id is required for hybrid_search")
+
     vector_results = await similarity_search(
         query=query,
         k=k,

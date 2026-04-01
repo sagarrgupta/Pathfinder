@@ -10,9 +10,8 @@ import json
 import logging
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
-
 from app.adapters.llm.lmstudio import get_text_llm
+from app.agents.tool_calling import run_advisor_tool_loop
 from app.core.prompts import PROGRAM_ADVISOR_PROMPT
 from app.core.quality import (
     DecisionPayload,
@@ -26,6 +25,7 @@ from app.core.quality import (
     start_task,
 )
 from app.core.state import PathfinderState
+from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.program_advisor")
 
@@ -48,7 +48,7 @@ async def program_advisor(state: PathfinderState) -> PathfinderState:
     step_progress.append("Building program guidance...")
 
     baseline = _heuristic_program_payload(query, summary, evidence_groups)
-    llm_payload = await _llm_program_payload(query, summary, evidence_groups, handoff_context)
+    llm_payload, tool_call_log = await _llm_program_payload(query, summary, evidence_groups, handoff_context, state)
     merged = _merge_payloads(baseline, llm_payload)
     for assumption in merged.get("assumptions", []):
         working_memory = add_working_memory_item(working_memory, "active_assumptions", assumption)
@@ -86,6 +86,7 @@ async def program_advisor(state: PathfinderState) -> PathfinderState:
         **state,
         "decision_payload": merged,
         "draft_answer": "",
+        "tool_call_log": tool_call_log,
         "working_memory": working_memory,
         "task_graph": task_graph,
         "blocked_reasons": [reason for reason in blocked_reasons if reason],
@@ -100,30 +101,36 @@ async def _llm_program_payload(
     summary: dict[str, Any],
     evidence_groups: dict[str, Any],
     handoff_context: list[dict[str, str]],
-) -> DecisionPayload:
+    state: PathfinderState,
+) -> tuple[DecisionPayload, list[dict[str, Any]]]:
     if not any(evidence_groups.values()):
-        return {}
+        return {}, list(state.get("tool_call_log", []))
 
     llm = get_text_llm()
-    response = await llm.ainvoke([
-        SystemMessage(content=PROGRAM_ADVISOR_PROMPT),
-        HumanMessage(content=(
-            f"User query:\n{query}\n\n"
-            f"Session summary:\n{json.dumps(summary, ensure_ascii=True)}\n\n"
-            f"Handoff notes:\n{json.dumps(handoff_context, ensure_ascii=True)}\n\n"
-            f"Evidence groups:\n{json.dumps(evidence_groups, ensure_ascii=True)}"
-        )),
-    ])
-
-    content = response.content if isinstance(response.content, str) else str(response.content)
+    json_contract = (
+        "Return ONLY valid JSON matching this schema keys: decision_type, answer_outline, "
+        "recommended_items, blocked_or_uncertain_items, assumptions, next_best_action, source_refs."
+    )
+    system_prompt = f"{PROGRAM_ADVISOR_PROMPT}\n\n{json_contract}"
+    user_prompt = (
+        f"User query:\n{query}\n\n"
+        f"Session summary:\n{json.dumps(summary, ensure_ascii=True)}\n\n"
+        f"Handoff notes:\n{json.dumps(handoff_context, ensure_ascii=True)}\n\n"
+        f"Evidence groups:\n{json.dumps(evidence_groups, ensure_ascii=True)}"
+    )
+    content, tool_call_log = await run_advisor_tool_loop(
+        llm=llm,
+        system_prompt=system_prompt,
+        user_query=user_prompt,
+        state=state,
+        max_rounds=4,
+    )
     try:
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        parsed = json.loads(content[json_start:json_end])
-        return parsed if isinstance(parsed, dict) else {}
+        parsed = parse_json_object(content) or {}
+        return (parsed if isinstance(parsed, dict) else {}), tool_call_log
     except Exception as exc:
         log.warning("Program advisor parse failed: %s", exc)
-        return {}
+        return {}, tool_call_log
 
 
 def _heuristic_program_payload(

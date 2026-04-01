@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.adapters.neo4j.graph_store import close_driver, init_schema, ensure_student
+from app.adapters.neo4j.graph_store import close_driver, init_schema
 from app.adapters.neo4j.vector_store import ensure_vector_index
 from app.config.settings import settings
 from app.services.background_jobs import start_background_jobs, stop_background_jobs
@@ -39,7 +39,6 @@ async def lifespan(app: FastAPI):
     try:
         await init_schema()
         await ensure_vector_index()
-        await ensure_student("default")
         start_background_jobs()
         log.info("Neo4j initialized successfully")
     except Exception as exc:

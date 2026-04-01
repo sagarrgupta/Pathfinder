@@ -20,6 +20,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.web_search.fallback_chain import search
 from app.adapters.web_search.url_fetcher import extract_urls, fetch_url_content
+from app.config.settings import settings
 from app.core.prompts import (
     WEB_RESEARCH_QUERY_GEN_PROMPT,
     WEB_RESEARCH_QUERY_GEN_URL_PROMPT,
@@ -42,6 +43,7 @@ from app.core.quality import (
     start_task,
 )
 from app.core.state import PathfinderState
+from app.utils.json_extract import parse_json_array
 
 log = logging.getLogger("pathfinder.agents.web_researcher")
 
@@ -75,6 +77,7 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Searching the web for relevant information...")
+    tool_call_log = _trim_tool_log(list(state.get("tool_call_log", [])))
 
     all_results: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
@@ -87,10 +90,27 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
         step_progress.append(f"Fetching content from {len(user_urls)} URL(s)...")
 
         for url in user_urls:
+            tool_call_log.append({
+                "tool": "fetch_url",
+                "args": {"url": url},
+                "status": "started",
+            })
+            tool_call_log = _trim_tool_log(tool_call_log)
             result = await fetch_url_content(url)
             if result:
                 seen_urls.add(url)
                 all_results.append(result)
+                tool_call_log.append({
+                    "tool": "fetch_url",
+                    "args": {"url": url},
+                    "status": "ok",
+                    "result_summary": {
+                        "title": result.get("title", ""),
+                        "url": result.get("url", ""),
+                        "content_chars": len(result.get("content", "")),
+                    },
+                })
+                tool_call_log = _trim_tool_log(tool_call_log)
                 source_type, time_scope = classify_web_source(
                     result.get("url", ""),
                     result.get("title", ""),
@@ -120,6 +140,13 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
             else:
                 log.warning("Could not fetch URL: %s", url)
                 step_progress.append(f"Could not access {url}")
+                tool_call_log.append({
+                    "tool": "fetch_url",
+                    "args": {"url": url},
+                    "status": "error",
+                    "result_summary": {"error": "Could not fetch URL"},
+                })
+                tool_call_log = _trim_tool_log(tool_call_log)
 
     # ── Step 2: Generate search queries ──────────────────────────────
     # If user provided URLs, use the URL-aware prompt that gives the LLM
@@ -149,6 +176,12 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
         max_results = 6 if intent in {"academic", "research"} else 4
         last_error: Exception | None = None
         results = []
+        tool_call_log.append({
+            "tool": "search_web",
+            "args": {"query": sq, "max_results": max_results},
+            "status": "started",
+        })
+        tool_call_log = _trim_tool_log(tool_call_log)
         for _ in range(search_retries):
             try:
                 results = await search(sq, max_results=max_results)
@@ -156,6 +189,16 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                     break
             except Exception as exc:
                 last_error = exc
+        tool_call_log.append({
+            "tool": "search_web",
+            "args": {"query": sq, "max_results": max_results},
+            "status": "ok" if results else "error",
+            "result_summary": {
+                "results_count": len(results),
+                "error": str(last_error) if (not results and last_error) else "",
+            },
+        })
+        tool_call_log = _trim_tool_log(tool_call_log)
         if not results and last_error:
             log.debug("Search query failed: %s — %s", sq[:60], last_error)
         for r in results:
@@ -259,6 +302,17 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
             continue
         fetched = await fetch_url_content(url)
         if fetched:
+            tool_call_log.append({
+                "tool": "fetch_url",
+                "args": {"url": url},
+                "status": "ok",
+                "result_summary": {
+                    "title": fetched.get("title", ""),
+                    "url": fetched.get("url", ""),
+                    "content_chars": len(fetched.get("content", "")),
+                },
+            })
+            tool_call_log = _trim_tool_log(tool_call_log)
             fetched["score"] = max(candidate.get("score", 0.0), 0.0) + 0.35
             source_type, time_scope = classify_web_source(
                 fetched.get("url", ""),
@@ -300,6 +354,13 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                 "freshness_tier": freshness_tier,
             })
         else:
+            tool_call_log.append({
+                "tool": "fetch_url",
+                "args": {"url": url},
+                "status": "error",
+                "result_summary": {"error": "Page fetch failed or empty content"},
+            })
+            tool_call_log = _trim_tool_log(tool_call_log)
             source_type, time_scope = classify_web_source(
                 candidate.get("url", ""),
                 candidate.get("title", ""),
@@ -417,6 +478,7 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
         "working_memory": working_memory,
         "task_graph": task_graph,
         "source_audit": working_memory.get("source_audit", []),
+        "tool_call_log": tool_call_log,
         "step_progress": step_progress,
         "next_node": next_node,
     }
@@ -448,13 +510,10 @@ async def _generate_url_aware_queries(
         content = response.content if isinstance(response.content, str) else str(response.content)
         content = content.strip()
 
-        json_start = content.find("[")
-        json_end = content.rfind("]") + 1
-        if json_start >= 0 and json_end > json_start:
-            queries = json.loads(content[json_start:json_end])
-            if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
-                log.info("URL-aware search queries: %s", queries[:2])
-                return queries[:2]
+        queries = parse_json_array(content)
+        if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
+            log.info("URL-aware search queries: %s", queries[:2])
+            return queries[:2]
 
     except Exception as exc:
         log.warning("URL-aware query generation failed: %s", exc)
@@ -487,14 +546,10 @@ async def _generate_smart_queries(
         content = response.content if isinstance(response.content, str) else str(response.content)
         content = content.strip()
 
-        # Parse JSON array from response
-        json_start = content.find("[")
-        json_end = content.rfind("]") + 1
-        if json_start >= 0 and json_end > json_start:
-            queries = json.loads(content[json_start:json_end])
-            if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
-                log.info("LLM-generated search queries: %s", queries[:3])
-                return queries[:3]
+        queries = parse_json_array(content)
+        if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
+            log.info("LLM-generated search queries: %s", queries[:3])
+            return queries[:3]
 
     except Exception as exc:
         log.warning("Smart query generation failed, using fallback: %s", exc)
@@ -553,7 +608,7 @@ def _build_fallback_queries(
     # Intent-specific queries
     if intent == "academic":
         if university:
-            queries.append(f"{university} course catalog {program or ''} 2025 2026")
+            queries.append(f"{university} course catalog {program or ''}")
     elif intent == "career":
         skills = [s.get("name", "") for s in profile.get("skills", [])[:3]]
         if skills:
@@ -669,10 +724,10 @@ def _build_backfill_queries(
         if not domain:
             continue
         queries.append(f"site:{domain} {query}")
-        queries.append(f"site:{domain} \"{target_program or 'graduate'}\" course requirements")
-        queries.append(f"site:{domain} class schedule {target_program or 'computer science'}")
+        queries.append(f"site:{domain} \"{target_program or 'program'}\" course requirements")
+        queries.append(f"site:{domain} class schedule {target_program or 'courses'}")
     if target_institution:
-        queries.append(f"\"{target_institution}\" \"{target_program or 'graduate'}\" official catalog")
+        queries.append(f"\"{target_institution}\" \"{target_program or 'program'}\" official catalog")
         queries.append(f"\"{target_institution}\" class schedule")
     deduped: list[str] = []
     seen: set[str] = set()
@@ -774,7 +829,7 @@ def _result_score(
     matched_terms = sum(1 for term in query_terms if term in title or term in content)
     score += min(1.5, matched_terms * 0.15)
 
-    if any(word in title for word in ("catalog", "schedule", "curriculum", "computer science", "graduate")):
+    if any(word in title for word in ("catalog", "schedule", "curriculum", "program requirements")):
         score += 0.5
 
     if query_focus.get("primary") == "academic":
@@ -916,3 +971,11 @@ def _determine_next(state: PathfinderState) -> str:
     except ValueError:
         pass
     return "evaluator"
+
+
+def _trim_tool_log(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bound provenance log size to keep state/context lightweight."""
+    limit = max(10, int(settings.TOOL_CALL_LOG_MAX_ENTRIES))
+    if len(entries) <= limit:
+        return entries
+    return entries[-limit:]

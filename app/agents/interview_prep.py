@@ -12,6 +12,7 @@ from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm, strip_repetition, is_garbage_output
+from app.agents.tool_calling import run_advisor_tool_loop
 from app.core.prompts import INTERVIEW_PREP_SYSTEM_PROMPT
 from app.core.state import PathfinderState
 
@@ -38,16 +39,29 @@ async def interview_prep(state: PathfinderState) -> PathfinderState:
         for d in documents[:5]
     ) if documents else "No document context available."
 
-    response = await llm.ainvoke([
-        SystemMessage(content=INTERVIEW_PREP_SYSTEM_PROMPT.format(
-            profile=profile_text,
-            web_results=web_text,
-            documents=doc_text,
-        )),
-        HumanMessage(content=query),
-    ])
+    system_prompt = INTERVIEW_PREP_SYSTEM_PROMPT.format(
+        profile=profile_text,
+        web_results=web_text,
+        documents=doc_text,
+    )
+    tool_call_log = list(state.get("tool_call_log", []))
+    try:
+        answer, tool_call_log = await run_advisor_tool_loop(
+            llm=llm,
+            system_prompt=system_prompt,
+            user_query=query,
+            state=state,
+            max_rounds=4,
+        )
+    except Exception as exc:
+        log.warning("Interview prep tool loop failed, using direct generation: %s", exc)
+        response = await llm.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=query),
+        ])
+        answer = response.content if isinstance(response.content, str) else str(response.content)
 
-    answer = strip_repetition(response.content if isinstance(response.content, str) else str(response.content))
+    answer = strip_repetition(answer)
 
     if is_garbage_output(answer):
         log.warning("Interview prep produced garbage output (%d chars), discarding", len(answer))
@@ -59,6 +73,7 @@ async def interview_prep(state: PathfinderState) -> PathfinderState:
     return {
         **state,
         "draft_answer": answer,
+        "tool_call_log": tool_call_log,
         "step_progress": step_progress,
         "next_node": "evaluator",
     }

@@ -211,7 +211,7 @@ async def init_schema() -> None:
 # ── Student CRUD ────────────────────────────────────────────────
 
 
-async def ensure_student(student_id: str = "default") -> dict[str, Any]:
+async def ensure_student(student_id: str) -> dict[str, Any]:
     """Get or create the student node. Returns its properties."""
     driver = await get_driver()
     async with driver.session() as session:
@@ -332,7 +332,7 @@ async def update_student(student_id: str, **props: Any) -> dict[str, Any]:
 async def create_entity(
     label: str,
     properties: dict[str, Any],
-    student_id: str = "default",
+    student_id: str,
     relationship: str = "HAS",
 ) -> dict[str, Any]:
     """Create a node with *label* and link it to the student via *relationship*."""
@@ -417,7 +417,7 @@ async def delete_entity_for_student(
 
 async def get_entities(
     label: str,
-    student_id: str = "default",
+    student_id: str,
     relationship: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return all nodes of *label* linked to the student."""
@@ -441,7 +441,7 @@ async def store_document_node(
     document_id: str,
     filename: str,
     scope: str,
-    student_id: str = "default",
+    student_id: str,
     session_id: str | None = None,
     doc_type: str = "other",
 ) -> dict[str, Any]:
@@ -473,7 +473,7 @@ async def store_document_node(
 
 
 async def find_document_by_filename(
-    filename: str, student_id: str = "default"
+    filename: str, student_id: str
 ) -> dict[str, Any] | None:
     """Return the Document node for *filename* if it exists, else None."""
     driver = await get_driver()
@@ -490,7 +490,7 @@ async def find_document_by_filename(
         return _sanitize(dict(record["doc"])) if record else None
 
 
-async def delete_document_cascade(document_id: str, student_id: str = "default") -> bool:
+async def delete_document_cascade(document_id: str, student_id: str) -> bool:
     """Delete a document and ALL entities sourced only from it."""
     driver = await get_driver()
     async with driver.session() as session:
@@ -516,7 +516,7 @@ async def delete_document_cascade(document_id: str, student_id: str = "default")
         return record["cnt"] > 0 if record else False
 
 
-async def promote_document_to_global(document_id: str, student_id: str = "default") -> bool:
+async def promote_document_to_global(document_id: str, student_id: str) -> bool:
     """Change a session-scoped document to global scope."""
     driver = await get_driver()
     async with driver.session() as session:
@@ -539,7 +539,7 @@ async def promote_document_to_global(document_id: str, student_id: str = "defaul
 async def store_extracted_entities(
     entities: list[dict[str, Any]],
     document_id: str,
-    student_id: str = "default",
+    student_id: str,
 ) -> int:
     """Store entities extracted from a document into the KG.
 
@@ -989,7 +989,7 @@ async def _promote_conflict_choice(student_id: str, fact_type: str, selected_fac
 # ── Profile Queries ─────────────────────────────────────────────
 
 
-async def get_full_profile(student_id: str = "default") -> dict[str, Any]:
+async def get_full_profile(student_id: str) -> dict[str, Any]:
     """Return the complete student profile from the KG.
 
     Uses a single dynamic Cypher query to fetch ALL connected entities,
@@ -1048,7 +1048,7 @@ async def get_full_profile(student_id: str = "default") -> dict[str, Any]:
     }
 
 
-async def get_graph_data(student_id: str = "default") -> dict[str, Any]:
+async def get_graph_data(student_id: str) -> dict[str, Any]:
     """Return nodes + relationships for frontend graph visualization."""
     driver = await get_driver()
     async with driver.session() as session:
@@ -1086,7 +1086,7 @@ async def run_cypher(query: str, params: dict[str, Any] | None = None) -> list[d
         return [_sanitize(dict(record)) async for record in result]
 
 
-async def reset_student_data(student_id: str = "default") -> bool:
+async def reset_student_data(student_id: str) -> bool:
     """Delete ALL data for a student (profile, entities, documents, chunks).
 
     This removes the student node and everything connected to it.
@@ -1117,3 +1117,20 @@ async def reset_student_data(student_id: str = "default") -> bool:
         record = await result.single()
         log.info("Reset all data for student %s", student_id)
         return record["cnt"] > 0 if record else False
+
+
+async def reset_all_data() -> int:
+    """Delete all student-related graph data across all profiles."""
+    driver = await get_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (n)
+            DETACH DELETE n
+            RETURN count(n) AS deleted
+            """
+        )
+        record = await result.single()
+        deleted = int(record["deleted"]) if record and record.get("deleted") is not None else 0
+        log.warning("Reset ALL graph data across profiles (deleted=%d)", deleted)
+        return deleted

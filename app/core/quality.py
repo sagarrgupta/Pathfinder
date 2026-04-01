@@ -267,7 +267,10 @@ _SEMESTER_PATTERNS = [
     (re.compile(r"\bfourth semester\b", re.I), "fourth semester"),
 ]
 
-_COURSE_CODE_RE = re.compile(r"\b[A-Z]{2,4}\s?-?\d{3}[A-Z]?\b")
+# Matches common course code formats across different university systems:
+# US-style: CSC 200, MATH-101, DATA 255B, CS 6400
+# Broader: COMP9024, CSCI1234, etc.
+_COURSE_CODE_RE = re.compile(r"\b[A-Z]{1,8}\s?-?\d{2,4}[A-Z]?\b")
 _UNIT_RE = re.compile(r"\b(\d{1,2})\s+units?\b", re.I)
 _TERM_RE = re.compile(r"\b(fall|spring|summer|winter)\s+20\d{2}\b", re.I)
 _DEADLINE_RE = re.compile(r"\b(deadline|due|apply by|application closes?)\b", re.I)
@@ -292,7 +295,7 @@ _GENERIC_PROGRAM_WORDS = {
     "doctorate", "doctoral", "curriculum",
 }
 _COURSE_ENTRY_RE = re.compile(
-    r"\b([A-Z]{2,4}\s?-?\d{3}[A-Z]?)\b(?:\s*[-:.\u2013]\s*|\s+)([A-Z][A-Za-z0-9&/,()' -]{3,100})"
+    r"\b([A-Z]{1,8}\s?-?\d{2,4}[A-Z]?)\b(?:\s*[-:.\u2013]\s*|\s+)([A-Z][A-Za-z0-9&/,()' -]{3,100})"
 )
 
 
@@ -715,13 +718,16 @@ def infer_evidence_tiers(
 ) -> tuple[TrustTier, FitTier, FreshnessTier]:
     """Infer trust, fit, and freshness tiers for an evidence record."""
     domain = urlparse(source_url or "").netloc.lower()
+    official_domain = _is_official_domain(domain)
     trust_tier: TrustTier
     if source_type == "profile_doc":
         trust_tier = "user_profile"
-    elif domain.endswith(".edu") or domain.endswith(".gov") or source_type in {
+    elif official_domain and source_type in {
         "degree_page", "schedule_page", "admissions_page", "certificate_page",
     }:
         trust_tier = "primary_official" if source_type in {"degree_page", "schedule_page", "admissions_page"} else "secondary_official"
+    elif official_domain:
+        trust_tier = "secondary_official"
     else:
         trust_tier = "third_party"
 
@@ -1435,7 +1441,7 @@ def looks_like_course_catalog_source(title: str, url: str) -> bool:
     combined = f"{title} {url}".lower()
     return any(
         phrase in combined
-        for phrase in ("courses-a-z", "course catalog", "course descriptions", "computer science (", "/courses/", "/csc", " class schedule ")
+        for phrase in ("courses-a-z", "course catalog", "course descriptions", "/courses/", "/catalog/", "/academics/", " class schedule ")
     )
 
 
@@ -1455,7 +1461,10 @@ def course_code_matches_level(
 
     number = int(match.group(1))
     combined = f"{title} {content}".lower()
-    if number >= 200:
+    # Allow courses numbered 100+ — different universities use different
+    # numbering conventions. Only filter out very low numbers (< 100)
+    # that are almost certainly intro/remedial across all systems.
+    if number >= 100:
         return True
     if _contains_any_term(combined, ("graduate", "master", "masters", "doctoral", "phd")) or "m.s" in combined or "ms " in combined:
         return True
@@ -1464,6 +1473,15 @@ def course_code_matches_level(
 
 def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
     return any(re.search(rf"\b{re.escape(term)}\b", text or "", re.I) for term in terms)
+
+
+def _is_official_domain(domain: str) -> bool:
+    normalized = (domain or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized.endswith(".edu") or normalized.endswith(".gov"):
+        return True
+    return bool(re.search(r"\.ac\.[a-z]{2,}$", normalized))
 
 
 def _extract_institution(text: str) -> str:

@@ -6,7 +6,6 @@ execution plan (ordered list of nodes to invoke).
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -31,6 +30,7 @@ from app.core.quality import (
     fail_task,
 )
 from app.core.state import PathfinderState
+from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.orchestrator")
 
@@ -39,15 +39,14 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     """Classify intent and create an execution plan."""
     query = state.get("query", "")
     files = state.get("files", [])
-    student_id = state.get("student_id", "default")
+    student_id = state.get("student_id", "")
     messages = state.get("messages", [])
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Analyzing your question...")
 
-    llm = get_text_llm()
-
     # Pre-check: does the student have profile data in Neo4j?
+    existing_profile: dict[str, Any] = {}
     try:
         existing_profile = await get_full_profile(student_id)
         has_profile = bool(
@@ -111,30 +110,7 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         context_parts.append("NOTE: The query contains URL(s) — web_researcher can fetch page content directly.")
 
     context = "\n".join(context_parts)
-
-    response = await llm.ainvoke([
-        SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT),
-        HumanMessage(content=f"Context:\n{context}\n\nUser query: {query}"),
-    ])
-
-    # Parse the LLM response
-    try:
-        content = response.content
-        # Try to extract JSON from the response
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        if json_start >= 0 and json_end > json_start:
-            parsed = json.loads(content[json_start:json_end])
-        else:
-            parsed = {"intent": "general", "plan": ["profile_manager"], "missing_info": []}
-    except (json.JSONDecodeError, AttributeError):
-        log.warning("Failed to parse orchestrator response, using defaults")
-        parsed = {"intent": "general", "plan": ["profile_manager"], "missing_info": []}
-
-    intent = parsed.get("intent", "general")
-    plan = parsed.get("plan", [])
-    missing_info = parsed.get("missing_info", [])
-    profile_snapshot = existing_profile if 'existing_profile' in locals() else {}
+    profile_snapshot = existing_profile
     session_summary = build_session_summary(profile_snapshot, messages, query)
     query_focus = analyze_query_focus(query)
     target_entity = infer_target_entity(profile_snapshot, session_summary, query, query_focus)
@@ -147,6 +123,28 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     working_memory = init_working_memory(state.get("working_memory", {}))
     compacted_session = compact_session_state(session_summary, working_memory)
 
+    # Deterministic first: only use LLM orchestrator for genuinely general guidance.
+    if workflow == "general_guidance":
+        llm = get_text_llm()
+        response = await llm.ainvoke([
+            SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT),
+            HumanMessage(content=f"Context:\n{context}\n\nUser query: {query}"),
+        ])
+        try:
+            parsed = parse_json_object(response.content)
+            if not parsed:
+                parsed = {"intent": "general", "plan": ["profile_manager"], "missing_info": []}
+        except Exception:
+            log.warning("Failed to parse orchestrator response, using defaults")
+            parsed = {"intent": "general", "plan": ["profile_manager"], "missing_info": []}
+        intent = parsed.get("intent", "general")
+        plan = parsed.get("plan", [])
+        missing_info = parsed.get("missing_info", [])
+    else:
+        intent = _deterministic_intent_for_workflow(workflow)
+        plan = _plan_for_workflow(workflow, [])
+        missing_info = []
+
     # ── Guardrail: ensure profile_manager is included for personal queries ──
     personal_intents = {"academic", "career", "interview", "profile"}
     if intent in personal_intents and "profile_manager" not in plan:
@@ -155,16 +153,18 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
 
     query_lower = query.lower()
 
-    # ── Guardrail: include web_researcher for every turn-level plan ──
-    if "web_researcher" not in plan:
-        advisory = {"academic_advisor", "career_planner", "interview_prep"}
+    # ── Guardrail: include web_researcher only when workflow/source policy needs it ──
+    needs_web = _workflow_needs_web_research(workflow, source_policy)
+    if needs_web and "web_researcher" not in plan:
+        advisory = {"academic_advisor", "career_planner", "interview_prep", "course_planner", "program_advisor", "career_matcher", "eligibility_reasoner"}
         insert_idx = len(plan)
         for i, node in enumerate(plan):
             if node in advisory:
                 insert_idx = i
                 break
         plan.insert(insert_idx, "web_researcher")
-        log.info("Guardrail: inserted web_researcher for all workflows")
+    elif not needs_web and "web_researcher" in plan:
+        plan = [node for node in plan if node != "web_researcher"]
 
     # ── Guardrail: web_researcher must come before advisory agents ──
     if "web_researcher" in plan:
@@ -204,6 +204,9 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
             intent = "academic"
         elif workflow == "career_alignment":
             intent = "career"
+
+    # Final deterministic cleanup to reduce redundant hops.
+    plan = _normalize_plan(plan, workflow, source_policy)
 
     dependency_gate = _dependency_gate(workflow, state.get("dependency_status", {}))
     if dependency_gate:
@@ -297,6 +300,16 @@ def _workflow_needs_web_research(workflow: str, source_policy: dict[str, Any]) -
     return bool(source_policy.get("requires_live_data")) or bool(source_policy.get("primary_source_types"))
 
 
+def _deterministic_intent_for_workflow(workflow: str) -> str:
+    if workflow in {"academic_planning", "program_understanding", "eligibility_check", "comparison_guidance", "document_guidance"}:
+        return "academic"
+    if workflow == "career_alignment":
+        return "career"
+    if workflow == "student_state_update":
+        return "profile"
+    return "general"
+
+
 def _is_course_planning_query(query_lower: str) -> bool:
     keywords = [
         "which courses", "what courses", "next semester", "enroll",
@@ -367,6 +380,30 @@ def _merge_ordered_plan(plan: list[str], ordered: list[str]) -> list[str]:
             seen.add(item)
             merged.append(item)
     return merged
+
+
+def _normalize_plan(plan: list[str], workflow: str, source_policy: dict[str, Any]) -> list[str]:
+    """Deduplicate and remove redundant nodes while preserving topology."""
+    cleaned = []
+    seen = set()
+    for node in plan:
+        if node in seen:
+            continue
+        seen.add(node)
+        cleaned.append(node)
+
+    if workflow == "student_state_update":
+        # Keep state updates lightweight and deterministic.
+        return [node for node in cleaned if node in {"profile_manager"}] or ["profile_manager"]
+
+    if "web_researcher" in cleaned and not _workflow_needs_web_research(workflow, source_policy):
+        cleaned = [node for node in cleaned if node != "web_researcher"]
+
+    # Fact extraction only helps after retrieval/document analysis.
+    if "fact_extractor" in cleaned and "web_researcher" not in cleaned and "doc_analyst" not in cleaned:
+        cleaned = [node for node in cleaned if node != "fact_extractor"]
+
+    return cleaned
 
 
 def _replace_agent(plan: list[str], old: str, new: str) -> list[str]:

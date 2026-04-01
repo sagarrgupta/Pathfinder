@@ -39,6 +39,7 @@ from app.core.quality import (
     start_task,
 )
 from app.core.state import PathfinderState
+from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.fact_extractor")
 
@@ -218,9 +219,7 @@ async def _llm_records(
 
     content = response.content if isinstance(response.content, str) else str(response.content)
     try:
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        parsed = json.loads(content[json_start:json_end])
+        parsed = parse_json_object(content) or {}
         records = parsed.get("records", [])
         return [r for r in records if isinstance(r, dict)]
     except Exception as exc:
