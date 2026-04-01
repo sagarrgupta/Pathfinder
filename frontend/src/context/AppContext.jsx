@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
-import { getProfile } from '@/services/api';
+import { createProfile as createProfileRequest, getProfile, getProfiles } from '@/services/api';
 
 const AppContext = createContext(null);
 
@@ -13,6 +13,8 @@ function loadPersistedState() {
     if (raw) {
       const saved = JSON.parse(raw);
       return {
+        profiles: saved.profiles || [],
+        activeStudentId: saved.activeStudentId || 'default',
         sessions: saved.sessions || [],
         activeSessionId: saved.activeSessionId || null,
         messagesBySession: saved.messagesBySession || {},
@@ -29,6 +31,8 @@ function loadPersistedState() {
 function persistState(state) {
   try {
     const toSave = {
+      profiles: state.profiles,
+      activeStudentId: state.activeStudentId,
       sessions: state.sessions,
       activeSessionId: state.activeSessionId,
       messagesBySession: state.messagesBySession,
@@ -55,6 +59,8 @@ function applyTheme(theme) {
 const persisted = loadPersistedState();
 
 const initialState = {
+  profiles: persisted?.profiles || [],
+  activeStudentId: persisted?.activeStudentId || 'default',
   // Sessions (restored from localStorage if available)
   sessions: persisted?.sessions || [],
   activeSessionId: persisted?.activeSessionId || null,
@@ -82,8 +88,22 @@ const initialState = {
 
 function appReducer(state, action) {
   switch (action.type) {
+    case 'SET_PROFILES':
+      return { ...state, profiles: action.payload };
+
     case 'SET_SESSIONS':
       return { ...state, sessions: action.payload };
+
+    case 'SET_ACTIVE_STUDENT': {
+      const nextStudentId = action.payload;
+      const nextSessions = state.sessions.filter((s) => (s.student_id || 'default') === nextStudentId);
+      return {
+        ...state,
+        activeStudentId: nextStudentId,
+        activeSessionId: nextSessions[0]?.session_id || null,
+        streamProgress: [],
+      };
+    }
 
     case 'SET_ACTIVE_SESSION':
       return { ...state, activeSessionId: action.payload, streamProgress: [] };
@@ -106,6 +126,27 @@ function appReducer(state, action) {
         sessions: state.sessions.filter((s) => s.session_id !== sid),
         messagesBySession: rest,
         activeSessionId: state.activeSessionId === sid ? null : state.activeSessionId,
+      };
+    }
+
+    case 'CLEAR_STUDENT_DATA': {
+      const targetStudentId = action.payload || state.activeStudentId;
+      const remainingSessions = state.sessions.filter(
+        (session) => (session.student_id || 'default') !== targetStudentId
+      );
+      const remainingSessionIds = new Set(remainingSessions.map((session) => session.session_id));
+      const nextMessagesBySession = Object.fromEntries(
+        Object.entries(state.messagesBySession).filter(([sessionId]) => remainingSessionIds.has(sessionId))
+      );
+      const nextActiveSessionId = remainingSessionIds.has(state.activeSessionId)
+        ? state.activeSessionId
+        : (remainingSessions[0]?.session_id || null);
+      return {
+        ...state,
+        sessions: remainingSessions,
+        messagesBySession: nextMessagesBySession,
+        activeSessionId: nextActiveSessionId,
+        streamProgress: [],
       };
     }
 
@@ -201,7 +242,7 @@ export function AppProvider({ children }) {
   // Persist to localStorage whenever sessions/messages/settings/theme change
   useEffect(() => {
     persistState(state);
-  }, [state.sessions, state.activeSessionId, state.messagesBySession, state.settings, state.theme]);
+  }, [state.profiles, state.activeStudentId, state.sessions, state.activeSessionId, state.messagesBySession, state.settings, state.theme]);
 
   // Apply theme on change
   useEffect(() => {
@@ -219,29 +260,72 @@ export function AppProvider({ children }) {
   // ── Auto-load profile on app start for personalization ──
   const profileLoaded = useRef(false);
   useEffect(() => {
-    if (profileLoaded.current) return;
-    profileLoaded.current = true;
     (async () => {
       try {
         dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
-        const data = await getProfile();
+        const profiles = await getProfiles();
+        dispatch({ type: 'SET_PROFILES', payload: profiles });
+
+        const hasActive = profiles.some((profile) => profile.student_id === state.activeStudentId);
+        const preferredStudentId = hasActive ? state.activeStudentId : (profiles[0]?.student_id || 'default');
+
+        if (!profileLoaded.current) {
+          profileLoaded.current = true;
+        }
+
+        if (preferredStudentId !== state.activeStudentId) {
+          dispatch({ type: 'SET_ACTIVE_STUDENT', payload: preferredStudentId });
+        }
+
+        const data = await getProfile(preferredStudentId);
         dispatch({ type: 'SET_PROFILE', payload: data });
       } catch {
         dispatch({ type: 'SET_PROFILE_LOADING', payload: false });
       }
     })();
+  }, [state.activeStudentId]);
+
+  const refreshProfile = useCallback(async (studentId) => {
+    dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
+    const data = await getProfile(studentId);
+    dispatch({ type: 'SET_PROFILE', payload: data });
+    return data;
   }, []);
+
+  const refreshProfiles = useCallback(async () => {
+    const profiles = await getProfiles();
+    dispatch({ type: 'SET_PROFILES', payload: profiles });
+    return profiles;
+  }, []);
+
+  const switchStudent = useCallback(async (studentId) => {
+    dispatch({ type: 'SET_ACTIVE_STUDENT', payload: studentId });
+    await refreshProfile(studentId);
+  }, [refreshProfile]);
+
+  const createProfile = useCallback(async (profileInput) => {
+    const created = await createProfileRequest(profileInput);
+    await refreshProfiles();
+    dispatch({ type: 'SET_ACTIVE_STUDENT', payload: created.student_id });
+    await refreshProfile(created.student_id);
+    return created;
+  }, [refreshProfile, refreshProfiles]);
 
   const createSession = useCallback(() => {
     const sessionId = `session_${Date.now().toString(36)}`;
     dispatch({
       type: 'ADD_SESSION',
-      payload: { session_id: sessionId, title: 'New Chat', created_at: new Date().toISOString() },
+      payload: {
+        session_id: sessionId,
+        student_id: state.activeStudentId,
+        title: 'New Chat',
+        created_at: new Date().toISOString(),
+      },
     });
     return sessionId;
-  }, []);
+  }, [state.activeStudentId]);
 
-  const value = { state, dispatch, createSession };
+  const value = { state, dispatch, createSession, refreshProfile, refreshProfiles, switchStudent, createProfile };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

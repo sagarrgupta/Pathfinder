@@ -26,7 +26,7 @@ const THEME_OPTIONS = [
 ];
 
 export default function SettingsPage() {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, refreshProfile, refreshProfiles } = useApp();
   const toast = useToast();
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -173,7 +173,20 @@ export default function SettingsPage() {
                 ['Ollama', health.ollama],
               ].map(([name, status]) => (
                 <div key={name} className="flex items-center justify-between py-3 border-b last:border-0 border-border/50">
-                  <span className="text-sm font-medium">{name}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{name}</span>
+                    {name === 'Neo4j' && (
+                      <a
+                        href="http://localhost:7474/browser/"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs font-medium text-primary hover:underline"
+                        title="Open Neo4j Browser"
+                      >
+                        Open panel
+                      </a>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     {status === 'connected' ? (
                       <>
@@ -245,10 +258,13 @@ export default function SettingsPage() {
       {/* Reset Confirmation Modal */}
       {showResetModal && (
         <ResetModal
+          studentId={state.activeStudentId}
           onClose={() => setShowResetModal(false)}
-          onSuccess={(msg) => {
+          onSuccess={async (msg) => {
+            dispatch({ type: 'CLEAR_STUDENT_DATA', payload: state.activeStudentId });
+            await refreshProfiles().catch(() => {});
+            await refreshProfile(state.activeStudentId).catch(() => {});
             toast.success(msg);
-            dispatch({ type: 'SET_PROFILE', payload: null });
           }}
         />
       )}
@@ -258,21 +274,16 @@ export default function SettingsPage() {
 
 // ── Reset Confirmation Modal ────────────────────────────────────
 
-function ResetModal({ onClose, onSuccess }) {
-  const [confirmText, setConfirmText] = useState('');
+function ResetModal({ studentId, onClose, onSuccess }) {
   const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState('');
   const backdropRef = useRef(null);
-  const CONFIRM_PHRASE = 'DELETE';
-
-  const canConfirm = confirmText === CONFIRM_PHRASE;
 
   const handleReset = async () => {
-    if (!canConfirm) return;
     setIsResetting(true);
     setError('');
     try {
-      await resetAllData();
+      await resetAllData(studentId);
       onSuccess('All profile data has been reset successfully.');
       onClose();
     } catch (err) {
@@ -339,22 +350,6 @@ function ResetModal({ onClose, onSuccess }) {
             </p>
           </div>
 
-          {/* Confirmation input */}
-          <div>
-            <label className="text-sm font-medium block mb-2">
-              Type <code className="px-1.5 py-0.5 bg-muted rounded-md text-destructive font-bold">DELETE</code> to confirm
-            </label>
-            <input
-              type="text"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              placeholder="Type DELETE here"
-              className="w-full rounded-lg border bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-destructive/40 transition-shadow"
-              autoFocus
-              onKeyDown={(e) => { if (e.key === 'Enter' && canConfirm) handleReset(); }}
-            />
-          </div>
-
           {error && (
             <p className="text-sm text-destructive">{error}</p>
           )}
@@ -366,15 +361,15 @@ function ResetModal({ onClose, onSuccess }) {
             onClick={onClose}
             className="px-4 py-2.5 text-sm rounded-lg border hover:bg-accent transition-colors font-medium"
           >
-            Cancel
+            No
           </button>
           <button
             onClick={handleReset}
-            disabled={!canConfirm || isResetting}
+            disabled={isResetting}
             className="px-4 py-2.5 text-sm rounded-lg bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-40 transition-all flex items-center gap-1.5 font-medium active:scale-95"
           >
             {isResetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-            {isResetting ? 'Deleting...' : 'Delete Everything'}
+            {isResetting ? 'Deleting...' : 'Yes'}
           </button>
         </div>
       </div>

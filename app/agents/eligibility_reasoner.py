@@ -13,52 +13,21 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
+from app.core.prompts import ELIGIBILITY_REASONER_PROMPT
 from app.core.quality import (
     DecisionPayload,
+    add_handoff_note,
     add_working_memory_item,
     build_support_ref,
     complete_task,
     group_evidence_records,
     init_working_memory,
+    recent_handoff_context,
+    start_task,
 )
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.eligibility_reasoner")
-
-_ELIGIBILITY_PROMPT = """You are Pathfinder's Eligibility Reasoner.
-
-Produce a structured decision payload for questions like:
-- Can I take this course?
-- Am I eligible for this program/path/opportunity?
-- What is known, assumed, and still missing?
-
-Return ONLY valid JSON:
-{
-  "decision_type": "eligibility_check",
-  "answer_outline": ["..."],
-  "recommended_items": [
-    {
-      "label": "Likely eligible with assumptions",
-      "reason": "Why the current evidence supports this",
-      "status": "verified|likely|conditional",
-      "support_codes": [],
-      "assumption": ""
-    }
-  ],
-  "blocked_or_uncertain_items": [
-    {"label": "...", "reason": "...", "kind": "uncertain|blocked|needs_verification"}
-  ],
-  "assumptions": ["..."],
-  "next_best_action": "one concrete next step",
-  "source_refs": [{"title": "...", "url": "...", "excerpt": "...", "source_type": "degree_page", "entity_type": "requirement"}]
-}
-
-Rules:
-1. Separate verified facts, reasonable inferences, and missing information.
-2. Do not invent eligibility rules or prerequisites.
-3. If the evidence is incomplete, give the best safe conditional answer instead of a hard refusal.
-4. Every recommendation must be grounded in source refs or the user's profile.
-"""
 
 
 async def eligibility_reasoner(state: PathfinderState) -> PathfinderState:
@@ -71,12 +40,16 @@ async def eligibility_reasoner(state: PathfinderState) -> PathfinderState:
     working_memory = init_working_memory(state.get("working_memory", {}))
     task_graph = state.get("task_graph", [])
     blocked_reasons = list(state.get("blocked_reasons", []))
+    task_graph = start_task(task_graph, "compare_to_student_state")
+    task_graph = start_task(task_graph, "check_blockers")
+    task_graph = start_task(task_graph, "rank_options")
+    handoff_context = recent_handoff_context(working_memory, to_node="eligibility_reasoner")
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Checking eligibility and blockers...")
 
     baseline = _heuristic_eligibility_payload(summary, evidence_groups)
-    llm_payload = await _llm_eligibility_payload(query, summary, evidence_groups)
+    llm_payload = await _llm_eligibility_payload(query, summary, evidence_groups, handoff_context)
     merged = _merge_payloads(baseline, llm_payload)
 
     for assumption in merged.get("assumptions", []):
@@ -95,6 +68,16 @@ async def eligibility_reasoner(state: PathfinderState) -> PathfinderState:
     if blocked_reasons:
         task_graph = complete_task(task_graph, "check_blockers")
     task_graph = complete_task(task_graph, "rank_options")
+    working_memory = add_handoff_note(
+        working_memory,
+        from_node="eligibility_reasoner",
+        to_node="evaluator",
+        contract="decision_payload",
+        summary=(
+            f"recommended={len(merged.get('recommended_items', []))}; "
+            f"blocked={len(merged.get('blocked_or_uncertain_items', []))}"
+        ),
+    )
 
     return {
         **state,
@@ -113,16 +96,18 @@ async def _llm_eligibility_payload(
     query: str,
     summary: dict[str, Any],
     evidence_groups: dict[str, Any],
+    handoff_context: list[dict[str, str]],
 ) -> DecisionPayload:
     if not any(evidence_groups.values()):
         return {}
 
     llm = get_text_llm()
     response = await llm.ainvoke([
-        SystemMessage(content=_ELIGIBILITY_PROMPT),
+        SystemMessage(content=ELIGIBILITY_REASONER_PROMPT),
         HumanMessage(content=(
             f"User query:\n{query}\n\n"
             f"Session summary:\n{json.dumps(summary, ensure_ascii=True)}\n\n"
+            f"Handoff notes:\n{json.dumps(handoff_context, ensure_ascii=True)}\n\n"
             f"Evidence groups:\n{json.dumps(evidence_groups, ensure_ascii=True)}"
         )),
     ])

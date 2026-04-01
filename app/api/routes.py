@@ -10,18 +10,25 @@ import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import Query
 from fastapi.responses import StreamingResponse
 
 from app.adapters.neo4j.graph_store import (
+    create_student,
     delete_document_cascade,
+    delete_entity_for_student,
     delete_entity,
     ensure_student,
+    get_student,
     find_document_by_filename,
     get_full_profile,
     get_graph_data,
+    list_students,
+    list_saved_recommendations,
     promote_document_to_global,
     reset_student_data,
     run_cypher,
+    store_memory_item,
     update_entity,
     update_student,
 )
@@ -30,16 +37,28 @@ from app.config.settings import settings
 from app.core.graph import get_compiled_graph
 from app.core.quality import build_task_graph, infer_quality_path, summarize_trace
 from app.core.state import PathfinderState
+from app.services.conflict_autoresolve import (
+    auto_resolve_profile_conflicts,
+    list_profile_conflicts,
+    resolve_conflict_choice,
+)
+from app.services.consolidation import maybe_consolidate_memory
+from app.services.background_jobs import get_background_status
 from app.schemas.models import (
     ChatResponse,
     DocumentUploadResponse,
     EntityUpdate,
     GraphDataResponse,
     HealthResponse,
+    ConflictChoiceRequest,
+    ProfileCreate,
+    ProfileInfo,
     ProfileResponse,
     ProfileTextInput,
     ProfileUpdate,
     SessionInfo,
+    SavedRecommendationCreate,
+    SavedRecommendationInfo,
     SettingsResponse,
     SettingsUpdate,
 )
@@ -60,11 +79,13 @@ _topic_guard_enabled: bool = settings.TOPIC_GUARD_ENABLED
 async def chat(
     query: str = Form(...),
     session_id: Optional[str] = Form(None),
+    student_id: Optional[str] = Form(None),
     files: list[UploadFile] = File(default=[]),
     is_global_upload: bool = Form(False),
     replace_filenames: str = Form(""),
 ):
     """Main chat endpoint with SSE streaming."""
+    resolved_student_id = await _resolve_student_id(student_id)
     if not session_id:
         session_id = generate_session_id()
 
@@ -75,9 +96,9 @@ async def chat(
 
     # Delete existing documents that are being replaced
     for fname in replace_set:
-        existing = await find_document_by_filename(fname, "default")
+        existing = await find_document_by_filename(fname, resolved_student_id)
         if existing and existing.get("id"):
-            await delete_document_cascade(existing["id"])
+            await delete_document_cascade(existing["id"], resolved_student_id)
             log.info("Chat: replaced existing document before re-upload: %s", fname)
 
     # Read uploaded files
@@ -105,7 +126,7 @@ async def chat(
                 "query": query,
                 "files": file_data,
                 "session_id": session_id,
-                "student_id": "default",
+                "student_id": resolved_student_id,
                 "is_global_upload": is_global_upload,
                 "topic_guard_enabled": _topic_guard_enabled,
                 "step_progress": [],
@@ -121,12 +142,14 @@ async def chat(
                 "source_policy": {},
                 "task_graph": [],
                 "working_memory": {},
+                "handoff_notes": [],
                 "compacted_session": {},
                 "source_audit": [],
                 "dependency_status": dependency_status,
                 "blocked_reasons": [],
                 "stop_reason": "",
                 "trace_summary": {},
+                "short_memory_policy": {},
                 "draft_answer": "",
                 "final_answer": "",
                 "is_blocked": False,
@@ -139,12 +162,16 @@ async def chat(
                 "web_results": [],
                 "graph_results": [],
                 "profile_data": {},
+                "semantic_memory": {},
+                "memory_pack": {},
+                "latest_ingestion_result": {},
+                "conflicts": [],
                 "evidence_records": [],
                 "decision_payload": {},
             }
 
             config = {
-                "configurable": {"thread_id": session_id},
+                "configurable": {"thread_id": f"{resolved_student_id}:{session_id}"},
                 "recursion_limit": 15,  # Safeguard: max 15 node executions per turn
             }
 
@@ -176,7 +203,7 @@ async def chat(
                 yield f"event: token\ndata: {json.dumps({'content': word + ' '})}\n\n"
 
             # Done event
-            yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'confidence': confidence, 'citations': citations, 'method': _determine_method(final_state), 'quality_path': infer_quality_path(final_state), 'trace_summary': trace_summary, 'blocked_reasons': final_state.get('blocked_reasons', []), 'dependency_status': final_state.get('dependency_status', dependency_status), 'stop_reason': final_state.get('stop_reason', '')})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'student_id': resolved_student_id, 'confidence': confidence, 'citations': citations, 'method': _determine_method(final_state), 'quality_path': infer_quality_path(final_state), 'trace_summary': trace_summary, 'blocked_reasons': final_state.get('blocked_reasons', []), 'dependency_status': final_state.get('dependency_status', dependency_status), 'stop_reason': final_state.get('stop_reason', '')})}\n\n"
 
         except Exception as exc:
             log.error("Chat error: %s", exc, exc_info=True)
@@ -185,13 +212,54 @@ async def chat(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@router.get("/profiles", response_model=list[ProfileInfo])
+async def get_profiles():
+    """List local student profiles."""
+    students = await list_students()
+    return [
+        ProfileInfo(
+            student_id=student.get("id", ""),
+            name=student.get("name", "Student"),
+            email=student.get("email"),
+            university=student.get("university"),
+            program=student.get("program"),
+            created_at=student.get("created_at"),
+            updated_at=student.get("updated_at"),
+            completeness=float(student.get("completeness", 0.0) or 0.0),
+        )
+        for student in students
+    ]
+
+
+@router.post("/profiles", response_model=ProfileInfo)
+async def create_profile(body: ProfileCreate):
+    """Create a new local student profile."""
+    student = await create_student(
+        name=body.name,
+        email=body.email,
+        university=body.university,
+        program=body.program,
+    )
+    return ProfileInfo(
+        student_id=student.get("id", ""),
+        name=student.get("name", "Student"),
+        email=student.get("email"),
+        university=student.get("university"),
+        program=student.get("program"),
+        created_at=student.get("created_at"),
+        updated_at=student.get("updated_at"),
+        completeness=float(student.get("completeness", 0.0) or 0.0),
+    )
+
+
 # ── Document Upload ──────────────────────────────────────────────
 
 
 @router.get("/documents/check")
-async def check_document_exists(filename: str):
+async def check_document_exists(filename: str, student_id: Optional[str] = Query(default=None)):
     """Check if a document with this filename already exists in the profile."""
-    existing = await find_document_by_filename(filename, "default")
+    resolved_student_id = await _resolve_student_id(student_id)
+    existing = await find_document_by_filename(filename, resolved_student_id)
     return {"exists": existing is not None, "document": existing}
 
 
@@ -200,10 +268,12 @@ async def upload_document(
     file: UploadFile = File(...),
     scope: str = Form("global"),
     session_id: Optional[str] = Form(None),
+    student_id: Optional[str] = Form(None),
     replace: str = Form("false"),
 ):
     """Upload a document to the student profile or session."""
     import os
+    resolved_student_id = await _resolve_student_id(student_id)
 
     content = await file.read()
     if len(content) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
@@ -219,9 +289,9 @@ async def upload_document(
 
     # If replacing, delete the existing document first
     if replace.lower() == "true":
-        existing = await find_document_by_filename(file.filename, "default")
+        existing = await find_document_by_filename(file.filename, resolved_student_id)
         if existing and existing.get("id"):
-            await delete_document_cascade(existing["id"])
+            await delete_document_cascade(existing["id"], resolved_student_id)
             log.info("Replaced existing document: %s", file.filename)
 
     # Process through doc_analyst directly
@@ -230,13 +300,14 @@ async def upload_document(
     state: dict[str, Any] = {
         "files": [{"filename": file.filename, "content": content, "size": len(content), "content_type": file.content_type}],
         "session_id": session_id or "",
-        "student_id": "default",
+        "student_id": resolved_student_id,
         "is_global_upload": scope == "global",
         "step_progress": [],
         "plan": [],
     }
 
     result = await process_doc(state)
+    await maybe_consolidate_memory(resolved_student_id, "document_upload")
 
     return DocumentUploadResponse(
         document_id=f"doc_uploaded",
@@ -251,10 +322,22 @@ async def upload_document(
 
 
 @router.get("/profile", response_model=ProfileResponse)
-async def get_profile():
+async def get_profile(student_id: Optional[str] = Query(default=None)):
     """Get the student's full profile from the knowledge graph."""
-    await ensure_student("default")
-    profile = await get_full_profile("default")
+    resolved_student_id = await _resolve_student_id(student_id)
+    profile = await get_full_profile(resolved_student_id)
+    candidate_facts = profile.get("candidate_facts", [])
+    resolved_candidates = [item for item in candidate_facts if item.get("status") == "resolved"]
+    confidence_values = [float(item.get("confidence", 0.0) or 0.0) for item in resolved_candidates] or [
+        float(item.get("confidence", 0.0) or 0.0) for item in candidate_facts
+    ]
+    confidence = round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else 0.0
+    memory_overview = {
+        "candidate_facts": len(profile.get("candidate_facts", [])),
+        "memory_items": len(profile.get("memory_items", [])),
+        "evidence": len(profile.get("evidence", [])),
+        "conflicts": len([item for item in profile.get("candidate_facts", []) if item.get("status") == "conflicted"]),
+    }
     return ProfileResponse(
         personal=profile.get("personal", {}),
         academic={"courses_count": len(profile.get("courses", []))},
@@ -266,42 +349,48 @@ async def get_profile():
         experience=profile.get("experience", []),
         projects=profile.get("projects", []),
         all_entities=profile.get("all_entities", {}),
+        completeness=float(profile.get("completeness", 0.0) or 0.0),
+        confidence=confidence,
+        memory_overview=memory_overview,
     )
 
 
 @router.put("/profile")
 async def update_profile(update: ProfileUpdate):
     """Update a specific profile field."""
-    result = await update_student("default", **{update.field: update.value})
+    resolved_student_id = await _resolve_student_id(update.student_id)
+    result = await update_student(resolved_student_id, **{update.field: update.value})
     return {"updated": True, "data": result}
 
 
 @router.delete("/profile/entity/{entity_label}/{entity_name}")
-async def delete_profile_entity(entity_label: str, entity_name: str):
+async def delete_profile_entity(entity_label: str, entity_name: str, student_id: Optional[str] = Query(default=None)):
     """Delete a specific entity from the profile."""
+    resolved_student_id = await _resolve_student_id(student_id)
     if entity_label == "Document":
         # Documents use 'filename', not 'name' — also cascade-delete chunks
         records = await run_cypher(
-            "MATCH (d:Document {filename: $fname}) RETURN d.id AS doc_id",
-            {"fname": entity_name},
+            "MATCH (s:Student {id: $sid})-[:UPLOADED]->(d:Document {filename: $fname}) RETURN d.id AS doc_id",
+            {"fname": entity_name, "sid": resolved_student_id},
         )
         if records and records[0].get("doc_id"):
-            deleted = await delete_document_cascade(records[0]["doc_id"])
+            deleted = await delete_document_cascade(records[0]["doc_id"], resolved_student_id)
         else:
-            # Fallback: try to delete by filename directly
-            deleted = await delete_entity("Document", {"filename": entity_name})
+            deleted = await delete_entity_for_student("Document", {"filename": entity_name}, resolved_student_id)
     else:
-        deleted = await delete_entity(entity_label, {"name": entity_name})
+        deleted = await delete_entity_for_student(entity_label, {"name": entity_name}, resolved_student_id)
     return {"deleted": deleted}
 
 
 @router.put("/profile/entity")
 async def update_profile_entity(body: EntityUpdate):
     """Update properties on a profile entity (Company, Skill, etc.)."""
+    resolved_student_id = await _resolve_student_id(body.student_id)
     result = await update_entity(
         label=body.label,
         match_props={"name": body.name},
         new_props=body.properties,
+        student_id=resolved_student_id,
     )
     if not result:
         raise HTTPException(404, f"{body.label} '{body.name}' not found")
@@ -309,23 +398,63 @@ async def update_profile_entity(body: EntityUpdate):
 
 
 @router.delete("/profile/reset")
-async def reset_all_profile_data():
+async def reset_all_profile_data(student_id: Optional[str] = Query(default=None)):
     """Delete ALL student data from the knowledge graph."""
-    deleted = await reset_student_data("default")
+    resolved_student_id = await _resolve_student_id(student_id)
+    deleted = await reset_student_data(resolved_student_id)
     return {"deleted": deleted, "message": "All profile data has been reset."}
 
 
 @router.post("/profile/text")
-async def add_profile_text(input_data: ProfileTextInput):
+async def add_profile_text(input_data: ProfileTextInput, student_id: Optional[str] = Query(default=None)):
     """Process free-text input and add extracted entities to profile."""
-    result = await process_free_text(input_data.text, "default")
+    resolved_student_id = await _resolve_student_id(student_id)
+    result = await process_free_text(input_data.text, resolved_student_id)
+    await maybe_consolidate_memory(resolved_student_id, "profile_text")
     return result
 
 
+@router.get("/profile/conflicts")
+async def get_profile_conflicts(student_id: Optional[str] = Query(default=None)):
+    """List unresolved profile-memory conflicts for the active student."""
+    resolved_student_id = await _resolve_student_id(student_id)
+    return await list_profile_conflicts(resolved_student_id)
+
+
+@router.post("/profile/conflicts/self-resolve")
+async def self_resolve_profile_conflicts(student_id: Optional[str] = Query(default=None)):
+    """Auto-resolve obvious profile-memory conflicts for the active student."""
+    resolved_student_id = await _resolve_student_id(student_id)
+    result = await auto_resolve_profile_conflicts(resolved_student_id)
+    return {
+        "student_id": resolved_student_id,
+        "resolved_count": result.get("resolved_count", 0),
+        "superseded_count": result.get("superseded_count", 0),
+        "resolved": result.get("resolved_count", 0),
+        "superseded": result.get("superseded_count", 0),
+        "decisions": result.get("decisions", []),
+        "remaining_conflicts": result.get("remaining_conflicts", 0),
+    }
+
+
+@router.post("/profile/conflicts/resolve")
+async def resolve_profile_conflict(body: ConflictChoiceRequest):
+    """Apply a user-selected conflict resolution."""
+    resolved_student_id = await _resolve_student_id(body.student_id)
+    return await resolve_conflict_choice(
+        student_id=resolved_student_id,
+        conflict_id=body.conflict_id,
+        fact_type=body.fact_type,
+        action=body.action,
+        selected_value=body.selected_value,
+    )
+
+
 @router.get("/profile/graph", response_model=GraphDataResponse)
-async def get_profile_graph():
+async def get_profile_graph(student_id: Optional[str] = Query(default=None)):
     """Get knowledge graph data for visualization."""
-    data = await get_graph_data("default")
+    resolved_student_id = await _resolve_student_id(student_id)
+    data = await get_graph_data(resolved_student_id)
     return GraphDataResponse(nodes=data["nodes"], relationships=data["relationships"])
 
 
@@ -333,32 +462,99 @@ async def get_profile_graph():
 
 
 @router.get("/sessions")
-async def list_sessions():
+async def list_sessions(student_id: Optional[str] = Query(default=None)):
     """List all chat sessions. Returns from SQLite checkpoint metadata."""
     # Note: In a full implementation, we'd query the SQLite checkpointer
     # For now, return an empty list — sessions are created on first chat
-    return []
+    resolved_student_id = await _resolve_student_id(student_id)
+    return {"student_id": resolved_student_id, "sessions": []}
+
+
+@router.get("/recommendations", response_model=list[SavedRecommendationInfo])
+async def get_saved_recommendations(student_id: Optional[str] = Query(default=None)):
+    """List saved plans and recommendations for the active profile."""
+    resolved_student_id = await _resolve_student_id(student_id)
+    items = await list_saved_recommendations(resolved_student_id)
+    return [
+        SavedRecommendationInfo(
+            id=item.get("id", ""),
+            student_id=item.get("student_id", resolved_student_id),
+            title=item.get("metadata", {}).get("title") or item.get("summary", "Saved recommendation"),
+            summary=item.get("summary", ""),
+            recommendation_type=str(item.get("memory_type", "saved_plan")).replace("saved_", ""),
+            actions=item.get("metadata", {}).get("actions", []),
+            source_session_id=item.get("metadata", {}).get("source_session_id"),
+            source_query=item.get("metadata", {}).get("source_query"),
+            created_at=item.get("created_at"),
+            status=item.get("metadata", {}).get("status", "active"),
+            next_review_at=item.get("metadata", {}).get("next_review_at"),
+            follow_up_prompt=item.get("metadata", {}).get("follow_up_prompt"),
+            metadata=item.get("metadata", {}),
+        )
+        for item in items
+    ]
+
+
+@router.post("/recommendations", response_model=SavedRecommendationInfo)
+async def save_recommendation(body: SavedRecommendationCreate):
+    """Save a recommendation or plan explicitly."""
+    resolved_student_id = await _resolve_student_id(body.student_id)
+    stored = await store_memory_item(
+        resolved_student_id,
+        f"saved_{body.recommendation_type}",
+        body.summary,
+        source_ref=body.source_session_id or "manual",
+        confidence=0.8,
+        salience=0.85,
+        status="resolved",
+        time_scope="long_term",
+        tags=[body.recommendation_type, "saved"],
+        metadata={
+            **body.metadata,
+            "title": body.title,
+            "actions": body.actions,
+            "source_session_id": body.source_session_id,
+            "source_query": body.source_query,
+        },
+    )
+    return SavedRecommendationInfo(
+        id=stored.get("id", ""),
+        student_id=stored.get("student_id", resolved_student_id),
+        title=body.title,
+        summary=stored.get("summary", body.summary),
+        recommendation_type=body.recommendation_type,
+        actions=body.actions,
+        source_session_id=body.source_session_id,
+        source_query=body.source_query,
+        created_at=stored.get("created_at"),
+        status=stored.get("metadata", {}).get("status", "active"),
+        next_review_at=stored.get("metadata", {}).get("next_review_at"),
+        follow_up_prompt=stored.get("metadata", {}).get("follow_up_prompt"),
+        metadata=stored.get("metadata", {}),
+    )
 
 
 @router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, student_id: Optional[str] = Query(default=None)):
     """Delete a chat session and its session-scoped documents."""
+    resolved_student_id = await _resolve_student_id(student_id)
     # Delete session-scoped documents from Neo4j
     await run_cypher(
         """
-        MATCH (d:Document {session_id: $sid, scope: 'session'})
+        MATCH (s:Student {id: $student_id})-[:UPLOADED]->(d:Document {session_id: $sid, scope: 'session'})
         OPTIONAL MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d)
         DETACH DELETE c, d
         """,
-        {"sid": session_id},
+        {"sid": session_id, "student_id": resolved_student_id},
     )
-    return {"deleted": True, "session_id": session_id}
+    return {"deleted": True, "session_id": session_id, "student_id": resolved_student_id}
 
 
 @router.put("/sessions/{session_id}/promote-doc")
-async def promote_session_doc(session_id: str, document_id: str = Form(...)):
+async def promote_session_doc(session_id: str, document_id: str = Form(...), student_id: Optional[str] = Form(default=None)):
     """Promote a session document to global scope."""
-    promoted = await promote_document_to_global(document_id)
+    resolved_student_id = await _resolve_student_id(student_id)
+    promoted = await promote_document_to_global(document_id, resolved_student_id)
     return {"promoted": promoted, "document_id": document_id}
 
 
@@ -408,6 +604,12 @@ async def health_check():
         lm_studio=lm_studio_status,
         ollama=ollama_status,
     )
+
+
+@router.get("/background/status")
+async def background_status():
+    """Get lightweight background-job status for observability."""
+    return get_background_status()
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -469,3 +671,16 @@ async def _dependency_status() -> dict[str, str]:
         "embeddings": embeddings_status,
         "web_search": web_search_status,
     }
+
+
+async def _resolve_student_id(student_id: str | None, create_if_missing: bool = True) -> str:
+    """Resolve the active student profile, creating the default one if needed."""
+    if student_id:
+        if create_if_missing:
+            await ensure_student(student_id)
+        return student_id
+    if create_if_missing:
+        await ensure_student("default")
+        return "default"
+    existing = await get_student("default")
+    return existing.get("id", "default") if existing else "default"

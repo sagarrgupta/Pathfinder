@@ -14,8 +14,10 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
+from app.core.prompts import COURSE_PLANNER_PROMPT
 from app.core.quality import (
     DecisionPayload,
+    add_handoff_note,
     add_working_memory_item,
     academic_source_relevance,
     build_support_ref,
@@ -25,50 +27,12 @@ from app.core.quality import (
     infer_target_level,
     infer_target_program,
     init_working_memory,
+    recent_handoff_context,
+    start_task,
 )
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.course_planner")
-
-_PLANNER_PROMPT = """You are Pathfinder's Course Planner.
-
-Your task is to produce a structured decision payload for a student's course-planning question.
-
-Return ONLY valid JSON in this form:
-{
-  "decision_type": "course_planning",
-  "answer_outline": ["short paragraph or bullet sentence", "..."],
-  "recommended_items": [
-    {
-      "label": "CSC 215 Artificial Intelligence",
-      "reason": "Why this is a good next step for this student",
-      "status": "catalog_option|likely_next|confirmed_open",
-      "support_codes": ["CSC 215"],
-      "assumption": "Assuming fully classified status"
-    }
-  ],
-  "blocked_or_uncertain_items": [
-    {
-      "label": "CSC 219 Machine Learning",
-      "reason": "Why this may be blocked or uncertain",
-      "kind": "uncertain|blocked|needs_verification"
-    }
-  ],
-  "assumptions": ["..."],
-  "next_best_action": "one concrete next step",
-  "source_refs": [
-    {"title": "...", "url": "...", "excerpt": "...", "source_type": "degree_page", "entity_type": "course"}
-  ]
-}
-
-Rules:
-1. Answer the student's decision question first.
-2. Prefer ranked recommendations over descriptive summaries.
-3. Separate catalog-based options from currently confirmed schedule availability.
-4. Use assumptions explicitly rather than hiding them.
-5. Do not invent course codes, prerequisites, schedules, or degree requirements.
-6. Every recommended item must correspond to at least one evidence record.
-"""
 
 
 async def course_planner(state: PathfinderState) -> PathfinderState:
@@ -82,14 +46,32 @@ async def course_planner(state: PathfinderState) -> PathfinderState:
     working_memory = init_working_memory(state.get("working_memory", {}))
     task_graph = state.get("task_graph", [])
     blocked_reasons = list(state.get("blocked_reasons", []))
+    task_graph = start_task(task_graph, "compare_to_student_state")
+    task_graph = start_task(task_graph, "check_blockers")
+    task_graph = start_task(task_graph, "rank_options")
+    handoff_context = recent_handoff_context(working_memory, to_node="course_planner")
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Building a ranked course plan...")
 
-    decision_payload = _heuristic_course_payload(summary, evidence_groups, target_program, target_level)
-    llm_payload = await _llm_course_payload(query, summary, evidence_groups)
+    merged_summary = _merge_planner_summary(
+        summary,
+        state.get("compacted_session", {}),
+        state.get("profile_data", {}),
+        state.get("semantic_memory", {}),
+        state.get("query", ""),
+    )
+    decision_payload = _heuristic_course_payload(
+        merged_summary,
+        evidence_groups,
+        target_program,
+        target_level,
+        query,
+    )
+    llm_payload = await _llm_course_payload(query, summary, evidence_groups, handoff_context)
 
     merged = _merge_payloads(decision_payload, llm_payload)
+    merged = _enforce_recommendation_support(merged)
     draft = _render_course_draft(merged)
 
     if merged.get("blocked_or_uncertain_items"):
@@ -114,6 +96,16 @@ async def course_planner(state: PathfinderState) -> PathfinderState:
         task_graph = complete_task(task_graph, "check_blockers")
     if merged.get("recommended_items"):
         task_graph = complete_task(task_graph, "rank_options")
+    working_memory = add_handoff_note(
+        working_memory,
+        from_node="course_planner",
+        to_node="evaluator",
+        contract="decision_payload",
+        summary=(
+            f"recommended={len(merged.get('recommended_items', []))}; "
+            f"blocked={len(merged.get('blocked_or_uncertain_items', []))}"
+        ),
+    )
 
     step_progress.append("Course plan prepared")
     log.info(
@@ -128,7 +120,7 @@ async def course_planner(state: PathfinderState) -> PathfinderState:
         "working_memory": working_memory,
         "task_graph": task_graph,
         "blocked_reasons": [reason for reason in blocked_reasons if reason],
-        "stop_reason": state.get("stop_reason", "") or ("partial_answer" if blocked_reasons else ""),
+        "stop_reason": state.get("stop_reason", "") or _planner_stop_reason(merged, blocked_reasons),
         "step_progress": step_progress,
         "next_node": "evaluator",
     }
@@ -138,6 +130,7 @@ async def _llm_course_payload(
     query: str,
     summary: dict[str, Any],
     evidence_groups: dict[str, Any],
+    handoff_context: list[dict[str, str]],
 ) -> DecisionPayload:
     """Ask the LLM to synthesize a structured decision from the evidence."""
     if not any(evidence_groups.values()):
@@ -145,10 +138,11 @@ async def _llm_course_payload(
 
     llm = get_text_llm()
     response = await llm.ainvoke([
-        SystemMessage(content=_PLANNER_PROMPT),
+        SystemMessage(content=COURSE_PLANNER_PROMPT),
         HumanMessage(content=(
             f"User query:\n{query}\n\n"
             f"Session summary:\n{json.dumps(summary, ensure_ascii=True)}\n\n"
+            f"Handoff notes:\n{json.dumps(handoff_context, ensure_ascii=True)}\n\n"
             f"Evidence groups:\n{json.dumps(evidence_groups, ensure_ascii=True)}"
         )),
     ])
@@ -169,6 +163,7 @@ def _heuristic_course_payload(
     evidence_groups: dict[str, Any],
     target_program: str = "",
     target_level: str = "unknown",
+    query: str = "",
 ) -> DecisionPayload:
     """Build a baseline decision payload deterministically."""
     target_program = target_program or str(summary.get("program", {}).get("value", ""))
@@ -176,9 +171,68 @@ def _heuristic_course_payload(
         program_text = target_program.lower()
         if any(word in program_text for word in ("master", "masters", "graduate", "ms")):
             target_level = "graduate"
+    target_institution = str((summary.get("institution", {}) or {}).get("value", "") or "")
+    query_lower = (query or "").lower()
+    asks_major_or_electives = any(token in query_lower for token in ("major", "elective", "specialization", "concentration"))
+    allowed_prefixes = _allowed_course_prefixes(target_program)
+
+    if asks_major_or_electives and not target_institution:
+        return {
+            "decision_type": "course_planning",
+            "answer_outline": [
+                "Here is a practical major-and-elective path aligned to your goal.",
+            ],
+            "recommended_items": [
+                {
+                    "label": "Major focus: Computer Science or Data Engineering-aligned CS track",
+                    "reason": "This gives the strongest systems + software foundation for production data engineering roles.",
+                    "status": "recommended",
+                    "support_codes": [],
+                    "support_refs": [],
+                    "assumption": "",
+                },
+                {
+                    "label": "Core electives: Databases, Data Modeling, Distributed Systems, Cloud Computing",
+                    "reason": "These are foundational for building reliable data platforms and pipelines.",
+                    "status": "recommended",
+                    "support_codes": [],
+                    "support_refs": [],
+                    "assumption": "",
+                },
+                {
+                    "label": "Applied electives: Data Warehousing, ETL/ELT, Big Data Processing, Data Engineering Project",
+                    "reason": "These electives map directly to day-to-day data engineer responsibilities.",
+                    "status": "recommended",
+                    "support_codes": [],
+                    "support_refs": [],
+                    "assumption": "",
+                },
+                {
+                    "label": "Career accelerators: SQL mastery, Python, Spark, orchestration tools",
+                    "reason": "Hands-on tooling depth substantially improves internship and job readiness.",
+                    "status": "recommended",
+                    "support_codes": [],
+                    "support_refs": [],
+                    "assumption": "",
+                },
+            ],
+            "blocked_or_uncertain_items": [
+                {
+                    "label": "University-specific course codes not available in this query",
+                    "reason": "Without a target institution/program catalog, exact course-code sequencing cannot be verified.",
+                    "kind": "needs_verification",
+                }
+            ],
+            "assumptions": assumptions + ["Providing domain-general advising because institution-specific catalog context is missing."],
+            "next_best_action": "Share your university/program and I can convert this into an exact semester-wise course-code plan.",
+            "source_refs": [],
+            "verified_requirements": [],
+            "semester_plan_options": [],
+            "blocked_reasons": ["safe_partial_plan:domain_general_without_institution_context"],
+        }
 
     required: list[dict[str, Any]] = []
-    ai_aligned: list[dict[str, Any]] = []
+    goal_aligned: list[dict[str, Any]] = []
     uncertain: list[dict[str, Any]] = []
     support_refs = []
     assumptions = list(summary.get("assumptions", []))
@@ -188,6 +242,7 @@ def _heuristic_course_payload(
     availability_records = evidence_groups.get("availability", [])
     course_records = evidence_groups.get("courses", [])
     constraint_records = evidence_groups.get("constraints", [])
+    requirement_records = evidence_groups.get("requirements", [])
     live_codes = {
         rec.get("value", {}).get("code", "")
         for rec in availability_records
@@ -196,10 +251,12 @@ def _heuristic_course_payload(
     if constraint_records:
         assumptions.append("Some prerequisite or program-constraint evidence was found and may affect final enrollment eligibility.")
 
+    program_model = _compile_academic_program_model(requirement_records, course_records, summary, target_program)
+
     candidate_records = [
         record
         for record in course_records + availability_records
-        if _record_matches_program_context(record, target_program, target_level)
+        if _record_matches_program_context(record, target_program, target_level, target_institution)
     ]
     direct_primary_courses = [
         record for record in candidate_records
@@ -216,16 +273,20 @@ def _heuristic_course_payload(
         code = record.get("value", {}).get("code", "")
         if not code or code in completed:
             continue
+        if not _code_allowed_for_program(code, allowed_prefixes):
+            continue
         label = record.get("value", {}).get("name") or code
         ref = build_support_ref(record)
         if ref.get("url"):
             support_refs.append(ref)
 
+        support_ref = build_support_ref(record)
         entry = {
             "label": label if code in label else f"{code} {label}".strip(),
             "reason": _course_reason(code, goal_text, record),
             "status": "confirmed_open" if code in live_codes else "catalog_option",
             "support_codes": [code],
+            "support_refs": [support_ref] if support_ref.get("url") else [],
             "assumption": "" if code in live_codes else "Assuming normal standing and no hidden deficiency constraints.",
         }
 
@@ -233,8 +294,8 @@ def _heuristic_course_payload(
             if not any(item.get("support_codes") == [code] for item in required):
                 required.append(entry)
         elif _is_goal_aligned(record, goal_text):
-            if not any(item.get("support_codes") == [code] for item in ai_aligned):
-                ai_aligned.append(entry)
+            if not any(item.get("support_codes") == [code] for item in goal_aligned):
+                goal_aligned.append(entry)
         else:
             uncertain.append({
                 "label": entry["label"],
@@ -242,16 +303,66 @@ def _heuristic_course_payload(
                 "kind": "uncertain",
             })
 
-    recommended_items = (required[:4] + ai_aligned[:4])[:6]
+    if not required and requirement_records:
+        for record in requirement_records:
+            if not _record_matches_program_context(record, target_program, target_level, target_institution):
+                continue
+            excerpt = f"{record.get('source_title', '')} {record.get('excerpt', '')}"
+            for code in _extract_course_codes_from_text(excerpt)[:6]:
+                if code in completed:
+                    continue
+                if not _code_allowed_for_program(code, allowed_prefixes):
+                    continue
+                ref = build_support_ref(record)
+                if ref.get("url"):
+                    support_refs.append(ref)
+                item = {
+                    "label": code,
+                    "reason": "This course code appears in official program requirement evidence and is a strong catalog-based planning candidate.",
+                    "status": "catalog_option",
+                    "support_codes": [code],
+                    "support_refs": [ref] if ref.get("url") else [],
+                    "assumption": "Assuming prerequisites and classification status are satisfied.",
+                }
+                if not any(existing.get("support_codes") == [code] for existing in required):
+                    required.append(item)
+
+    if not required and program_model.get("required_core"):
+        for core in program_model["required_core"][:8]:
+            core_code = core.get("code", "")
+            if not core_code or core_code in completed:
+                continue
+            if not _code_allowed_for_program(core_code, allowed_prefixes):
+                continue
+            ref = core.get("support_ref", {})
+            required.append({
+                "label": f"{core_code} {core.get('name', '')}".strip(),
+                "reason": "This appears in the verified core requirement model and is a strong catalog-based planning course.",
+                "status": "catalog_option",
+                "support_codes": [core_code],
+                "support_refs": [ref] if ref.get("url") else [],
+                "assumption": "Assuming prerequisites and classification status are satisfied.",
+            })
+            if ref.get("url"):
+                support_refs.append(ref)
+
+    recommended_items = (required[:4] + goal_aligned[:4])[:6]
 
     if not live_codes:
         assumptions.append("Current open sections were not directly verified in retrieved schedule sources.")
 
-    if not direct_primary_courses:
+    direct_primary_requirements = [
+        record for record in requirement_records
+        if _record_matches_program_context(record, target_program, target_level, target_institution)
+        and record.get("trust_tier") == "primary_official"
+        and record.get("fit_tier") in {"direct", "adjacent", ""}
+    ]
+
+    if not direct_primary_courses and not direct_primary_requirements:
         return {
             "decision_type": "course_planning",
             "answer_outline": [
-                "I found some potentially relevant evidence, but not enough direct primary official program evidence to safely rank your next-semester course options.",
+                "I could not find enough primary official program requirement evidence to safely build a semester plan.",
             ],
             "recommended_items": [],
             "blocked_or_uncertain_items": [{
@@ -262,25 +373,33 @@ def _heuristic_course_payload(
             "assumptions": assumptions,
             "next_best_action": "Retrieve the official program page, official course catalog, or current graduate schedule and then rank the next-semester options.",
             "source_refs": _dedupe_source_refs(support_refs)[:8],
+            "verified_requirements": _render_verified_requirements(program_model),
+            "semester_plan_options": [],
+            "blocked_reasons": ["hard_blocked:missing_primary_program_requirements"],
         }
 
     if not recommended_items:
+        sample_plan = _build_semester_plan_options(program_model, goal_aligned, query)
         return {
             "decision_type": "course_planning",
             "answer_outline": [
-                "I could not verify a clean set of program-matched course recommendations from the current evidence.",
+                "I could not verify enough live offerings, but I can still give you a catalog-based semester planning sample from official program requirements.",
             ],
-            "recommended_items": [],
+            "recommended_items": sample_plan[0].get("courses", [])[:6] if sample_plan else [],
             "blocked_or_uncertain_items": [{
                 "label": "Program-matched graduate course set not verified",
-                "reason": "The retrieved sources do not yet provide enough MS-level, program-specific course evidence to recommend a safe next-semester shortlist.",
+                "reason": "Live schedule availability is not confirmed; this plan is catalog-based and should be verified against the registrar schedule.",
                 "kind": "needs_verification",
             }],
             "assumptions": assumptions,
             "next_best_action": "Use the official graduate program page and current graduate schedule, then I can rank the best next-semester options.",
             "source_refs": _dedupe_source_refs(support_refs)[:8],
+            "verified_requirements": _render_verified_requirements(program_model),
+            "semester_plan_options": sample_plan,
+            "blocked_reasons": ["safe_partial_plan:catalog_without_live_schedule"],
         }
 
+    sample_plan = _build_semester_plan_options(program_model, recommended_items + goal_aligned, query)
     return {
         "decision_type": "course_planning",
         "answer_outline": [
@@ -291,6 +410,9 @@ def _heuristic_course_payload(
         "assumptions": assumptions,
         "next_best_action": "Check the registrar schedule for live section availability for the top-ranked courses.",
         "source_refs": _dedupe_source_refs(support_refs)[:8],
+        "verified_requirements": _render_verified_requirements(program_model),
+        "semester_plan_options": sample_plan,
+        "blocked_reasons": ["safe_partial_plan:catalog_without_live_schedule"] if not live_codes else [],
     }
 
 
@@ -304,7 +426,16 @@ def _merge_payloads(base: DecisionPayload, llm_payload: DecisionPayload) -> Deci
         if llm_payload.get(key):
             merged[key] = llm_payload[key]
 
-    for key in ("answer_outline", "recommended_items", "blocked_or_uncertain_items", "assumptions", "source_refs"):
+    for key in (
+        "answer_outline",
+        "recommended_items",
+        "blocked_or_uncertain_items",
+        "assumptions",
+        "source_refs",
+        "verified_requirements",
+        "semester_plan_options",
+        "blocked_reasons",
+    ):
         values = list(base.get(key, [])) + list(llm_payload.get(key, []))
         merged[key] = _dedupe_sequence(values)
 
@@ -341,6 +472,27 @@ def _render_course_draft(payload: DecisionPayload) -> str:
         lines.append("\n**Assumptions**")
         for assumption in assumptions[:3]:
             lines.append(f"- {assumption}")
+
+    requirements = payload.get("verified_requirements", [])
+    if requirements:
+        lines.append("\n**Verified Program Rules**")
+        for requirement in requirements[:4]:
+            lines.append(f"- {requirement}")
+
+    plan_options = payload.get("semester_plan_options", [])
+    if plan_options:
+        lines.append("\n**Sample Semester Plan (Catalog-Based)**")
+        for option in plan_options[:2]:
+            term = option.get("term", "")
+            labels = []
+            for course in option.get("courses", [])[:4]:
+                if isinstance(course, dict):
+                    labels.append(str(course.get("label", "")))
+                else:
+                    labels.append(str(course))
+            if term and labels:
+                lines.append(f"- **{term}**: {', '.join([label for label in labels if label])}")
+        lines.append("- Verify live offering/section availability in the official schedule before registration.")
 
     if payload.get("next_best_action"):
         lines.append(f"\n**Next step:** {payload['next_best_action']}")
@@ -417,19 +569,43 @@ def _dedupe_sequence(values: list[Any]) -> list[Any]:
     return deduped
 
 
-def _record_matches_program_context(record: dict[str, Any], target_program: str, target_level: str) -> bool:
+def _record_matches_program_context(
+    record: dict[str, Any],
+    target_program: str,
+    target_level: str,
+    target_institution: str = "",
+) -> bool:
     title = record.get("source_title", "")
     excerpt = record.get("excerpt", "")
     url = record.get("source_url", "")
     code = str((record.get("value", {}) or {}).get("code", ""))
     source_type = record.get("source_type", "")
+    trust_tier = str(record.get("trust_tier", "") or "")
+    number_match = re.search(r"(\d{3})", code)
+    if target_level == "graduate" and number_match:
+        number = int(number_match.group(1))
+        if number < 200:
+            prereq_context = f"{title} {excerpt}".lower()
+            if source_type == "schedule_page":
+                return False
+            if "prereq" not in prereq_context and "deficien" not in prereq_context and "admission" not in prereq_context:
+                return False
     if code and not course_code_matches_level(code, target_level, title, excerpt):
+        return False
+    if trust_tier == "third_party" and source_type not in {"degree_page", "admissions_page", "schedule_page"}:
         return False
 
     if not target_program:
         return source_type in {"degree_page", "certificate_page"} or bool(code)
 
-    relevance = academic_source_relevance(title, excerpt, url, target_program, target_level)
+    relevance = academic_source_relevance(
+        title,
+        excerpt,
+        url,
+        target_program,
+        target_level,
+        target_institution,
+    )
     if relevance >= 1.0:
         return True
 
@@ -437,6 +613,36 @@ def _record_matches_program_context(record: dict[str, Any], target_program: str,
         return True
 
     return False
+
+
+def _extract_course_codes_from_text(text: str) -> list[str]:
+    codes: list[str] = []
+    for match in re.findall(r"\b[A-Z]{2,4}\s?-?\d{3}[A-Z]?\b", text or ""):
+        code = match.replace("-", " ").replace("  ", " ").strip().upper()
+        if code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _allowed_course_prefixes(target_program: str) -> set[str]:
+    lowered = (target_program or "").lower()
+    if "computer science" in lowered:
+        return {"CSC", "CPE", "CMPE", "DATA", "DS", "STAT", "EE"}
+    if "data" in lowered:
+        return {"DATA", "DS", "STAT", "CSC", "CPE", "MATH"}
+    if "software" in lowered:
+        return {"CSC", "SE", "SWE", "CPE"}
+    return set()
+
+
+def _code_allowed_for_program(code: str, allowed_prefixes: set[str]) -> bool:
+    if not allowed_prefixes:
+        return True
+    match = re.match(r"^([A-Z]{2,5})\s?-?\d{3}[A-Z]?$", (code or "").strip().upper())
+    if not match:
+        return True
+    prefix = match.group(1)
+    return prefix in allowed_prefixes
 
 
 def _meaningful_tokens(text: str) -> list[str]:
@@ -449,3 +655,245 @@ def _meaningful_tokens(text: str) -> list[str]:
         if token not in stopwords and token not in tokens:
             tokens.append(token)
     return tokens
+
+
+def _compile_academic_program_model(
+    requirement_records: list[dict[str, Any]],
+    course_records: list[dict[str, Any]],
+    summary: dict[str, Any],
+    target_program: str,
+) -> dict[str, Any]:
+    model: dict[str, Any] = {
+        "program": target_program or str((summary.get("program", {}) or {}).get("value", "")),
+        "required_core": [],
+        "total_units": None,
+        "breadth_units": None,
+        "milestones": [],
+    }
+    required_core: list[dict[str, Any]] = []
+    seen_codes: set[str] = set()
+
+    for record in requirement_records:
+        trust_tier = str(record.get("trust_tier", "") or "")
+        source_type = str(record.get("source_type", "") or "")
+        if trust_tier == "third_party":
+            continue
+        if source_type not in {"degree_page", "admissions_page", "schedule_page", "profile_doc"}:
+            continue
+        text = f"{record.get('source_title', '')} {record.get('excerpt', '')} {record.get('value', {}).get('summary', '')}"
+        if model["total_units"] is None:
+            unit_match = re.search(r"\b(\d{2})\s+units?\b", text, re.I)
+            if unit_match:
+                model["total_units"] = int(unit_match.group(1))
+        if model["breadth_units"] is None:
+            breadth_match = re.search(r"\b(\d{1,2})\s+breadth\s+units?\b", text, re.I)
+            if breadth_match:
+                model["breadth_units"] = int(breadth_match.group(1))
+        if re.search(r"\bcandidacy\b", text, re.I):
+            model["milestones"].append("Advancement to candidacy required before culminating experience.")
+        if re.search(r"\bculminating\b|\bthesis\b|\bproject\b", text, re.I):
+            model["milestones"].append("Culminating experience planning is required in later semesters.")
+
+        for code in _extract_course_codes_from_text(text):
+            if code in seen_codes:
+                continue
+            seen_codes.add(code)
+            required_core.append({
+                "code": code,
+                "name": "",
+                "support_ref": build_support_ref(record),
+            })
+
+    for record in course_records:
+        trust_tier = str(record.get("trust_tier", "") or "")
+        if trust_tier == "third_party":
+            continue
+        if not _is_required_core(record):
+            continue
+        code = str((record.get("value", {}) or {}).get("code", ""))
+        if not code or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        required_core.append({
+            "code": code,
+            "name": str((record.get("value", {}) or {}).get("name", "")),
+            "support_ref": build_support_ref(record),
+        })
+
+    model["required_core"] = required_core[:16]
+    model["milestones"] = _dedupe_sequence(model["milestones"])
+    return model
+
+
+def _render_verified_requirements(program_model: dict[str, Any]) -> list[str]:
+    rendered: list[str] = []
+    total_units = program_model.get("total_units")
+    breadth_units = program_model.get("breadth_units")
+    core_codes = [item.get("code", "") for item in program_model.get("required_core", []) if item.get("code")]
+    if total_units:
+        rendered.append(f"Program total: {total_units} units (from official requirement evidence).")
+    if breadth_units:
+        rendered.append(f"Breadth requirement: {breadth_units} units (from official requirement evidence).")
+    if core_codes:
+        rendered.append(f"Core/required courses evidenced: {', '.join(core_codes[:8])}.")
+    for milestone in program_model.get("milestones", [])[:2]:
+        rendered.append(milestone)
+    return rendered
+
+
+def _build_semester_plan_options(
+    program_model: dict[str, Any],
+    ranked_courses: list[dict[str, Any]],
+    query: str,
+) -> list[dict[str, Any]]:
+    wants_long_range = bool(re.search(r"\b(2\s*year|two\s*year|semester[- ]wise|spring\s+20\d{2}|fall\s+20\d{2}|graduate\s+by)\b", query, re.I))
+    if not ranked_courses:
+        return []
+
+    normalized_courses = []
+    seen = set()
+    for item in ranked_courses:
+        label = str(item.get("label", "")).strip()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        normalized_courses.append(item)
+
+    if not wants_long_range:
+        return [{
+            "term": "Next semester",
+            "courses": normalized_courses[:3],
+            "units_note": "Typical full-time graduate load is often around 6-9 units; verify your program's policy.",
+        }]
+
+    # Generic four-term sample structure for long-range planning requests.
+    buckets = [
+        ("Term 1", normalized_courses[0:3]),
+        ("Term 2", normalized_courses[3:6] or normalized_courses[0:3]),
+        ("Term 3", normalized_courses[6:9] or normalized_courses[1:4]),
+        ("Term 4", normalized_courses[9:11] or normalized_courses[2:5]),
+    ]
+    return [
+        {
+            "term": term,
+            "courses": courses,
+            "units_note": "Catalog-based sample; verify live offerings and prerequisites before registration.",
+        }
+        for term, courses in buckets
+        if courses
+    ]
+
+
+def _merge_planner_summary(
+    session_summary: dict[str, Any],
+    compacted_session: dict[str, Any],
+    profile_data: dict[str, Any],
+    semantic_memory: dict[str, Any],
+    query: str,
+) -> dict[str, Any]:
+    merged = dict(session_summary or {})
+    stable = (compacted_session or {}).get("stable_facts", {}) or {}
+    personal = (profile_data or {}).get("personal", {}) or {}
+    corrections = list((session_summary or {}).get("recent_corrections", []))
+
+    institution_value = (
+        _extract_institution_from_query(query)
+        or str((session_summary.get("institution", {}) or {}).get("value", "") or "")
+        or str(stable.get("institution", "") or "")
+        or str(personal.get("university", "") or "")
+    )
+    program_value = (
+        _extract_program_from_query(query)
+        or str((session_summary.get("program", {}) or {}).get("value", "") or "")
+        or str(stable.get("program", "") or "")
+        or str(personal.get("program", "") or "")
+    )
+    standing_value = (
+        _extract_semester_from_query(query)
+        or str((session_summary.get("standing", {}) or {}).get("value", "") or "")
+        or str(stable.get("standing", "") or "")
+        or str(personal.get("semester", "") or "")
+    )
+
+    completed_courses = list((session_summary.get("completed_courses", {}) or {}).get("value", []) or [])
+    if not completed_courses:
+        completed_courses = list(stable.get("completed_courses", []) or [])
+    if not completed_courses:
+        completed_courses = [c.get("code", "") for c in (profile_data or {}).get("courses", []) if c.get("code")]
+
+    goals = list((session_summary.get("goals", {}) or {}).get("value", []) or [])
+    if not goals:
+        goals = [g.get("name", "") for g in (profile_data or {}).get("goals", []) if g.get("name")]
+
+    if semantic_memory.get("candidate_facts"):
+        merged["memory_sources_used"] = ["short", "long"]
+    else:
+        merged["memory_sources_used"] = ["short"]
+
+    merged["institution"] = {"known": bool(institution_value), "value": institution_value}
+    merged["program"] = {"known": bool(program_value), "value": program_value}
+    merged["standing"] = {"known": bool(standing_value), "value": standing_value}
+    merged["completed_courses"] = {"known": True, "value": _dedupe_sequence(completed_courses)}
+    merged["goals"] = {"known": bool(goals), "value": _dedupe_sequence([goal for goal in goals if goal])}
+    merged["recent_corrections"] = corrections
+    return merged
+
+
+def _extract_institution_from_query(query: str) -> str:
+    match = re.search(r"\b(?:at|from|to)\s+([A-Z][A-Za-z0-9&',.\- ]{6,120}(?:University|College|Institute))\b", query or "", re.I)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_program_from_query(query: str) -> str:
+    match = re.search(r"\b(?:in|for)\s+(masters?|ms|m\.s\.)\s+(?:in\s+)?([A-Za-z][A-Za-z0-9&/,\- ]{2,80})\b", query or "", re.I)
+    if not match:
+        return ""
+    degree = match.group(1).strip()
+    field = match.group(2).strip().rstrip(".")
+    return f"{degree} in {field}"
+
+
+def _extract_semester_from_query(query: str) -> str:
+    match = re.search(r"\b(first|second|third|fourth|\d(?:st|nd|rd|th))\s+semester\b", query or "", re.I)
+    return match.group(0).strip() if match else ""
+
+
+def _enforce_recommendation_support(payload: DecisionPayload) -> DecisionPayload:
+    if not payload:
+        return {}
+
+    source_refs = payload.get("source_refs", [])
+    ref_urls = {ref.get("url", "") for ref in source_refs if ref.get("url")}
+    validated = dict(payload)
+    kept = []
+    blocked = list(payload.get("blocked_or_uncertain_items", []))
+    for item in payload.get("recommended_items", []):
+        refs = item.get("support_refs", [])
+        if refs:
+            urls = {ref.get("url", "") for ref in refs if isinstance(ref, dict) and ref.get("url")}
+            if urls and urls & ref_urls:
+                kept.append(item)
+                continue
+        if item.get("support_codes"):
+            kept.append(item)
+            continue
+        blocked.append({
+            "label": item.get("label", "Recommendation"),
+            "reason": "Removed because no claim-level support reference could be validated.",
+            "kind": "needs_verification",
+        })
+    validated["recommended_items"] = kept
+    validated["blocked_or_uncertain_items"] = blocked
+    return validated
+
+
+def _planner_stop_reason(payload: DecisionPayload, blocked_reasons: list[str]) -> str:
+    if payload.get("blocked_reasons"):
+        for reason in payload.get("blocked_reasons", []):
+            if isinstance(reason, str) and reason.startswith("hard_blocked"):
+                return "hard_blocked"
+            if isinstance(reason, str) and reason.startswith("safe_partial_plan"):
+                return "safe_partial_plan"
+    if blocked_reasons:
+        return "partial_answer"
+    return ""

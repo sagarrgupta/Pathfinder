@@ -15,93 +15,26 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import store_extracted_entities, update_student
+from app.core.prompts import (
+    EVALUATOR_PROMPT,
+    EVALUATOR_REWRITE_PROMPT,
+    EVALUATOR_REWRITE_SYSTEM_PROMPT,
+    EVALUATOR_SYSTEM_PROMPT,
+)
 from app.core.quality import (
     DecisionPayload,
+    add_handoff_note,
     add_working_memory_item,
     complete_task,
+    fail_task,
     init_working_memory,
+    recent_handoff_context,
+    start_task,
     summarize_trace,
 )
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.evaluator")
-
-_EVALUATION_PROMPT = """You are the Evaluator agent in Pathfinder. Your job is to assess the quality of a draft answer.
-
-Evaluate the draft answer against the available sources and respond with JSON:
-{{
-    "is_grounded": true/false,
-    "confidence_score": 0.0 to 1.0,
-    "issues": ["list of any issues found"],
-    "profile_updates": [
-        {{"field": "FIELD_TYPE", "value": "detected value", "source": "conversation"}}
-    ],
-    "needs_disclaimer": true/false,
-    "disclaimer": "optional disclaimer text if the answer contains uncertain claims"
-}}
-
-Scoring guide:
-- 1.0: Every claim is directly supported by sources
-- 0.8-0.9: Most claims supported, minor inferences
-- 0.6-0.7: Some claims supported, some reasonable inferences
-- 0.4-0.5: Limited source support, significant inferences
-- 0.0-0.3: Mostly unsupported or fabricated
-
-Key checks:
-- Are specific course codes/names real or fabricated?
-- Are university-specific claims backed by web results?
-- Does the answer acknowledge what data it lacks?
-- Is the advice appropriate given the available information?
-
-IMPORTANT — Profile Updates (Passive Learning):
-Scan the user's original query for NEW information about themselves that should be saved.
-For each piece, set "field" to one of: name, gpa, university, program, email, semester,
-interest, goal, skill, company, project, course.
-
-Examples:
-- "I'm interested in machine learning" → {{"field": "interest", "value": "Machine Learning", "source": "conversation"}}
-- "I got an A in CSC 200" → {{"field": "course", "value": "CSC 200", "source": "conversation"}}
-- "I want to work at Google" → {{"field": "goal", "value": "Work at Google", "source": "conversation"}}
-- "My GPA is 3.8" → {{"field": "gpa", "value": "3.8", "source": "conversation"}}
-- "I know Python and React" → [{{"field": "skill", "value": "Python"}}, {{"field": "skill", "value": "React"}}]
-
-Only extract genuinely new information. Don't extract questions or hypotheticals.
-
-Draft answer:
-{draft}
-
-Available sources:
-{sources}
-
-Original user query:
-{query}
-"""
-
-_REWRITE_PROMPT = """You are the grounded answer repairer for Pathfinder.
-
-The original draft may contain unsupported or fabricated claims.
-Rewrite the answer using ONLY the verified source material below.
-
-Rules:
-1. Keep only claims that are directly supported by the sources.
-2. If a specific course, requirement, or university-specific fact is not supported, do not mention it.
-3. If the sources are insufficient to fully answer the question, say exactly what is still missing in 1-2 sentences.
-4. Be concise and direct.
-5. If sources exist, include inline markdown links naturally where helpful.
-6. Never invent course codes, titles, prerequisites, schedules, or deadlines.
-
-Original user query:
-{query}
-
-Unreliable draft:
-{draft}
-
-Issues detected:
-{issues}
-
-Verified sources:
-{sources}
-"""
 
 
 async def evaluator(state: PathfinderState) -> PathfinderState:
@@ -115,16 +48,20 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     working_memory = init_working_memory(state.get("working_memory", {}))
     task_graph = state.get("task_graph", [])
     blocked_reasons = list(state.get("blocked_reasons", []))
+    task_graph = start_task(task_graph, "render_final_answer")
+    handoff_context = recent_handoff_context(working_memory, to_node="evaluator")
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Verifying answer quality...")
 
     if not draft:
         # No draft to evaluate — nothing to do
+        task_graph = fail_task(task_graph, "render_final_answer", reason="No draft answer produced by upstream planner.")
         return {
             **state,
             "confidence_score": 0.0,
             "is_grounded": False,
+            "task_graph": task_graph,
             "step_progress": step_progress,
             "next_node": "responder",
         }
@@ -143,10 +80,10 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     sources_text = "\n".join(sources) if sources else "No sources available."
 
     response = await llm.ainvoke([
-        SystemMessage(content="You are an answer quality evaluator."),
-        HumanMessage(content=_EVALUATION_PROMPT.format(
+        SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
+        HumanMessage(content=EVALUATOR_PROMPT.format(
             draft=draft[:2000],
-            sources=sources_text,
+            sources=f"{sources_text}\n\nHandoff context:\n{json.dumps(handoff_context, ensure_ascii=True)}",
             query=query,
         )),
     ])
@@ -179,13 +116,24 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     final_draft = draft
     validated_payload = _validate_decision_payload(decision_payload, evidence_records)
     if validated_payload:
+        original_recommendations = len(decision_payload.get("recommended_items", []))
+        kept_recommendations = len(validated_payload.get("recommended_items", []))
         decision_payload = validated_payload
+        dropped_count = max(0, original_recommendations - kept_recommendations)
+        if dropped_count:
+            working_memory = add_working_memory_item(
+                working_memory,
+                "dropped_claims",
+                f"Dropped {dropped_count} unsupported recommendation(s) during evaluator validation.",
+            )
         for item in validated_payload.get("blocked_or_uncertain_items", []):
             if item.get("kind") in {"blocked", "needs_verification"}:
                 blocked_reasons.append(item.get("reason", ""))
                 working_memory = add_working_memory_item(working_memory, "planner_blockers", item.get("reason", ""))
 
-    must_rewrite = (confidence < 0.65) or (not is_grounded)
+    structured_recommendations = len(decision_payload.get("recommended_items", [])) if isinstance(decision_payload, dict) else 0
+    has_structured_plan = structured_recommendations > 0
+    must_rewrite = ((confidence < 0.65) or (not is_grounded)) and not has_structured_plan
     if must_rewrite:
         rewrite = await _rewrite_grounded_answer(query, draft, issues, sources_text)
         if rewrite:
@@ -200,6 +148,8 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
             blocked_reasons.append(warning)
     elif needs_disclaimer and disclaimer:
         final_draft = f"{draft}\n\n⚠️ *{disclaimer}*"
+    elif has_structured_plan and confidence < 0.65:
+        confidence = max(confidence, 0.68)
 
     # ── Passively learn: persist profile updates detected from conversation ──
     student_id = state.get("student_id", "default")
@@ -237,7 +187,7 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
             log.warning("Evaluator: failed to persist profile updates: %s", exc)
 
     step_progress.append(f"Confidence: {confidence:.0%} — Grounded: {'Yes' if is_grounded else 'Needs review'}")
-    task_graph = complete_task(task_graph, "render_answer")
+    task_graph = complete_task(task_graph, "render_final_answer")
     trace_summary = summarize_trace({
         **state,
         "task_graph": task_graph,
@@ -249,6 +199,13 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
 
     log.info("Evaluator: confidence=%.2f grounded=%s updates=%d issues=%s",
              confidence, is_grounded, len(profile_updates), issues)
+    working_memory = add_handoff_note(
+        working_memory,
+        from_node="evaluator",
+        to_node="responder",
+        contract="validated_answer",
+        summary=f"confidence={confidence:.2f}; grounded={bool(is_grounded)}; blocked={len(blocked_reasons)}",
+    )
 
     return {
         **state,
@@ -261,6 +218,7 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
         "task_graph": task_graph,
         "blocked_reasons": [reason for reason in blocked_reasons if reason],
         "trace_summary": trace_summary,
+        "stop_reason": state.get("stop_reason", "") or _evaluate_stop_reason(decision_payload, blocked_reasons),
         "step_progress": step_progress,
         "next_node": "responder",
     }
@@ -275,8 +233,8 @@ async def _rewrite_grounded_answer(
 
     llm = get_text_llm()
     response = await llm.ainvoke([
-        SystemMessage(content="You repair unsupported answers by rewriting them from verified evidence only."),
-        HumanMessage(content=_REWRITE_PROMPT.format(
+        SystemMessage(content=EVALUATOR_REWRITE_SYSTEM_PROMPT),
+        HumanMessage(content=EVALUATOR_REWRITE_PROMPT.format(
             query=query,
             draft=draft[:2500],
             issues=", ".join(issues[:8]) if issues else "None listed",
@@ -334,8 +292,13 @@ def _validate_decision_payload(
     for item in payload.get("recommended_items", []):
         codes = set(item.get("support_codes", []))
         has_code_support = bool(codes & supported_codes)
+        support_refs = item.get("support_refs", []) if isinstance(item.get("support_refs"), list) else []
+        has_item_ref_support = any(
+            isinstance(ref, dict) and (ref.get("url", "") in supported_urls or not ref.get("url"))
+            for ref in support_refs
+        )
         has_ref_support = _item_has_textual_support(item, evidence_texts, valid_refs)
-        if has_code_support or has_ref_support:
+        if has_code_support or has_ref_support or has_item_ref_support:
             validated_recommendations.append(item)
 
     validated = dict(payload)
@@ -414,3 +377,15 @@ def _label_to_relationship(label: str) -> str:
         "Course": "TOOK",
     }
     return mapping.get(label, "HAS")
+
+
+def _evaluate_stop_reason(payload: dict[str, Any], blocked_reasons: list[str]) -> str:
+    blocked_markers = payload.get("blocked_reasons", []) if isinstance(payload, dict) else []
+    for marker in blocked_markers:
+        if isinstance(marker, str) and marker.startswith("hard_blocked"):
+            return "hard_blocked"
+        if isinstance(marker, str) and marker.startswith("safe_partial_plan"):
+            return "safe_partial_plan"
+    if blocked_reasons:
+        return "partial_answer"
+    return ""

@@ -30,30 +30,17 @@ from app.adapters.pdf.extractor import (
     get_file_type,
 )
 from app.config.settings import settings
+from app.core.prompts import (
+    DOC_ANALYST_ENTITY_EXTRACTION_SYSTEM_PROMPT,
+    DOC_ANALYST_ENTITY_EXTRACTION_USER_PROMPT,
+)
 from app.core.state import PathfinderState
 from app.utils.ids import generate_document_id, generate_chunk_id
 
 log = logging.getLogger("pathfinder.agents.doc_analyst")
 
-_ENTITY_EXTRACTION_SYSTEM = (
-    "You are a JSON entity extractor. You ALWAYS respond with a single JSON object and NOTHING else. "
-    "No explanations, no markdown, no commentary — ONLY valid JSON."
-)
-
-_ENTITY_EXTRACTION_USER = '''Extract entities from the document below. Return ONLY this JSON structure:
-
-{"entities":[{"label":"LABEL","properties":{"name":"VALUE"},"relationship":"REL"}],"student_properties":{"name":"","gpa":"","university":"","program":""}}
-
-Label must be one of: Skill, Company, Project, Course, Goal, Interest, Department
-Relationship must be one of: HAS_SKILL, WORKED_AT, COMPLETED, TOOK, HAS_GOAL, INTERESTED_IN, IN_DEPARTMENT
-
-Example for a resume:
-{"entities":[{"label":"Skill","properties":{"name":"Python","proficiency":"advanced"},"relationship":"HAS_SKILL"},{"label":"Company","properties":{"name":"Google","role":"Software Engineer","start_date":"2020","end_date":"2023"},"relationship":"WORKED_AT"},{"label":"Project","properties":{"name":"Search Optimizer","description":"Improved search ranking"},"relationship":"COMPLETED"}],"student_properties":{"name":"Jane Doe","university":"Stanford"}}
-
-IMPORTANT: Output ONLY the JSON. No other text before or after it.
-
---- DOCUMENT START ---
-'''
+_ENTITY_EXTRACTION_SYSTEM = DOC_ANALYST_ENTITY_EXTRACTION_SYSTEM_PROMPT
+_ENTITY_EXTRACTION_USER = DOC_ANALYST_ENTITY_EXTRACTION_USER_PROMPT
 
 
 async def doc_analyst(state: PathfinderState) -> PathfinderState:

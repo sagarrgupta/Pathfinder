@@ -20,10 +20,18 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.web_search.fallback_chain import search
 from app.adapters.web_search.url_fetcher import extract_urls, fetch_url_content
+from app.core.prompts import (
+    WEB_RESEARCH_QUERY_GEN_PROMPT,
+    WEB_RESEARCH_QUERY_GEN_URL_PROMPT,
+    WEB_RESEARCH_QUERY_GEN_SYSTEM_PROMPT,
+    WEB_RESEARCH_QUERY_GEN_URL_SYSTEM_PROMPT,
+)
 from app.core.quality import (
+    add_handoff_note,
     add_working_memory_item,
     academic_source_relevance,
     analyze_query_focus,
+    block_task,
     classify_web_source,
     complete_task,
     infer_evidence_tiers,
@@ -31,51 +39,11 @@ from app.core.quality import (
     infer_target_program,
     init_working_memory,
     record_source_audit,
+    start_task,
 )
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.web_researcher")
-
-_QUERY_GEN_PROMPT = """You are a search query optimizer. Generate 2-3 specific, targeted web search queries
-to find information that will help answer this student's question.
-
-Use their profile data to craft precise queries — include university name, program, specific skills, etc.
-Each query should target a different angle or source of information.
-Prefer exact institution names from the profile or recent conversation.
-Do NOT substitute a similar university or campus.
-If the question is about course enrollment, prioritize official catalog, schedule, or department pages.
-
-Student Profile:
-{profile_summary}
-
-Student Question: {query}
-Intent: {intent}
-
-Return ONLY a JSON array of search query strings, nothing else.
-Example: ["official university course catalog data science masters", "site:university.edu program requirements next semester"]
-"""
-
-_QUERY_GEN_URL_PROMPT = """You are a search query optimizer. The student has provided specific URL(s) in their question.
-The URL content is already being fetched directly. Generate 1-2 supplementary search queries.
-
-IMPORTANT — Decide whether to incorporate the student's profile based on the question:
-- If the question is about the URL content itself (e.g., "summarize this page", "read reviews on this site"),
-  focus queries ONLY on the URL's topic. Do NOT add the student's university or profile.
-- If the question connects the URL to the student personally (e.g., "is this school good for me",
-  "based on my skills, which programs fit", "compare this with my university"),
-  then USE the student's profile to craft relevant queries.
-
-Student Profile:
-{profile_summary}
-
-URLs already being fetched: {urls}
-Student Question: {query}
-Intent: {intent}
-
-Return ONLY a JSON array of search query strings, nothing else.
-Example (URL-only): ["Boston University graduate school reviews 2026", "Boston University graduate program student experience"]
-Example (profile-relevant): ["Boston University vs CSUS computer science masters", "Boston University CS program career outcomes software engineer"]
-"""
 
 
 async def web_researcher(state: PathfinderState) -> PathfinderState:
@@ -87,12 +55,23 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     query_focus = analyze_query_focus(query)
     target_program = infer_target_program(profile, session_summary, query)
     target_level = infer_target_level(profile, session_summary, query)
+    target_institution = str(((session_summary.get("institution", {}) or {}).get("value", "")) or "")
     preferred_domains = _preferred_domains(profile, query)
     source_policy = state.get("source_policy", {})
+    if source_policy.get("target_institution"):
+        target_institution = str(source_policy.get("target_institution", "") or target_institution)
+    if source_policy.get("target_program"):
+        target_program = str(source_policy.get("target_program", "") or target_program)
+    if source_policy.get("target_level"):
+        target_level = str(source_policy.get("target_level", "") or target_level)
     if source_policy.get("preferred_domains"):
         preferred_domains = list(dict.fromkeys(list(source_policy.get("preferred_domains", [])) + preferred_domains))
     working_memory = init_working_memory(state.get("working_memory", {}))
     task_graph = state.get("task_graph", [])
+    task_graph = start_task(task_graph, "retrieve_primary_sources")
+    task_graph = start_task(task_graph, "retrieve_secondary_sources")
+    if query_focus.get("wants_live_availability"):
+        task_graph = start_task(task_graph, "retrieve_live_schedule")
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Searching the web for relevant information...")
@@ -124,6 +103,7 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                     target_level,
                     result.get("title", ""),
                     result.get("content", ""),
+                    target_institution,
                 )
                 working_memory = record_source_audit(working_memory, {
                     "url": result.get("url", ""),
@@ -151,26 +131,49 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     else:
         search_queries = await _generate_smart_queries(query, intent, profile)
 
-    search_queries = _expand_queries(search_queries, query, intent, preferred_domains, source_policy)
+    search_queries = _expand_queries(
+        search_queries,
+        query,
+        intent,
+        preferred_domains,
+        source_policy,
+    )
+    max_search_queries = int(source_policy.get("max_search_queries", 6))
+    search_retries = max(1, int(source_policy.get("search_retries", 1)))
+    search_queries = search_queries[:max_search_queries]
 
     log.info("Web researcher: running %d queries: %s", len(search_queries), search_queries)
 
     # ── Step 3: Execute search queries through the fallback chain ────
     for sq in search_queries:
-        try:
-            max_results = 6 if intent in {"academic", "research"} else 4
-            results = await search(sq, max_results=max_results)
-            for r in results:
-                url = r.get("url", "")
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    enriched = dict(r)
-                    enriched["score"] = _result_score(
-                        enriched, query, preferred_domains, query_focus, target_program, target_level, source_policy
-                    )
-                    all_results.append(enriched)
-        except Exception as exc:
-            log.debug("Search query failed: %s — %s", sq[:60], exc)
+        max_results = 6 if intent in {"academic", "research"} else 4
+        last_error: Exception | None = None
+        results = []
+        for _ in range(search_retries):
+            try:
+                results = await search(sq, max_results=max_results)
+                if results:
+                    break
+            except Exception as exc:
+                last_error = exc
+        if not results and last_error:
+            log.debug("Search query failed: %s — %s", sq[:60], last_error)
+        for r in results:
+            url = r.get("url", "")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                enriched = dict(r)
+                enriched["score"] = _result_score(
+                    enriched,
+                    query,
+                    preferred_domains,
+                    query_focus,
+                    target_program,
+                    target_level,
+                    source_policy,
+                    target_institution,
+                )
+                all_results.append(enriched)
 
     # ── Step 4: Fetch full content for the strongest search hits ─────
     fetched_results = list(all_results)
@@ -178,6 +181,8 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     fetch_budget = int(source_policy.get("fetch_budget", 8 if intent in {"academic", "research"} else 5))
 
     strict_official = bool(source_policy.get("strict_primary_only")) and query_focus.get("primary") == "academic"
+    require_institution_match = bool(source_policy.get("require_institution_match")) and query_focus.get("primary") == "academic"
+    rejected_during_filter = 0
     if strict_official:
         filtered_candidates = []
         for candidate in candidates:
@@ -193,8 +198,10 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                 target_level,
                 candidate.get("title", ""),
                 candidate.get("content", ""),
+                target_institution,
             )
             if trust_tier == "third_party":
+                rejected_during_filter += 1
                 working_memory = record_source_audit(working_memory, {
                     "url": candidate.get("url", ""),
                     "title": candidate.get("title", ""),
@@ -207,8 +214,44 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                     "freshness_tier": freshness_tier,
                 })
                 continue
+            if require_institution_match and fit_tier == "weak":
+                rejected_during_filter += 1
+                working_memory = record_source_audit(working_memory, {
+                    "url": candidate.get("url", ""),
+                    "title": candidate.get("title", ""),
+                    "source_type": source_type,
+                    "action": "rejected",
+                    "reason": "Source appears to be from a different institution/program context.",
+                    "score": float(candidate.get("score", 0.0) or 0.0),
+                    "trust_tier": trust_tier,
+                    "fit_tier": fit_tier,
+                    "freshness_tier": freshness_tier,
+                })
+                continue
             filtered_candidates.append(candidate)
         candidates = filtered_candidates
+
+    if query_focus.get("primary") == "academic" and rejected_during_filter > 0:
+        desired_pool = max(fetch_budget, 6)
+        if len(candidates) < desired_pool:
+            backfill = await _backfill_results_from_accepted_domains(
+                query=query,
+                intent=intent,
+                current_candidates=candidates,
+                preferred_domains=preferred_domains,
+                source_policy=source_policy,
+                query_focus=query_focus,
+                target_program=target_program,
+                target_level=target_level,
+                target_institution=target_institution,
+                seen_urls=seen_urls,
+            )
+            for item in backfill:
+                url = item.get("url", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    candidates.append(item)
+                    all_results.append(item)
 
     for candidate in candidates[:fetch_budget]:
         url = candidate.get("url", "")
@@ -231,6 +274,7 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                 target_level,
                 fetched.get("title", ""),
                 fetched.get("content", ""),
+                target_institution,
             )
             fetched["metadata"] = {
                 "title": candidate.get("title", ""),
@@ -268,6 +312,7 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                 target_level,
                 candidate.get("title", ""),
                 candidate.get("content", ""),
+                target_institution,
             )
             working_memory = record_source_audit(working_memory, {
                 "url": candidate.get("url", ""),
@@ -297,9 +342,22 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                 target_level,
                 result.get("title", ""),
                 result.get("content", ""),
+                target_institution,
             )
             if trust_tier == "primary_official" and fit_tier != "weak":
                 official_results.append(result)
+            elif require_institution_match and fit_tier == "weak":
+                working_memory = record_source_audit(working_memory, {
+                    "url": result.get("url", ""),
+                    "title": result.get("title", ""),
+                    "source_type": source_type,
+                    "action": "rejected",
+                    "reason": "Removed because it does not match the target institution/program context.",
+                    "score": float(result.get("score", 0.0) or 0.0),
+                    "trust_tier": trust_tier,
+                    "fit_tier": fit_tier,
+                    "freshness_tier": "live" if source_type == "schedule_page" else "unclear",
+                })
             elif trust_tier != "third_party" or not strict_official:
                 secondary_results.append(result)
             else:
@@ -335,11 +393,22 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
              len(results), len(search_queries), len(user_urls))
 
     task_graph = complete_task(task_graph, "retrieve_primary_sources")
+    task_graph = complete_task(task_graph, "retrieve_secondary_sources")
     if query_focus.get("wants_live_availability"):
         if any(classify_web_source(r.get("url", ""), r.get("title", ""), r.get("content", ""))[0] == "schedule_page" for r in results):
             task_graph = complete_task(task_graph, "retrieve_live_schedule")
         else:
+            task_graph = block_task(task_graph, "retrieve_live_schedule", required=False)
             working_memory = add_working_memory_item(working_memory, "missing_primary_evidence", "No live official schedule source was found for this enrollment-style query.")
+
+    next_node = _determine_next(state)
+    working_memory = add_handoff_note(
+        working_memory,
+        from_node="web_researcher",
+        to_node=next_node,
+        contract="retrieved_sources",
+        summary=f"results={len(results)}; selected={sum(1 for r in working_memory.get('source_audit', []) if r.get('action') == 'selected')}",
+    )
 
     return {
         **state,
@@ -349,7 +418,7 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
         "task_graph": task_graph,
         "source_audit": working_memory.get("source_audit", []),
         "step_progress": step_progress,
-        "next_node": _determine_next(state),
+        "next_node": next_node,
     }
 
 
@@ -367,8 +436,8 @@ async def _generate_url_aware_queries(
     try:
         llm = get_text_llm()
         response = await llm.ainvoke([
-            SystemMessage(content="You are a search query optimizer. Generate supplementary search queries."),
-            HumanMessage(content=_QUERY_GEN_URL_PROMPT.format(
+            SystemMessage(content=WEB_RESEARCH_QUERY_GEN_URL_SYSTEM_PROMPT),
+            HumanMessage(content=WEB_RESEARCH_QUERY_GEN_URL_PROMPT.format(
                 profile_summary=profile_summary,
                 urls=", ".join(urls),
                 query=query,
@@ -407,8 +476,8 @@ async def _generate_smart_queries(
     try:
         llm = get_text_llm()
         response = await llm.ainvoke([
-            SystemMessage(content="You are a search query optimizer. Generate targeted web search queries."),
-            HumanMessage(content=_QUERY_GEN_PROMPT.format(
+            SystemMessage(content=WEB_RESEARCH_QUERY_GEN_SYSTEM_PROMPT),
+            HumanMessage(content=WEB_RESEARCH_QUERY_GEN_PROMPT.format(
                 profile_summary=profile_summary,
                 query=query,
                 intent=intent,
@@ -539,13 +608,29 @@ def _expand_queries(
     """Add deterministic official-site queries to the model-generated query set."""
     expanded = list(search_queries)
 
+    target_program = str(source_policy.get("target_program", "") or "").strip()
+    target_institution = str(source_policy.get("target_institution", "") or "").strip()
+    wants_live = bool(source_policy.get("requires_live_data"))
+
     if intent in {"academic", "research"} and preferred_domains:
         domain = preferred_domains[0]
         expanded.append(f"site:{domain} {query}")
         expanded.append(f"site:{domain} official catalog {query}")
         expanded.append(f"site:{domain} schedule requirements {query}")
+        if target_program:
+            expanded.append(f"site:{domain} \"{target_program}\" graduate requirements")
+            expanded.append(f"site:{domain} \"{target_program}\" course catalog")
+        if target_institution:
+            expanded.append(f"site:{domain} \"{target_institution}\" \"{target_program or 'graduate'}\"")
+        if wants_live:
+            expanded.append(f"site:{domain} class schedule graduate {target_program or query}")
         if source_policy.get("prefer_pdfs"):
             expanded.append(f"site:{domain} filetype:pdf {query}")
+    elif intent in {"academic", "research"} and target_institution:
+        expanded.append(f"\"{target_institution}\" {target_program or ''} official catalog")
+        expanded.append(f"\"{target_institution}\" {target_program or ''} graduate requirements")
+        if wants_live:
+            expanded.append(f"\"{target_institution}\" class schedule {target_program or ''}")
 
     expanded.append(query)
 
@@ -560,6 +645,105 @@ def _expand_queries(
     return unique[:6]
 
 
+def _accepted_domains_from_candidates(candidates: list[dict[str, Any]]) -> list[str]:
+    domains: list[str] = []
+    for candidate in candidates:
+        url = candidate.get("url", "")
+        domain = _extract_domain_candidate(url)
+        if domain and domain not in domains:
+            domains.append(domain)
+    return domains[:4]
+
+
+def _build_backfill_queries(
+    *,
+    query: str,
+    target_institution: str,
+    target_program: str,
+    accepted_domains: list[str],
+    preferred_domains: list[str],
+) -> list[str]:
+    """Build fallback queries constrained to accepted or trusted domains."""
+    queries: list[str] = []
+    for domain in accepted_domains + preferred_domains:
+        if not domain:
+            continue
+        queries.append(f"site:{domain} {query}")
+        queries.append(f"site:{domain} \"{target_program or 'graduate'}\" course requirements")
+        queries.append(f"site:{domain} class schedule {target_program or 'computer science'}")
+    if target_institution:
+        queries.append(f"\"{target_institution}\" \"{target_program or 'graduate'}\" official catalog")
+        queries.append(f"\"{target_institution}\" class schedule")
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in queries:
+        cleaned = value.strip()
+        lowered = cleaned.lower()
+        if cleaned and lowered not in seen:
+            seen.add(lowered)
+            deduped.append(cleaned)
+    return deduped[:5]
+
+
+async def _backfill_results_from_accepted_domains(
+    *,
+    query: str,
+    intent: str,
+    current_candidates: list[dict[str, Any]],
+    preferred_domains: list[str],
+    source_policy: dict[str, Any],
+    query_focus: dict[str, Any],
+    target_program: str,
+    target_level: str,
+    target_institution: str,
+    seen_urls: set[str],
+) -> list[dict[str, Any]]:
+    """When strict filtering rejects many results, run constrained backfill search."""
+    accepted_domains = _accepted_domains_from_candidates(current_candidates)
+    backfill_queries = _build_backfill_queries(
+        query=query,
+        target_institution=target_institution,
+        target_program=target_program,
+        accepted_domains=accepted_domains,
+        preferred_domains=preferred_domains,
+    )
+    if not backfill_queries:
+        return []
+
+    search_retries = max(1, int(source_policy.get("search_retries", 1)))
+    max_results = 6 if intent in {"academic", "research"} else 4
+    backfill_results: list[dict[str, Any]] = []
+
+    for sq in backfill_queries:
+        fetched = []
+        for _ in range(search_retries):
+            try:
+                fetched = await search(sq, max_results=max_results)
+                if fetched:
+                    break
+            except Exception:
+                continue
+        for item in fetched:
+            url = item.get("url", "")
+            if not url or url in seen_urls:
+                continue
+            enriched = dict(item)
+            enriched["score"] = _result_score(
+                enriched,
+                query,
+                preferred_domains,
+                query_focus,
+                target_program,
+                target_level,
+                source_policy,
+                target_institution,
+            )
+            backfill_results.append(enriched)
+
+    backfill_results.sort(key=lambda r: r.get("score", 0), reverse=True)
+    return _dedupe_results(backfill_results)[:8]
+
+
 def _result_score(
     result: dict[str, Any],
     query: str,
@@ -568,6 +752,7 @@ def _result_score(
     target_program: str = "",
     target_level: str = "unknown",
     source_policy: dict[str, Any] | None = None,
+    target_institution: str = "",
 ) -> float:
     """Heuristic ranking for search results before full-page fetch."""
     score = float(result.get("score", 0.0) or 0.0)
@@ -578,6 +763,8 @@ def _result_score(
     query_terms = [term for term in query.lower().split() if len(term) > 2]
     source_type, time_scope = classify_web_source(url, result.get("title", ""), result.get("content", ""))
     source_policy = source_policy or {}
+    if not target_institution:
+        target_institution = str(source_policy.get("target_institution", "") or "")
 
     if any(domain.endswith(pref) for pref in preferred_domains):
         score += 2.0
@@ -597,6 +784,7 @@ def _result_score(
             url,
             target_program,
             target_level,
+            target_institution,
         )
 
     if source_type in source_policy.get("primary_source_types", []):
@@ -622,7 +810,7 @@ def _source_type_bonus(source_type: str, time_scope: str, query_focus: dict[str,
     if primary == "academic":
         if query_focus.get("wants_live_availability"):
             if source_type == "schedule_page":
-                bonus += 3.4
+                bonus += 3.9
             elif source_type == "degree_page":
                 bonus += 0.7
             elif source_type == "certificate_page":

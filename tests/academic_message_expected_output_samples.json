@@ -1,0 +1,502 @@
+[
+  {
+    "type": "college_fit",
+    "message": "Based on my GPA and internship experience, which universities are a good fit for me?",
+    "id": 1
+  },
+  {
+    "type": "college_fit",
+    "message": "Can you suggest safe, moderate, and ambitious universities for my profile?",
+    "id": 2
+  },
+  {
+    "type": "college_fit",
+    "message": "Which graduate programs match my academic background best?",
+    "id": 3
+  },
+  {
+    "type": "college_fit",
+    "message": "Which universities are realistic for me if I want a strong Computer Science program?",
+    "id": 4
+  },
+  {
+    "type": "college_fit",
+    "message": "Can you rank universities for me based on my grades, projects, and work experience?",
+    "id": 5
+  },
+  {
+    "type": "admissions_chance",
+    "message": "Do I have a strong chance of getting into Boston University for a Master of Science in Computer Science?",
+    "id": 6
+  },
+  {
+    "type": "admissions_chance",
+    "message": "What are my chances of admission to top 50 Computer Science programs?",
+    "id": 7
+  },
+  {
+    "type": "admissions_chance",
+    "message": "Which parts of my profile make me a weak candidate for competitive graduate schools?",
+    "id": 8
+  },
+  {
+    "type": "admissions_chance",
+    "message": "How likely am I to get admitted if I apply this cycle with my current profile?",
+    "id": 9
+  },
+  {
+    "type": "admissions_chance",
+    "message": "Can you estimate my admission chances for these five universities?",
+    "id": 10
+  },
+  {
+    "type": "major_selection",
+    "message": "I enjoy learning about space but I struggle with math. What major should I choose?",
+    "id": 11
+  },
+  {
+    "type": "major_selection",
+    "message": "Should I choose Computer Science, Data Science, or Information Systems?",
+    "id": 12
+  },
+  {
+    "type": "major_selection",
+    "message": "Which major fits my strengths based on my transcript?",
+    "id": 13
+  },
+  {
+    "type": "major_selection",
+    "message": "What majors are best for someone who likes problem solving and coding?",
+    "id": 14
+  },
+  {
+    "type": "major_selection",
+    "message": "Can you suggest majors for me if I want strong job opportunities after graduation?",
+    "id": 15
+  },
+  {
+    "type": "skill_planning",
+    "message": "What skills should I build in the next six months for software engineering internships?",
+    "id": 16
+  },
+  {
+    "type": "skill_planning",
+    "message": "Which technical skills should I improve before applying for iOS developer roles?",
+    "id": 17
+  },
+  {
+    "type": "skill_planning",
+    "message": "What should I learn first if I want to move into machine learning?",
+    "id": 18
+  },
+  {
+    "type": "skill_planning",
+    "message": "Can you create a skill roadmap for me based on my current resume?",
+    "id": 19
+  },
+  {
+    "type": "skill_planning",
+    "message": "Which tools and technologies should I focus on for my target career path?",
+    "id": 20
+  },
+  {
+    "type": "course_guidance",
+    "message": "Which courses should I take next semester if I want machine learning internships?",
+    "id": 21
+  },
+  {
+    "type": "course_guidance",
+    "message": "Can you suggest a balanced course plan for next term?",
+    "id": 22
+  },
+  {
+    "type": "course_guidance",
+    "message": "Which electives will strengthen my profile for graduate school applications?",
+    "id": 23
+  },
+  {
+    "type": "course_guidance",
+    "message": "What classes should I prioritize if I want a career in mobile development?",
+    "id": 24
+  },
+  {
+    "type": "course_guidance",
+    "message": "Can you help me choose courses that match both my interests and career goals?",
+    "id": 25
+  },
+  {
+    "type": "resume_analysis",
+    "message": "What does my resume say about the kind of graduate programs I should apply to?",
+    "id": 26
+  },
+  {
+    "type": "resume_analysis",
+    "message": "What gaps in my resume should I fix before internship applications?",
+    "id": 27
+  },
+  {
+    "type": "resume_analysis",
+    "message": "Can you review my resume and tell me what is missing for software roles?",
+    "id": 28
+  },
+  {
+    "type": "resume_analysis",
+    "message": "Which achievements on my resume are strongest for graduate admissions?",
+    "id": 29
+  },
+  {
+    "type": "resume_analysis",
+    "message": "How can I improve my resume for better chances at research programs?",
+    "id": 30
+  },
+  {
+    "type": "financial_aid",
+    "message": "Which universities on my list are most affordable for international students?",
+    "id": 31
+  },
+  {
+    "type": "financial_aid",
+    "message": "What scholarships match my academic record and background?",
+    "id": 32
+  },
+  {
+    "type": "financial_aid",
+    "message": "Can you compare tuition and living costs for these universities?",
+    "id": 33
+  },
+  {
+    "type": "financial_aid",
+    "message": "Which universities offer the best assistantship opportunities for someone like me?",
+    "id": 34
+  },
+  {
+    "type": "financial_aid",
+    "message": "How can I reduce the cost of graduate school based on my profile?",
+    "id": 35
+  },
+  {
+    "type": "campus_life",
+    "message": "What do students say about dining costs at this university?",
+    "id": 36
+  },
+  {
+    "type": "campus_life",
+    "message": "What do reviews say about housing quality for international students?",
+    "id": 37
+  },
+  {
+    "type": "campus_life",
+    "message": "How do students describe the social environment at this campus?",
+    "id": 38
+  },
+  {
+    "type": "campus_life",
+    "message": "Are students generally satisfied with academic support services here?",
+    "id": 39
+  },
+  {
+    "type": "campus_life",
+    "message": "What do student reviews say about safety and transportation near campus?",
+    "id": 40
+  },
+  {
+    "type": "university_comparison",
+    "message": "Compare these three universities for cost, curriculum, and job outcomes.",
+    "id": 41
+  },
+  {
+    "type": "university_comparison",
+    "message": "Which university is a better fit for me based on my goals and budget?",
+    "id": 42
+  },
+  {
+    "type": "university_comparison",
+    "message": "Can you compare these programs for research, internships, and faculty support?",
+    "id": 43
+  },
+  {
+    "type": "university_comparison",
+    "message": "Which of these schools gives me the best return on investment?",
+    "id": 44
+  },
+  {
+    "type": "university_comparison",
+    "message": "How do these universities compare for international student support?",
+    "id": 45
+  },
+  {
+    "type": "career_alignment",
+    "message": "If I want to become an iOS engineer, which academic path fits me best?",
+    "id": 46
+  },
+  {
+    "type": "career_alignment",
+    "message": "Which major and electives will help me become a data engineer?",
+    "id": 47
+  },
+  {
+    "type": "career_alignment",
+    "message": "What should I study if I want to get a job quickly after graduation?",
+    "id": 48
+  },
+  {
+    "type": "career_alignment",
+    "message": "Which path is better for me if I want a mix of software and product work?",
+    "id": 49
+  },
+  {
+    "type": "career_alignment",
+    "message": "Can you map my current profile to possible career options?",
+    "id": 50
+  },
+  {
+    "type": "interview_preparation",
+    "message": "What interview topics should I focus on first based on my background?",
+    "id": 51
+  },
+  {
+    "type": "interview_preparation",
+    "message": "Which technical areas am I weakest in for software interviews?",
+    "id": 52
+  },
+  {
+    "type": "interview_preparation",
+    "message": "Can you create an interview preparation plan for me for the next two months?",
+    "id": 53
+  },
+  {
+    "type": "interview_preparation",
+    "message": "What should I study for mobile developer interviews?",
+    "id": 54
+  },
+  {
+    "type": "interview_preparation",
+    "message": "How can I prepare for behavioral interviews using my own experience?",
+    "id": 55
+  },
+  {
+    "type": "application_strategy",
+    "message": "How many universities should I apply to based on my profile?",
+    "id": 56
+  },
+  {
+    "type": "application_strategy",
+    "message": "Can you help me build an application list with safe, moderate, and ambitious schools?",
+    "id": 57
+  },
+  {
+    "type": "application_strategy",
+    "message": "Which universities should I remove from my list because they are not a good fit?",
+    "id": 58
+  },
+  {
+    "type": "application_strategy",
+    "message": "What is the best strategy for applying with my current GPA and experience?",
+    "id": 59
+  },
+  {
+    "type": "application_strategy",
+    "message": "How should I prioritize my applications if I have a limited budget?",
+    "id": 60
+  },
+  {
+    "type": "personalized_recommendation",
+    "message": "Using my transcript and resume, recommend five graduate programs and explain why.",
+    "id": 61
+  },
+  {
+    "type": "personalized_recommendation",
+    "message": "Can you suggest career options based on my academic record and interests?",
+    "id": 62
+  },
+  {
+    "type": "personalized_recommendation",
+    "message": "Which universities fit my GPA, budget, and location preferences?",
+    "id": 63
+  },
+  {
+    "type": "personalized_recommendation",
+    "message": "Can you recommend programs that match my strengths but avoid heavy theory?",
+    "id": 64
+  },
+  {
+    "type": "personalized_recommendation",
+    "message": "What are the best academic options for someone with my background and goals?",
+    "id": 65
+  },
+  {
+    "type": "student_reviews",
+    "message": "What do students say about workload in this program?",
+    "id": 66
+  },
+  {
+    "type": "student_reviews",
+    "message": "What are common complaints from students in this department?",
+    "id": 67
+  },
+  {
+    "type": "student_reviews",
+    "message": "Do students think this program is worth the cost?",
+    "id": 68
+  },
+  {
+    "type": "student_reviews",
+    "message": "What do reviews say about internship support at this university?",
+    "id": 69
+  },
+  {
+    "type": "student_reviews",
+    "message": "How do students rate the teaching quality in this program?",
+    "id": 70
+  },
+  {
+    "type": "graduate_school_planning",
+    "message": "What should I do over the next year to prepare for graduate school applications?",
+    "id": 71
+  },
+  {
+    "type": "graduate_school_planning",
+    "message": "Can you create a step by step plan for my graduate school journey?",
+    "id": 72
+  },
+  {
+    "type": "graduate_school_planning",
+    "message": "When should I take tests, request letters, and submit applications?",
+    "id": 73
+  },
+  {
+    "type": "graduate_school_planning",
+    "message": "What milestones should I complete before applying to Master of Science programs?",
+    "id": 74
+  },
+  {
+    "type": "graduate_school_planning",
+    "message": "How can I strengthen my profile before the next application cycle?",
+    "id": 75
+  },
+  {
+    "type": "academic_strengths",
+    "message": "What are my strongest academic areas based on my transcript?",
+    "id": 76
+  },
+  {
+    "type": "academic_strengths",
+    "message": "Which subjects seem to match my strengths the most?",
+    "id": 77
+  },
+  {
+    "type": "academic_strengths",
+    "message": "Can you tell me which patterns in my grades stand out?",
+    "id": 78
+  },
+  {
+    "type": "academic_strengths",
+    "message": "What do my grades suggest about the kinds of programs I should target?",
+    "id": 79
+  },
+  {
+    "type": "academic_strengths",
+    "message": "Which of my academic strengths should I highlight in applications?",
+    "id": 80
+  },
+  {
+    "type": "academic_weaknesses",
+    "message": "What weaknesses do you notice in my academic record?",
+    "id": 81
+  },
+  {
+    "type": "academic_weaknesses",
+    "message": "Which low grades are most likely to hurt my applications?",
+    "id": 82
+  },
+  {
+    "type": "academic_weaknesses",
+    "message": "How can I address weak areas in my transcript before applying?",
+    "id": 83
+  },
+  {
+    "type": "academic_weaknesses",
+    "message": "Do any patterns in my grades suggest that I should avoid certain majors?",
+    "id": 84
+  },
+  {
+    "type": "academic_weaknesses",
+    "message": "What academic weaknesses should I explain in my statement of purpose?",
+    "id": 85
+  },
+  {
+    "type": "memory_context",
+    "message": "Remember that I prefer affordable universities near large cities.",
+    "id": 86
+  },
+  {
+    "type": "memory_context",
+    "message": "Remember that I want programs with strong internship support.",
+    "id": 87
+  },
+  {
+    "type": "memory_context",
+    "message": "Use my updated transcript when making future recommendations.",
+    "id": 88
+  },
+  {
+    "type": "memory_context",
+    "message": "Remember that I want to avoid programs with very high tuition.",
+    "id": 89
+  },
+  {
+    "type": "memory_context",
+    "message": "Keep in mind that I prefer course based programs over thesis based ones.",
+    "id": 90
+  },
+  {
+    "type": "follow_up_reasoning",
+    "message": "Last time you suggested Data Science. Does that still make sense after looking at my new grades?",
+    "id": 91
+  },
+  {
+    "type": "follow_up_reasoning",
+    "message": "Has your recommendation changed after I added my internship experience?",
+    "id": 92
+  },
+  {
+    "type": "follow_up_reasoning",
+    "message": "Which universities should I reconsider after updating my resume?",
+    "id": 93
+  },
+  {
+    "type": "follow_up_reasoning",
+    "message": "Do your earlier suggestions still hold after including my budget limits?",
+    "id": 94
+  },
+  {
+    "type": "follow_up_reasoning",
+    "message": "Can you update your advice now that I shared my career goal?",
+    "id": 95
+  },
+  {
+    "type": "external_data_query",
+    "message": "What do course catalogs say about artificial intelligence electives in this program?",
+    "id": 96
+  },
+  {
+    "type": "external_data_query",
+    "message": "Can you summarize financial aid information for this university?",
+    "id": 97
+  },
+  {
+    "type": "external_data_query",
+    "message": "What outside reviews say this program has the best faculty support?",
+    "id": 98
+  },
+  {
+    "type": "external_data_query",
+    "message": "Can you check program details and tell me whether internships are built into the curriculum?",
+    "id": 99
+  },
+  {
+    "type": "external_data_query",
+    "message": "What do public student reviews say about the value of this degree?",
+    "id": 100
+  }
+]

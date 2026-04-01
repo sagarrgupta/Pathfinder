@@ -14,7 +14,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import get_full_profile
+from app.core.prompts import ORCHESTRATOR_SYSTEM_PROMPT
 from app.core.quality import (
+    add_handoff_note,
     analyze_query_focus,
     build_session_summary,
     infer_target_entity,
@@ -23,52 +25,14 @@ from app.core.quality import (
     compact_session_state,
     infer_student_workflow,
     init_working_memory,
+    build_short_memory_policy,
+    complete_task,
+    start_task,
+    fail_task,
 )
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.orchestrator")
-
-_SYSTEM_PROMPT = """You are the Orchestrator of Pathfinder, an AI academic and career guidance system for students.
-
-Your job is to analyze the user's query and decide which specialist agents should handle it.
-
-Available agents:
-- clarifier: Ask the user for more information when the query is ambiguous or missing key details
-- doc_analyst: Process uploaded documents (PDFs, images, DOCX) — extract text, create chunks, extract entities
-- profile_manager: Query or update the student's knowledge graph profile (courses, skills, GPA, etc.)
-- web_researcher: Search the web for external information (university pages, job postings, reviews, any URL the user provides)
-- fact_extractor: Convert mixed sources into structured evidence records
-- course_planner: Build ranked course recommendations from evidence + student context
-- program_advisor: Provide academic guidance (university comparison, program requirements, academic planning)
-- career_matcher: Provide career guidance (job matching, skill gap analysis, career paths, salary insights)
-- interview_prep: Help with interview preparation (mock questions, STAR answers, company research)
-
-Analyze the user's query and respond with a JSON object:
-{{
-    "intent": "academic|career|interview|document|profile|general|greeting|research",
-    "plan": ["agent1", "agent2", ...],
-    "missing_info": [],
-    "reasoning": "brief explanation of your routing decision"
-}}
-
-Rules:
-1. If the user uploaded files, ALWAYS include "doc_analyst" first.
-2. If the query references anything personal (grades, skills, GPA, courses, profile, university, name, "my", "I"), include "profile_manager".
-3. Include "web_researcher" ONLY when the user clearly needs external or current information such as official course offerings, university pages, job listings, reviews, deadlines, or URL analysis.
-4. If the query contains a URL (https://...), ALWAYS include "web_researcher" — it will fetch the page directly.
-5. Only route to "clarifier" if the query is genuinely ambiguous AND profile data plus recent conversation cannot resolve it.
-6. For greetings or simple chat (like "hello", "hi", "thanks"), return intent "greeting" with an empty plan.
-7. Profile_manager MUST come before agents that need profile data (academic_advisor, career_planner, interview_prep).
-8. For academic, career, or interview queries, ALWAYS include profile_manager in the plan.
-9. NEVER return just ["clarifier"] if the student has profile data available.
-10. For course recommendations, include "web_researcher" only if the user is asking about real current offerings, enrollment options, or official university requirements. If the question can be answered from the student's known profile and prior conversation, do not add web_researcher.
-11. A query can have MIXED intents (e.g., "based on my resume, find me jobs" is both profile + career). Pick the PRIMARY intent but include ALL relevant agents.
-12. Use intent "research" when the user asks to read, summarize, or analyze external content (URLs, reviews, articles).
-13. Consider the conversation history — if the user is following up on a previous topic, maintain context.
-14. Prefer answering over clarifying when the student has already provided enough information in profile or recent messages.
-15. Do not ask for information the user has already provided in prior turns.
-16. If one narrow detail is still missing, prefer routing to the advisory agent so it can ask a targeted follow-up instead of sending the user to a generic clarifier.
-"""
 
 
 async def orchestrator(state: PathfinderState) -> PathfinderState:
@@ -149,7 +113,7 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     context = "\n".join(context_parts)
 
     response = await llm.ainvoke([
-        SystemMessage(content=_SYSTEM_PROMPT),
+        SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT),
         HumanMessage(content=f"Context:\n{context}\n\nUser query: {query}"),
     ])
 
@@ -176,7 +140,10 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     target_entity = infer_target_entity(profile_snapshot, session_summary, query, query_focus)
     workflow = infer_student_workflow(query, query_focus, files, target_entity)
     source_policy = build_source_policy(query_focus, target_entity, workflow)
+    short_memory_policy = build_short_memory_policy(workflow, query_focus)
     task_graph = build_task_graph(query, workflow, query_focus, target_entity)
+    task_graph = start_task(task_graph, "determine_decision_goal")
+    task_graph = complete_task(task_graph, "determine_decision_goal")
     working_memory = init_working_memory(state.get("working_memory", {}))
     compacted_session = compact_session_state(session_summary, working_memory)
 
@@ -186,19 +153,18 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         plan.insert(0, "profile_manager")
         log.info("Guardrail: inserted profile_manager for %s intent", intent)
 
-    # ── Guardrail: include web_researcher for recommendation queries ──
     query_lower = query.lower()
-    if _needs_web_research(query_lower):
-        if "web_researcher" not in plan:
-            # Insert web_researcher before advisory agents
-            advisory = {"academic_advisor", "career_planner", "interview_prep"}
-            insert_idx = len(plan)
-            for i, node in enumerate(plan):
-                if node in advisory:
-                    insert_idx = i
-                    break
-            plan.insert(insert_idx, "web_researcher")
-            log.info("Guardrail: inserted web_researcher for recommendation query")
+
+    # ── Guardrail: include web_researcher for every turn-level plan ──
+    if "web_researcher" not in plan:
+        advisory = {"academic_advisor", "career_planner", "interview_prep"}
+        insert_idx = len(plan)
+        for i, node in enumerate(plan):
+            if node in advisory:
+                insert_idx = i
+                break
+        plan.insert(insert_idx, "web_researcher")
+        log.info("Guardrail: inserted web_researcher for all workflows")
 
     # ── Guardrail: web_researcher must come before advisory agents ──
     if "web_researcher" in plan:
@@ -239,6 +205,38 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         elif workflow == "career_alignment":
             intent = "career"
 
+    dependency_gate = _dependency_gate(workflow, state.get("dependency_status", {}))
+    if dependency_gate:
+        blocked_reasons = [dependency_gate]
+        task_graph = fail_task(task_graph, "determine_decision_goal", reason=dependency_gate)
+        working_memory = add_handoff_note(
+            working_memory,
+            from_node="orchestrator",
+            to_node="responder",
+            contract="dependency_gate",
+            summary=dependency_gate,
+        )
+        step_progress.append("Dependency check failed — returning actionable runtime error")
+        return {
+            **state,
+            "intent": intent,
+            "plan": [],
+            "next_node": "responder",
+            "missing_info": missing_info,
+            "session_summary": session_summary,
+            "workflow": workflow,
+            "target_entity": target_entity,
+            "source_policy": source_policy,
+            "task_graph": task_graph,
+            "working_memory": working_memory,
+            "compacted_session": compacted_session,
+            "blocked_reasons": blocked_reasons,
+            "stop_reason": "dependency_unavailable",
+            "short_memory_policy": short_memory_policy,
+            "draft_answer": dependency_gate,
+            "step_progress": step_progress,
+        }
+
     # Determine next node
     if intent == "greeting":
         next_node = "responder"
@@ -264,6 +262,14 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     step_progress.append(f"Intent: {intent} — Workflow: {workflow} — Plan: {plan_display}")
     log.info("Orchestrator: intent=%s workflow=%s plan=%s next=%s", intent, workflow, plan, next_node)
 
+    working_memory = add_handoff_note(
+        working_memory,
+        from_node="orchestrator",
+        to_node=next_node,
+        contract="workflow_plan",
+        summary=f"Workflow={workflow}; plan={' -> '.join(plan) if plan else 'responder'}",
+    )
+
     return {
         **state,
         "intent": intent,
@@ -277,31 +283,18 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         "task_graph": task_graph,
         "working_memory": working_memory,
         "compacted_session": compacted_session,
+        "short_memory_policy": short_memory_policy,
         "stop_reason": "",
         "step_progress": step_progress,
     }
 
 
-def _needs_web_research(query_lower: str) -> bool:
-    """Heuristic guardrail for when external/current data is likely required."""
-    always_external_keywords = [
-        "http", "www.", "url", "website", "webpage",
-        "deadline", "review", "ranking", "salary",
-        "job opening", "job listing", "open roles",
-        "compare universities", "compare schools",
-    ]
-    current_course_keywords = [
-        "next semester", "this semester", "fall ", "spring ", "summer ",
-        "available", "offered", "catalog", "schedule of classes",
-        "can i enroll", "can i register", "sections", "prerequisite",
-    ]
-    broad_entity_keywords = ["university", "college", "program", "job", "position"]
-
-    return (
-        any(kw in query_lower for kw in always_external_keywords)
-        or any(kw in query_lower for kw in current_course_keywords)
-        or any(kw in query_lower for kw in broad_entity_keywords)
-    )
+def _workflow_needs_web_research(workflow: str, source_policy: dict[str, Any]) -> bool:
+    if workflow == "student_state_update":
+        return False
+    if workflow in {"academic_planning", "program_understanding", "eligibility_check", "comparison_guidance", "career_alignment", "document_guidance"}:
+        return True
+    return bool(source_policy.get("requires_live_data")) or bool(source_policy.get("primary_source_types"))
 
 
 def _is_course_planning_query(query_lower: str) -> bool:
@@ -320,11 +313,39 @@ def _plan_for_workflow(workflow: str, plan: list[str]) -> list[str]:
         "comparison_guidance": ["profile_manager", "web_researcher", "fact_extractor", "program_advisor"],
         "career_alignment": ["profile_manager", "web_researcher", "fact_extractor", "career_matcher"],
         "document_guidance": ["doc_analyst", "profile_manager", "web_researcher", "fact_extractor", "program_advisor"],
-        "student_state_update": ["profile_manager", "evaluator"],
-        "general_guidance": plan or ["profile_manager"],
+        "student_state_update": ["profile_manager", "web_researcher", "evaluator"],
+        "general_guidance": _merge_ordered_plan(plan, ["profile_manager", "web_researcher"]),
     }
     ordered = workflow_nodes.get(workflow, plan or ["profile_manager"])
+    if workflow in workflow_nodes and workflow != "general_guidance":
+        # Keep workflow plans deterministic and dependency-safe.
+        return ordered
     return _merge_ordered_plan(plan, ordered)
+
+
+def _dependency_gate(workflow: str, dependency_status: dict[str, Any]) -> str:
+    llm_status = str(dependency_status.get("llm", "unknown"))
+    if llm_status != "connected":
+        return (
+            "LLM runtime is unavailable right now, so I cannot complete this advising turn. "
+            "Please restart LM Studio and retry."
+        )
+
+    neo4j_status = str(dependency_status.get("neo4j", "unknown"))
+    if neo4j_status != "connected":
+        return (
+            "Neo4j is unavailable, so profile/memory-backed advising is blocked. "
+            "Please restart Neo4j and retry."
+        )
+
+    embeddings_status = str(dependency_status.get("embeddings", "unknown"))
+    if workflow in {"academic_planning", "program_understanding", "eligibility_check", "comparison_guidance", "career_alignment", "document_guidance"} and embeddings_status != "connected":
+        return (
+            "Embedding service is unavailable, so evidence retrieval is blocked. "
+            "Please start Ollama (embeddings) and retry."
+        )
+
+    return ""
 
 
 def _ensure_quality_course_plan(plan: list[str]) -> list[str]:

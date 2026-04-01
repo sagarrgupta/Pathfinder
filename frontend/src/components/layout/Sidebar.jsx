@@ -4,9 +4,10 @@ import { useApp } from '@/context/AppContext';
 import {
   MessageSquare, User, Settings, Plus, Trash2,
   PanelLeftClose, PanelLeftOpen, GraduationCap,
-  Pin, PinOff, Pencil, Check, X, Search,
+  Pin, PinOff, Pencil, Check, X, Search, ShieldAlert,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useToast } from '@/components/shared/Toast';
 
 const MIN_WIDTH = 220;
 const MAX_WIDTH = 480;
@@ -16,10 +17,12 @@ const COLLAPSED_WIDTH = 48;
 export default function Sidebar({ open, onToggle }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { state, dispatch, createSession } = useApp();
+  const { state, dispatch, createSession, switchStudent, createProfile } = useApp();
+  const toast = useToast();
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isCreatingProfile, setIsCreatingProfile] = useState(false);
   const editRef = useRef(null);
 
   // ── Resizable width ──
@@ -71,6 +74,7 @@ export default function Sidebar({ open, onToggle }) {
   const navItems = [
     { path: '/chat', label: 'Chat', icon: MessageSquare },
     { path: '/profile', label: 'My Profile', icon: User },
+    { path: '/profile/conflicts', label: 'Conflicts', icon: ShieldAlert },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
 
@@ -82,6 +86,31 @@ export default function Sidebar({ open, onToggle }) {
   const handleDeleteSession = (e, sessionId) => {
     e.stopPropagation();
     dispatch({ type: 'REMOVE_SESSION', payload: sessionId });
+  };
+
+  const handleStudentChange = async (e) => {
+    const nextStudentId = e.target.value;
+    try {
+      await switchStudent(nextStudentId);
+      navigate('/chat');
+    } catch (err) {
+      toast.error(`Failed to switch profile: ${err.message}`);
+    }
+  };
+
+  const handleCreateProfile = async () => {
+    const name = window.prompt('Enter a name for the new profile');
+    if (!name?.trim()) return;
+    setIsCreatingProfile(true);
+    try {
+      await createProfile({ name: name.trim() });
+      toast.success(`Created profile for ${name.trim()}`);
+      navigate('/profile');
+    } catch (err) {
+      toast.error(`Failed to create profile: ${err.message}`);
+    } finally {
+      setIsCreatingProfile(false);
+    }
   };
 
   const handleSelectSession = (sessionId) => {
@@ -132,7 +161,10 @@ export default function Sidebar({ open, onToggle }) {
   };
 
   // ── Filtered & sorted sessions ──
-  const filteredSessions = state.sessions.filter((s) => {
+  const currentStudentSessions = state.sessions.filter(
+    (s) => (s.student_id || 'default') === state.activeStudentId
+  );
+  const filteredSessions = currentStudentSessions.filter((s) => {
     if (!searchQuery.trim()) return true;
     return s.title.toLowerCase().includes(searchQuery.toLowerCase());
   });
@@ -259,9 +291,9 @@ export default function Sidebar({ open, onToggle }) {
             </div>
             <div className="min-w-0">
               <h1 className="font-semibold text-base whitespace-nowrap tracking-tight leading-tight">Pathfinder</h1>
-              {state.profile?.personal?.name && (
+              {(state.profile?.personal?.name || state.activeStudentId) && (
                 <p className="text-[10px] text-muted-foreground truncate leading-tight">
-                  {state.profile.personal.name.split(' ')[0]}'s Guide
+                  {(state.profile?.personal?.name || state.activeStudentId).split(' ')[0]}'s Guide
                 </p>
               )}
             </div>
@@ -274,7 +306,42 @@ export default function Sidebar({ open, onToggle }) {
 
       {/* New Chat Button (expanded) */}
       {open && (
-        <div className="p-3 pb-1">
+        <div className="p-3 pb-1 space-y-2">
+          <div className="rounded-lg border bg-background/80 p-2.5">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">
+                Active Profile
+              </p>
+              <button
+                onClick={handleCreateProfile}
+                disabled={isCreatingProfile}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-primary hover:bg-accent disabled:opacity-50"
+                title="Create profile"
+              >
+                <Plus className="h-3 w-3" />
+                New
+              </button>
+            </div>
+            <select
+              value={state.activeStudentId}
+              onChange={handleStudentChange}
+              className="w-full rounded-md border bg-background px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring/50"
+            >
+              {state.profiles.length === 0 ? (
+                <option value="default">default</option>
+              ) : (
+                state.profiles.map((profile) => (
+                  <option key={profile.student_id} value={profile.student_id}>
+                    {profile.name || profile.student_id}
+                    {profile.program ? ` — ${profile.program}` : ''}
+                  </option>
+                ))
+              )}
+            </select>
+            <p className="mt-2 text-[11px] text-muted-foreground truncate">
+              {state.profile?.personal?.program || state.profile?.personal?.university || 'Switch profiles to change chat and profile context.'}
+            </p>
+          </div>
           <button
             onClick={handleNewChat}
             className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-border hover:bg-accent hover:border-primary/20 text-sm transition-all active:scale-[0.98]"
@@ -330,7 +397,7 @@ export default function Sidebar({ open, onToggle }) {
       {open && (
         <div className="flex-1 overflow-y-auto scrollbar-fade mt-3 px-3">
           {/* Search bar */}
-          {state.sessions.length > 3 && (
+          {currentStudentSessions.length > 3 && (
             <div className="relative mb-2">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <input
