@@ -12,43 +12,10 @@ from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm, strip_repetition, is_garbage_output
+from app.core.prompts import CAREER_PLANNER_SYSTEM_PROMPT
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.career_planner")
-
-_SYSTEM_PROMPT = """You are the Career Planner agent in Pathfinder, an AI career guidance system for students.
-
-You help students plan their careers based on their academic background, skills, and goals.
-
-Capabilities:
-- Job matching: compare student skills vs job requirements
-- Skill gap analysis: identify missing skills for target roles
-- Career path planning: suggest progression from current state to career goals
-- Company research: match student profiles to company requirements
-- Salary and market insights (from web research)
-- Course recommendations to fill skill gaps
-- Resume-to-job-fit scoring
-
-Rules:
-1. ALWAYS reference specific skills, courses, and experience from the student's profile.
-2. Be honest about skill gaps — don't oversell the student's readiness.
-3. Provide concrete, actionable steps (specific courses, certifications, projects, timelines).
-4. Cite web sources with URLs when using job market data.
-5. Consider the student's current level and graduation timeline.
-6. When listing job opportunities, include role title, company, location, and why it's a fit.
-7. Format using markdown — use tables for comparisons, bold for key info.
-8. Address the student by name if available.
-9. When analyzing web page content, provide thorough summaries with key takeaways.
-
-Student Profile:
-{profile}
-
-Web Research Results:
-{web_results}
-
-Retrieved Document Context:
-{documents}
-"""
 
 
 async def career_planner(state: PathfinderState) -> PathfinderState:
@@ -72,7 +39,7 @@ async def career_planner(state: PathfinderState) -> PathfinderState:
     ) if documents else "No document context available."
 
     response = await llm.ainvoke([
-        SystemMessage(content=_SYSTEM_PROMPT.format(
+        SystemMessage(content=CAREER_PLANNER_SYSTEM_PROMPT.format(
             profile=profile_text,
             web_results=web_text,
             documents=doc_text,

@@ -143,6 +143,12 @@ class SourcePolicy(TypedDict, total=False):
     rationale: str
     fetch_budget: int
     strict_primary_only: bool
+    require_institution_match: bool
+    target_institution: str
+    target_program: str
+    target_level: str
+    max_search_queries: int
+    search_retries: int
 
 
 class SessionSummary(TypedDict, total=False):
@@ -182,6 +188,9 @@ class TaskNode(TypedDict, total=False):
     depends_on: list[str]
     status: str
     required: bool
+    ready: bool
+    blocked_reason: str
+    failure_reason: str
 
 
 class SourceAuditEntry(TypedDict, total=False):
@@ -211,6 +220,7 @@ class WorkingMemory(TypedDict, total=False):
     ranking_rationale: list[str]
     dropped_claims: list[str]
     recent_decisions: list[str]
+    handoff_notes: list[dict[str, Any]]
 
 
 class DependencyStatus(TypedDict, total=False):
@@ -233,6 +243,21 @@ class QueryFocus(TypedDict, total=False):
     wants_summary: bool
     wants_eligibility: bool
     wants_long_range_plan: bool
+    wants_application_targeting: bool
+    wants_university_selection: bool
+
+
+class ShortMemoryPolicy(TypedDict, total=False):
+    """Explicit policy for short-memory lifecycle in a session."""
+
+    policy_version: str
+    scope: str
+    ttl_seconds: int
+    max_recent_turns: int
+    max_messages: int
+    eviction_strategy: str
+    compaction_trigger_turns: int
+    quality_mode: str
 
 
 _SEMESTER_PATTERNS = [
@@ -356,6 +381,7 @@ def init_working_memory(existing: dict[str, Any] | None = None) -> WorkingMemory
         "ranking_rationale": list(current.get("ranking_rationale", [])),
         "dropped_claims": list(current.get("dropped_claims", [])),
         "recent_decisions": list(current.get("recent_decisions", [])),
+        "handoff_notes": list(current.get("handoff_notes", [])),
     }
 
 
@@ -463,29 +489,93 @@ def build_task_graph(
         tasks.append({"id": "rank_options", "title": "Rank options", "kind": "rank_options", "depends_on": ["determine_decision_goal"], "status": "pending", "required": False})
 
     tasks.append({"id": "render_final_answer", "title": "Render final answer", "kind": "render_final_answer", "depends_on": ["rank_options"], "status": "pending", "required": True})
-    return tasks
+    return _recompute_task_readiness(tasks)
 
 
 def complete_task(task_graph: list[TaskNode], task_id: str) -> list[TaskNode]:
     """Mark a task as completed in the in-memory task graph."""
-    updated: list[TaskNode] = []
-    for task in task_graph:
-        copied = dict(task)
-        if copied.get("id") == task_id:
-            copied["status"] = "completed"
-        updated.append(copied)
-    return updated
+    return set_task_status(task_graph, task_id, "completed")
+
+
+def start_task(task_graph: list[TaskNode], task_id: str) -> list[TaskNode]:
+    """Mark a task as in progress if it exists in the task graph."""
+    return set_task_status(task_graph, task_id, "in_progress")
 
 
 def block_task(task_graph: list[TaskNode], task_id: str, required: bool | None = None) -> list[TaskNode]:
     """Mark a task as blocked in the in-memory task graph."""
+    return set_task_status(task_graph, task_id, "blocked", required=required)
+
+
+def fail_task(
+    task_graph: list[TaskNode],
+    task_id: str,
+    *,
+    reason: str = "",
+    cascade_block_dependents: bool = True,
+) -> list[TaskNode]:
+    """Mark a task as failed and optionally cascade block required dependents."""
+    updated = set_task_status(task_graph, task_id, "failed", reason=reason)
+    if not cascade_block_dependents:
+        return updated
+    return _cascade_block_dependents(updated, task_id, reason=reason or f"Dependency {task_id} failed")
+
+
+def set_task_status(
+    task_graph: list[TaskNode],
+    task_id: str,
+    status: str,
+    *,
+    reason: str = "",
+    required: bool | None = None,
+) -> list[TaskNode]:
+    """Set status for one task and recompute dependency readiness."""
     updated: list[TaskNode] = []
     for task in task_graph:
         copied = dict(task)
         if copied.get("id") == task_id:
-            copied["status"] = "blocked"
+            copied["status"] = status
             if required is not None:
                 copied["required"] = required
+            if status == "blocked":
+                copied["blocked_reason"] = reason
+            elif status == "failed":
+                copied["failure_reason"] = reason
+        updated.append(copied)
+    return _recompute_task_readiness(updated)
+
+
+def _cascade_block_dependents(task_graph: list[TaskNode], failed_task_id: str, *, reason: str = "") -> list[TaskNode]:
+    updated = [dict(task) for task in task_graph]
+    changed = True
+    while changed:
+        changed = False
+        for task in updated:
+            status = str(task.get("status", "pending"))
+            if status in {"completed", "blocked", "failed"}:
+                continue
+            depends_on = [str(dep) for dep in task.get("depends_on", [])]
+            if failed_task_id not in depends_on and not any(
+                any(dep == t.get("id") and str(t.get("status", "")) in {"blocked", "failed"} for t in updated)
+                for dep in depends_on
+            ):
+                continue
+            if task.get("required", False):
+                task["status"] = "blocked"
+                if reason:
+                    task["blocked_reason"] = reason
+                changed = True
+    return _recompute_task_readiness(updated)
+
+
+def _recompute_task_readiness(task_graph: list[TaskNode]) -> list[TaskNode]:
+    status_by_id = {str(task.get("id", "")): str(task.get("status", "pending")) for task in task_graph}
+    updated: list[TaskNode] = []
+    for task in task_graph:
+        copied = dict(task)
+        depends_on = [str(dep) for dep in copied.get("depends_on", [])]
+        dependencies_ready = all(status_by_id.get(dep) == "completed" for dep in depends_on)
+        copied["ready"] = copied.get("status", "pending") == "pending" and dependencies_ready
         updated.append(copied)
     return updated
 
@@ -496,8 +586,31 @@ def summarize_trace(state: dict[str, Any]) -> dict[str, Any]:
     completed = [task.get("id", "") for task in task_graph if task.get("status") == "completed"]
     blocked = [task.get("id", "") for task in task_graph if task.get("status") == "blocked"]
     source_audit = list((state.get("working_memory", {}) or {}).get("source_audit", []))
+    handoff_notes = list((state.get("working_memory", {}) or {}).get("handoff_notes", []))
     selected = sum(1 for entry in source_audit if entry.get("action") == "selected")
     rejected = sum(1 for entry in source_audit if entry.get("action") == "rejected")
+    payload = state.get("decision_payload", {}) or {}
+    recommendations = payload.get("recommended_items", []) if isinstance(payload, dict) else []
+    supported = 0
+    for item in recommendations:
+        if not isinstance(item, dict):
+            continue
+        if item.get("support_codes"):
+            supported += 1
+            continue
+        refs = item.get("support_refs", [])
+        if isinstance(refs, list) and any(isinstance(ref, dict) and ref.get("url") for ref in refs):
+            supported += 1
+    support_coverage = (supported / len(recommendations)) if recommendations else 0.0
+
+    session_summary = state.get("session_summary", {}) or {}
+    memory_sources_used: list[str] = []
+    if session_summary:
+        memory_sources_used.append("short")
+    if state.get("compacted_session") or state.get("memory_pack"):
+        memory_sources_used.append("long")
+    latest_ingestion_result = state.get("latest_ingestion_result", {}) or {}
+
     return {
         "target_entity": state.get("target_entity", {}),
         "workflow": state.get("workflow", ""),
@@ -506,9 +619,89 @@ def summarize_trace(state: dict[str, Any]) -> dict[str, Any]:
         "blocked_tasks": blocked,
         "selected_sources": selected,
         "rejected_sources": rejected,
+        "handoff_count": len(handoff_notes),
         "blocked_reasons": state.get("blocked_reasons", []),
         "dependency_status": state.get("dependency_status", {}),
+        "stop_reason": state.get("stop_reason", ""),
+        "support_coverage": round(support_coverage, 3),
+        "assumption_count": len(payload.get("assumptions", []) if isinstance(payload, dict) else []),
+        "memory_sources_used": memory_sources_used,
+        "short_memory_policy": state.get("short_memory_policy", {}) or {},
+        "latest_ingestion_result": latest_ingestion_result,
     }
+
+
+def build_short_memory_policy(workflow: str, query_focus: QueryFocus) -> ShortMemoryPolicy:
+    """Build an explicit TTL+eviction policy for short-memory state."""
+    ttl_by_workflow = {
+        "academic_planning": 6 * 60 * 60,
+        "program_understanding": 6 * 60 * 60,
+        "eligibility_check": 6 * 60 * 60,
+        "comparison_guidance": 4 * 60 * 60,
+        "career_alignment": 4 * 60 * 60,
+        "document_guidance": 3 * 60 * 60,
+        "student_state_update": 12 * 60 * 60,
+        "general_guidance": 3 * 60 * 60,
+    }
+    ttl_seconds = ttl_by_workflow.get(workflow, 3 * 60 * 60)
+    if query_focus.get("wants_long_range_plan"):
+        ttl_seconds = max(ttl_seconds, 8 * 60 * 60)
+    if query_focus.get("wants_live_availability"):
+        ttl_seconds = min(ttl_seconds, 3 * 60 * 60)
+
+    return {
+        "policy_version": "short-memory-v1",
+        "scope": "session",
+        "ttl_seconds": int(ttl_seconds),
+        "max_recent_turns": 12,
+        "max_messages": 48,
+        "eviction_strategy": "ttl_then_lru_turns",
+        "compaction_trigger_turns": 10,
+        "quality_mode": "quality_first",
+    }
+
+
+def add_handoff_note(
+    working_memory: dict[str, Any] | None,
+    *,
+    from_node: str,
+    to_node: str,
+    contract: str,
+    summary: str,
+) -> WorkingMemory:
+    """Append a compact inter-node handoff note to shared working memory."""
+    return add_working_memory_item(
+        working_memory,
+        "handoff_notes",
+        {
+            "from": from_node,
+            "to": to_node,
+            "contract": contract,
+            "summary": summary,
+        },
+    )
+
+
+def recent_handoff_context(
+    working_memory: dict[str, Any] | None,
+    *,
+    to_node: str,
+    limit: int = 6,
+) -> list[dict[str, str]]:
+    """Return recent handoff notes relevant to a target node."""
+    memory = init_working_memory(working_memory)
+    notes = [
+        {
+            "from": str(note.get("from", "")),
+            "to": str(note.get("to", "")),
+            "contract": str(note.get("contract", "")),
+            "summary": str(note.get("summary", "")),
+        }
+        for note in memory.get("handoff_notes", [])
+        if isinstance(note, dict)
+    ]
+    relevant = [note for note in notes if note.get("to") == to_node or note.get("to") == "*" or note.get("to") == ""]
+    return relevant[-limit:]
 
 
 def infer_evidence_tiers(
@@ -518,6 +711,7 @@ def infer_evidence_tiers(
     level: str,
     title: str,
     excerpt: str,
+    institution_text: str = "",
 ) -> tuple[TrustTier, FitTier, FreshnessTier]:
     """Infer trust, fit, and freshness tiers for an evidence record."""
     domain = urlparse(source_url or "").netloc.lower()
@@ -531,7 +725,14 @@ def infer_evidence_tiers(
     else:
         trust_tier = "third_party"
 
-    relevance_score = academic_source_relevance(title, excerpt, source_url, program_text, level)
+    relevance_score = academic_source_relevance(
+        title,
+        excerpt,
+        source_url,
+        program_text,
+        level,
+        institution_text,
+    )
     if relevance_score >= 2.0:
         fit_tier: FitTier = "direct"
     elif relevance_score >= 1.0:
@@ -601,16 +802,26 @@ def classify_web_source(url: str, title: str, content: str) -> tuple[SourceType,
 def analyze_query_focus(query: str) -> QueryFocus:
     """Infer the evidence focus implied by the user's question."""
     lowered = query.lower()
+    application_signals = _application_targeting_signals(lowered)
+    has_term_target = bool(re.search(r"\b(fall|spring|summer|winter)\s+20\d{2}\b", lowered))
+    has_graduation_deadline = bool(
+        re.search(r"\b(graduate|finish|complete)\s+(by|before)\b", lowered)
+        or re.search(r"\bby\s+(fall|spring|summer|winter)\s+20\d{2}\b", lowered)
+    )
+    primary_focus = (
+        "career"
+        if any(word in lowered for word in ("job", "career", "role", "internship"))
+        else "comparison"
+        if (
+            any(word in lowered for word in ("compare", "vs", "difference", "better"))
+            or (application_signals["is_application_targeting"] and application_signals["wants_university_selection"])
+        )
+        else "summary"
+        if any(word in lowered for word in ("summarize", "summary", "explain this page"))
+        else "academic"
+    )
     return {
-        "primary": (
-            "career"
-            if any(word in lowered for word in ("job", "career", "role", "internship"))
-            else "comparison"
-            if any(word in lowered for word in ("compare", "vs", "difference", "better"))
-            else "summary"
-            if any(word in lowered for word in ("summarize", "summary", "explain this page"))
-            else "academic"
-        ),
+        "primary": primary_focus,
         "wants_live_availability": any(
             word in lowered
             for word in ("open now", "available", "enroll", "register", "this semester", "next semester", "offered", "open seats")
@@ -623,7 +834,27 @@ def analyze_query_focus(query: str) -> QueryFocus:
         "wants_jobs": any(word in lowered for word in ("job", "career", "internship", "role", "fit me")),
         "wants_summary": any(word in lowered for word in ("summarize", "summary", "read this", "explain this page")),
         "wants_eligibility": any(word in lowered for word in ("can i", "am i eligible", "do i qualify", "can i take", "can i apply")),
-        "wants_long_range_plan": any(word in lowered for word in ("2 years", "two years", "graduate in", "graduation plan", "roadmap", "long term")),
+        "wants_application_targeting": application_signals["is_application_targeting"],
+        "wants_university_selection": (
+            application_signals["wants_university_selection"]
+            or any(
+                phrase in lowered
+                for phrase in (
+                    "which universities",
+                    "rank universities",
+                    "realistic universities",
+                    "safe moderate ambitious",
+                    "safe, moderate, and ambitious",
+                    "top universities",
+                    "best universities",
+                )
+            )
+        ),
+        "wants_long_range_plan": (
+            any(word in lowered for word in ("2 years", "two years", "graduate in", "graduation plan", "roadmap", "long term"))
+            or (has_term_target and has_graduation_deadline)
+            or ("semester wise" in lowered or "semester-wise" in lowered)
+        ),
     }
 
 
@@ -637,15 +868,28 @@ def infer_student_workflow(
     lowered = (query or "").lower()
     target_kind = (target_entity or {}).get("kind", "")
     has_files = bool(files)
+    planning_markers = (
+        "plan", "semester wise", "semester-wise", "roadmap", "course sequence",
+        "what should i take", "which courses", "graduate by", "finish by",
+    )
 
     if has_files or target_kind in {"document", "webpage"} or query_focus.get("wants_summary"):
         return "document_guidance"
+    if query_focus.get("wants_application_targeting") or query_focus.get("wants_university_selection"):
+        application_signals = _application_targeting_signals(lowered)
+        if (
+            application_signals["wants_university_selection"]
+            or query_focus.get("wants_university_selection")
+            or query_focus.get("wants_comparison")
+        ):
+            return "comparison_guidance"
+        return "eligibility_check"
+    if query_focus.get("wants_long_range_plan") or any(marker in lowered for marker in planning_markers):
+        return "academic_planning"
     if query_focus.get("wants_jobs"):
         return "career_alignment"
     if query_focus.get("wants_comparison"):
         return "comparison_guidance"
-    if query_focus.get("wants_long_range_plan") or any(word in lowered for word in ("finish in", "graduate in", "two year", "2 year", "semester wise")):
-        return "academic_planning"
     if query_focus.get("wants_eligibility"):
         return "eligibility_check"
     if any(word in lowered for word in ("elective", "next semester", "what should i take", "course plan", "semester plan")):
@@ -787,6 +1031,9 @@ def build_source_policy(
     kind = target_entity.get("kind", "")
     requires_live_data = bool(query_focus.get("wants_live_availability"))
 
+    is_application_targeting = bool(query_focus.get("wants_application_targeting"))
+    wants_university_selection = bool(query_focus.get("wants_university_selection"))
+
     if workflow == "career_alignment" or primary == "career":
         primary_source_types: list[SourceType] = ["job_page", "profile_doc"]
         secondary_source_types: list[SourceType] = ["general_web"]
@@ -813,12 +1060,12 @@ def build_source_policy(
         strict_primary_only = True
     elif workflow == "comparison_guidance":
         primary_source_types = ["degree_page", "admissions_page", "profile_doc"]
-        secondary_source_types = ["certificate_page", "general_web"]
+        secondary_source_types = ["schedule_page", "certificate_page", "general_web"]
         prefer_pdfs = True
         tier_order = ["primary", "secondary"]
-        rationale = "Comparison questions should prioritize official pages for each option and use secondary sources only as support."
-        fetch_budget = 7
-        strict_primary_only = True
+        rationale = "Comparison questions should prioritize official program/admissions sources for each option and use secondary sources only as support."
+        fetch_budget = 8 if (is_application_targeting or wants_university_selection) else 7
+        strict_primary_only = False if (is_application_targeting or wants_university_selection) else True
     elif workflow == "eligibility_check":
         primary_source_types = ["degree_page", "admissions_page", "profile_doc"]
         secondary_source_types = ["schedule_page", "certificate_page", "general_web"]
@@ -844,6 +1091,20 @@ def build_source_policy(
         fetch_budget = 7
         strict_primary_only = True
 
+    target_institution = str(target_entity.get("institution", "") or "")
+    target_program = str(target_entity.get("program", "") or "")
+    target_level = str(target_entity.get("level", "") or "")
+    require_institution_match = workflow in {
+        "academic_planning",
+        "program_understanding",
+        "eligibility_check",
+    } or primary == "academic"
+    if not target_institution:
+        require_institution_match = False
+    if workflow == "comparison_guidance":
+        # Comparison and application-targeting often require cross-institution retrieval.
+        require_institution_match = False
+
     return {
         "primary_source_types": primary_source_types,
         "secondary_source_types": secondary_source_types,
@@ -855,6 +1116,51 @@ def build_source_policy(
         "rationale": rationale,
         "fetch_budget": fetch_budget,
         "strict_primary_only": strict_primary_only,
+        "require_institution_match": require_institution_match,
+        "target_institution": target_institution,
+        "target_program": target_program,
+        "target_level": target_level,
+        "max_search_queries": 6 if primary == "academic" else 5,
+        "search_retries": 2 if primary in {"academic", "career", "comparison"} else 1,
+    }
+
+
+def _application_targeting_signals(lowered_query: str) -> dict[str, bool]:
+    """Detect broad admission/application targeting intent across many phrasings."""
+    apply_verbs = {
+        "apply", "admit", "admission", "eligible", "qualify", "shortlist", "target", "fit", "suitable",
+    }
+    institution_selectors = {
+        "which university", "which universities", "where should i apply", "where can i apply",
+        "best universities", "top universities", "universities should i apply",
+    }
+    degree_targets = {
+        "phd", "ph.d", "doctoral", "doctorate", "doctor of philosophy", "research program",
+    }
+    profile_evidence_terms = {
+        "transcript", "resume", "profile", "gpa", "cgpa", "research", "publication", "project", "scores",
+    }
+
+    has_apply_verb = any(token in lowered_query for token in apply_verbs)
+    has_degree_target = any(token in lowered_query for token in degree_targets)
+    has_profile_context = any(token in lowered_query for token in profile_evidence_terms)
+    has_university_selector = any(phrase in lowered_query for phrase in institution_selectors) or (
+        "university" in lowered_query and any(word in lowered_query for word in ("which", "where", "best", "top"))
+    )
+    has_field_selector = "field" in lowered_query and any(word in lowered_query for word in ("which", "what", "best", "suitable"))
+
+    score = 0
+    score += 2 if has_apply_verb else 0
+    score += 2 if has_degree_target else 0
+    score += 1 if has_profile_context else 0
+    score += 1 if has_university_selector else 0
+    score += 1 if has_field_selector else 0
+
+    is_application_targeting = score >= 3 and has_degree_target and (has_apply_verb or has_profile_context)
+    return {
+        "is_application_targeting": is_application_targeting,
+        "wants_university_selection": has_university_selector,
+        "wants_field_mapping": has_field_selector,
     }
 
 
@@ -989,6 +1295,7 @@ def academic_source_relevance(
     url: str,
     program_text: str,
     level: str,
+    institution_text: str = "",
 ) -> float:
     """Score how relevant an academic source is to the student's program context."""
     combined = " ".join([title or "", content[:800] if content else "", url or ""]).lower()
@@ -1001,6 +1308,8 @@ def academic_source_relevance(
     keywords = program_keywords(program_text)
     overlap = [token for token in keywords if token in combined]
     score += min(1.8, len(overlap) * 0.7)
+    if keywords and not overlap:
+        score -= 0.9
 
     if looks_like_course_catalog_source(title, url) and overlap:
         score += 0.6
@@ -1016,6 +1325,8 @@ def academic_source_relevance(
         if _contains_any_term(combined, ("graduate", "master", "masters", "doctoral", "phd")):
             score -= 1.0
 
+    score += institution_alignment_score(title, content, url, institution_text)
+
     return score
 
 
@@ -1025,9 +1336,99 @@ def is_academic_source_relevant(
     url: str,
     program_text: str,
     level: str,
+    institution_text: str = "",
 ) -> bool:
     """Return True when an academic source is sufficiently relevant to the student's program."""
-    return academic_source_relevance(title, content, url, program_text, level) >= 1.0
+    return academic_source_relevance(title, content, url, program_text, level, institution_text) >= 1.0
+
+
+def institution_alignment_score(
+    title: str,
+    content: str,
+    url: str,
+    institution_text: str,
+) -> float:
+    """Score how well a source aligns with the target institution context."""
+    institution = (institution_text or "").strip().lower()
+    if not institution:
+        return 0.0
+
+    combined = " ".join([title or "", content[:900] if content else "", url or ""]).lower()
+    target_tokens = _institution_keywords(institution)
+    target_signature_tokens = _institution_signature_tokens(institution)
+    if not target_tokens:
+        return 0.0
+
+    overlap = [token for token in target_tokens if token in combined]
+    score = min(1.8, 0.7 * len(overlap))
+
+    if target_signature_tokens:
+        matched_signature = [token for token in target_signature_tokens if token in combined]
+        signature_ratio = len(matched_signature) / max(1, len(target_signature_tokens))
+        score += 1.2 * signature_ratio
+        if signature_ratio < 0.4:
+            score -= 0.9
+
+    target_acronym = _institution_acronym(institution)
+    normalized_combined = combined.replace("-", "").replace("_", "")
+    if target_acronym:
+        if target_acronym in normalized_combined:
+            score += 0.6
+        elif re.search(r"\bcsu[a-z]{1,3}\b", normalized_combined) and target_acronym.startswith("csu"):
+            score -= 1.0
+
+    mentioned_institutions = {
+        " ".join(match.group(1).split()).strip(" ,.-").lower()
+        for match in _INSTITUTION_RE.finditer(combined)
+    }
+    target_overlap_found = False
+    for mentioned in mentioned_institutions:
+        mentioned_tokens = _institution_keywords(mentioned)
+        if set(mentioned_tokens) & set(target_tokens):
+            target_overlap_found = True
+            continue
+        if mentioned_tokens:
+            score -= 1.2
+
+    if mentioned_institutions and not target_overlap_found and not overlap:
+        score -= 0.8
+
+    return score
+
+
+def _institution_keywords(text: str) -> list[str]:
+    ignore = {
+        "university", "college", "institute", "school",
+        "state", "california", "the", "of", "at", "and",
+    }
+    tokens: list[str] = []
+    for token in re.findall(r"[a-z]{3,}", text.lower()):
+        if token in ignore or token in tokens:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _institution_signature_tokens(text: str) -> list[str]:
+    """Return stronger institution tokens for context matching."""
+    ignore = {"university", "college", "institute", "school", "the", "of", "at", "and"}
+    tokens: list[str] = []
+    for token in re.findall(r"[a-z]{3,}", text.lower()):
+        if token in ignore or token in tokens:
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _institution_acronym(text: str) -> str:
+    words = [
+        word
+        for word in re.findall(r"[A-Za-z]+", text.lower())
+        if word not in {"the", "of", "at", "and"}
+    ]
+    if not words:
+        return ""
+    return "".join(word[0] for word in words)[:6]
 
 
 def looks_like_course_catalog_source(title: str, url: str) -> bool:

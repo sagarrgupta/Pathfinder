@@ -13,50 +13,21 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
+from app.core.prompts import CAREER_MATCHER_PROMPT
 from app.core.quality import (
     DecisionPayload,
+    add_handoff_note,
     add_working_memory_item,
     build_support_ref,
     complete_task,
     group_evidence_records,
     init_working_memory,
+    recent_handoff_context,
+    start_task,
 )
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.career_matcher")
-
-_CAREER_PROMPT = """You are Pathfinder's Career Matcher.
-
-Produce a structured decision payload for jobs, role fit, and skill-gap questions.
-
-Return ONLY valid JSON:
-{
-  "decision_type": "career_matching",
-  "answer_outline": ["..."],
-  "recommended_items": [
-    {
-      "label": "Machine Learning Engineer Intern",
-      "reason": "Why this role is a good fit or next target",
-      "status": "good_fit|stretch_fit|goal_aligned",
-      "support_codes": [],
-      "assumption": ""
-    }
-  ],
-  "blocked_or_uncertain_items": [
-    {"label": "...", "reason": "...", "kind": "uncertain|blocked|needs_verification"}
-  ],
-  "assumptions": ["..."],
-  "next_best_action": "one concrete next step",
-  "source_refs": [{"title": "...", "url": "...", "excerpt": "...", "source_type": "job_page", "entity_type": "job_role"}]
-}
-
-Rules:
-1. Recommend roles and actions, not just summarize job pages.
-2. Use the student's skills, goals, coursework, and experience.
-3. Be honest about stretch roles and missing skills.
-4. Do not invent job listings, salaries, or requirements.
-5. Every recommendation must be source-backed or directly grounded in the student's profile.
-"""
 
 
 async def career_matcher(state: PathfinderState) -> PathfinderState:
@@ -69,12 +40,16 @@ async def career_matcher(state: PathfinderState) -> PathfinderState:
     working_memory = init_working_memory(state.get("working_memory", {}))
     task_graph = state.get("task_graph", [])
     blocked_reasons = list(state.get("blocked_reasons", []))
+    task_graph = start_task(task_graph, "compare_to_student_state")
+    task_graph = start_task(task_graph, "check_blockers")
+    task_graph = start_task(task_graph, "rank_options")
+    handoff_context = recent_handoff_context(working_memory, to_node="career_matcher")
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Matching your profile to career options...")
 
     baseline = _heuristic_career_payload(summary, profile, evidence_groups)
-    llm_payload = await _llm_career_payload(query, summary, profile, evidence_groups)
+    llm_payload = await _llm_career_payload(query, summary, profile, evidence_groups, handoff_context)
     merged = _merge_payloads(baseline, llm_payload)
     for assumption in merged.get("assumptions", []):
         working_memory = add_working_memory_item(working_memory, "active_assumptions", assumption)
@@ -91,6 +66,16 @@ async def career_matcher(state: PathfinderState) -> PathfinderState:
     if blocked_reasons:
         task_graph = complete_task(task_graph, "check_blockers")
     task_graph = complete_task(task_graph, "rank_options")
+    working_memory = add_handoff_note(
+        working_memory,
+        from_node="career_matcher",
+        to_node="evaluator",
+        contract="decision_payload",
+        summary=(
+            f"recommended={len(merged.get('recommended_items', []))}; "
+            f"blocked={len(merged.get('blocked_or_uncertain_items', []))}"
+        ),
+    )
 
     step_progress.append("Career matching prepared")
     log.info(
@@ -116,14 +101,16 @@ async def _llm_career_payload(
     summary: dict[str, Any],
     profile: dict[str, Any],
     evidence_groups: dict[str, Any],
+    handoff_context: list[dict[str, str]],
 ) -> DecisionPayload:
     llm = get_text_llm()
     response = await llm.ainvoke([
-        SystemMessage(content=_CAREER_PROMPT),
+        SystemMessage(content=CAREER_MATCHER_PROMPT),
         HumanMessage(content=(
             f"User query:\n{query}\n\n"
             f"Session summary:\n{json.dumps(summary, ensure_ascii=True)}\n\n"
             f"Profile snapshot:\n{json.dumps(profile, ensure_ascii=True)}\n\n"
+            f"Handoff notes:\n{json.dumps(handoff_context, ensure_ascii=True)}\n\n"
             f"Evidence groups:\n{json.dumps(evidence_groups, ensure_ascii=True)}"
         )),
     ])

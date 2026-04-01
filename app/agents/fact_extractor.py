@@ -13,11 +13,14 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
+from app.core.prompts import FACT_EXTRACTOR_PROMPT
 from app.core.quality import (
     EvidenceRecord,
+    add_handoff_note,
     add_working_memory_item,
     academic_source_relevance,
     analyze_query_focus,
+    block_task,
     classify_web_source,
     complete_task,
     course_code_matches_level,
@@ -32,39 +35,12 @@ from app.core.quality import (
     init_working_memory,
     is_academic_source_relevant,
     looks_like_course_catalog_source,
+    recent_handoff_context,
+    start_task,
 )
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.fact_extractor")
-
-_FACT_PROMPT = """You extract structured evidence records from trusted context for Pathfinder.
-
-Return ONLY valid JSON in this form:
-{
-  "records": [
-    {
-      "source_type": "degree_page|schedule_page|admissions_page|certificate_page|job_page|profile_doc|general_web",
-      "entity_type": "course|requirement|certificate|prerequisite|availability|deadline|job_role|skill|program_constraint",
-      "value": {"name": "...", "code": "...", "details": "...", "units": 3, "terms": ["Fall 2026"], "kind": "..."},
-      "source_url": "https://...",
-      "source_title": "Page title",
-      "excerpt": "short supporting excerpt",
-      "confidence": 0.0,
-      "time_scope": "catalog|live_schedule|timeless|unclear"
-    }
-  ]
-}
-
-Rules:
-1. Only extract facts directly supported by the provided source text.
-2. Preserve uncertainty and conflicting facts as separate records.
-3. For academic pages, extract concrete course codes, requirement summaries, unit counts, prerequisite language, and availability details when present.
-4. For job pages, extract role names, major skills, location/work-mode details, and any explicit requirements.
-5. For comparison or summary questions, still keep facts atomic rather than writing prose summaries.
-4. Use "profile_doc" for transcript/resume/document excerpts.
-5. Keep excerpts short and specific.
-6. Do not invent URLs, courses, or requirements.
-"""
 
 
 async def fact_extractor(state: PathfinderState) -> PathfinderState:
@@ -72,27 +48,53 @@ async def fact_extractor(state: PathfinderState) -> PathfinderState:
     profile = state.get("profile_data", {})
     web_results = state.get("web_results", [])
     documents = state.get("retrieved_documents", [])
+    semantic_memory = state.get("semantic_memory", {})
+    memory_pack = state.get("memory_pack", {})
     query = state.get("query", "")
     session_summary = state.get("session_summary", {})
     source_policy = state.get("source_policy", {})
     query_focus = analyze_query_focus(query)
     program_text = infer_target_program(profile, session_summary, query)
     level = infer_target_level(profile, session_summary, query)
+    institution_text = str(((session_summary.get("institution", {}) or {}).get("value", "")) or "")
+    if source_policy.get("target_institution"):
+        institution_text = str(source_policy.get("target_institution", "") or institution_text)
     working_memory = init_working_memory(state.get("working_memory", {}))
     task_graph = state.get("task_graph", [])
+    handoff_context = recent_handoff_context(working_memory, to_node="fact_extractor")
+    for task_id in (
+        "extract_requirements",
+        "extract_courses",
+        "extract_constraints",
+        "extract_deadlines_or_policies",
+        "extract_job_requirements",
+    ):
+        task_graph = start_task(task_graph, task_id)
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Extracting grounded facts from sources...")
 
-    heuristic_records = _heuristic_records(profile, documents, web_results, query_focus, program_text, level, source_policy)
-    llm_records = await _llm_records(query, profile, documents, web_results, query_focus)
+    heuristic_records = _heuristic_records(
+        profile,
+        documents,
+        web_results,
+        query_focus,
+        program_text,
+        level,
+        institution_text,
+        source_policy,
+        semantic_memory,
+        memory_pack,
+    )
+    llm_records = await _llm_records(query, profile, documents, web_results, query_focus, handoff_context)
 
     evidence_records = _filter_records_for_context(
         _dedupe_records(heuristic_records + llm_records),
         program_text,
         level,
+        institution_text,
     )
-    evidence_records = [_annotate_record_tiers(record, program_text, level) for record in evidence_records]
+    evidence_records = [_annotate_record_tiers(record, program_text, level, institution_text) for record in evidence_records]
 
     for record in evidence_records:
         bucket = "facts_confirmed" if record.get("trust_tier") in {"primary_official", "user_profile"} and record.get("fit_tier") == "direct" else "facts_secondary"
@@ -111,17 +113,39 @@ async def fact_extractor(state: PathfinderState) -> PathfinderState:
 
     if any(record.get("entity_type") == "requirement" for record in evidence_records):
         task_graph = complete_task(task_graph, "extract_requirements")
+    else:
+        task_graph = block_task(task_graph, "extract_requirements")
     if any(record.get("entity_type") == "course" for record in evidence_records):
         task_graph = complete_task(task_graph, "extract_courses")
+    else:
+        task_graph = block_task(task_graph, "extract_courses", required=False)
     if any(record.get("entity_type") in {"program_constraint", "prerequisite"} for record in evidence_records):
         task_graph = complete_task(task_graph, "extract_constraints")
+    else:
+        task_graph = block_task(task_graph, "extract_constraints", required=False)
     if any(record.get("entity_type") in {"deadline", "program_policy", "admission_constraint", "classification_constraint"} for record in evidence_records):
         task_graph = complete_task(task_graph, "extract_deadlines_or_policies")
+    else:
+        task_graph = block_task(task_graph, "extract_deadlines_or_policies", required=False)
     if any(record.get("entity_type") in {"job_role", "skill"} and record.get("source_type") == "job_page" for record in evidence_records):
         task_graph = complete_task(task_graph, "extract_job_requirements")
+    else:
+        task_graph = block_task(task_graph, "extract_job_requirements", required=False)
 
     step_progress.append(f"Structured {len(evidence_records)} evidence records")
     log.info("Fact extractor produced %d evidence records", len(evidence_records))
+    next_node = _determine_next(state)
+    working_memory = add_handoff_note(
+        working_memory,
+        from_node="fact_extractor",
+        to_node=next_node,
+        contract="typed_evidence",
+        summary=(
+            f"records={len(evidence_records)}; "
+            f"courses={sum(1 for r in evidence_records if r.get('entity_type') == 'course')}; "
+            f"requirements={sum(1 for r in evidence_records if r.get('entity_type') == 'requirement')}"
+        ),
+    )
 
     return {
         **state,
@@ -129,7 +153,7 @@ async def fact_extractor(state: PathfinderState) -> PathfinderState:
         "working_memory": working_memory,
         "task_graph": task_graph,
         "step_progress": step_progress,
-        "next_node": _determine_next(state),
+        "next_node": next_node,
     }
 
 
@@ -139,6 +163,7 @@ async def _llm_records(
     documents: list[dict[str, Any]],
     web_results: list[dict[str, Any]],
     query_focus: dict[str, Any],
+    handoff_context: list[dict[str, str]],
 ) -> list[EvidenceRecord]:
     """Use the LLM to extract higher-level evidence from mixed context."""
     context_parts = []
@@ -182,10 +207,11 @@ async def _llm_records(
 
     llm = get_text_llm()
     response = await llm.ainvoke([
-        SystemMessage(content=_FACT_PROMPT),
+        SystemMessage(content=FACT_EXTRACTOR_PROMPT),
         HumanMessage(content=(
             f"User query:\n{query}\n\n"
             f"Query focus:\n{json.dumps(query_focus, ensure_ascii=True)}\n\n"
+            f"Handoff notes:\n{json.dumps(handoff_context, ensure_ascii=True)}\n\n"
             "Context:\n" + "\n\n".join(context_parts[:12])
         )),
     ])
@@ -209,7 +235,10 @@ def _heuristic_records(
     query_focus: dict[str, Any],
     program_text: str,
     level: str,
+    institution_text: str,
     source_policy: dict[str, Any] | None = None,
+    semantic_memory: dict[str, Any] | None = None,
+    memory_pack: dict[str, Any] | None = None,
 ) -> list[EvidenceRecord]:
     """Lightweight deterministic evidence extraction."""
     records: list[EvidenceRecord] = []
@@ -260,6 +289,65 @@ def _heuristic_records(
                 "time_scope": "timeless",
             })
 
+    semantic_memory = semantic_memory or {}
+    memory_pack = memory_pack or {}
+
+    for fact in semantic_memory.get("candidate_facts", [])[:12]:
+        fact_type = str(fact.get("fact_type", "")).lower()
+        value = str(fact.get("value", "")).strip()
+        if not value:
+            continue
+        if fact_type == "skill":
+            records.append({
+                "source_type": "profile_doc",
+                "entity_type": "skill",
+                "value": {"name": value, "origin": "semantic_memory", "confidence": fact.get("confidence", 0.0)},
+                "source_url": "",
+                "source_title": "Semantic memory",
+                "excerpt": value,
+                "confidence": float(fact.get("confidence", 0.7) or 0.7),
+                "time_scope": "timeless",
+            })
+        elif fact_type == "course":
+            records.append({
+                "source_type": "profile_doc",
+                "entity_type": "course",
+                "value": {"code": value, "origin": "semantic_memory", "completed": True},
+                "source_url": "",
+                "source_title": "Semantic memory",
+                "excerpt": value,
+                "confidence": float(fact.get("confidence", 0.7) or 0.7),
+                "time_scope": "timeless",
+            })
+        elif fact_type in {"constraint", "preference"}:
+            records.append({
+                "source_type": "profile_doc",
+                "entity_type": "program_constraint",
+                "value": {"summary": value, "constraint_text": value, "kind": fact_type},
+                "source_url": "",
+                "source_title": "Semantic memory",
+                "excerpt": value,
+                "confidence": float(fact.get("confidence", 0.65) or 0.65),
+                "time_scope": "timeless",
+            })
+
+    for memory in memory_pack.get("semantic_memory", {}).get("memory_items", [])[:8]:
+        summary = str(memory.get("summary", "")).strip()
+        memory_type = str(memory.get("memory_type", "")).lower()
+        if not summary:
+            continue
+        entity_type = "program_constraint" if memory_type in {"constraint", "preference"} else "requirement"
+        records.append({
+            "source_type": "profile_doc",
+            "entity_type": entity_type,
+            "value": {"summary": summary, "kind": memory_type or "memory_item"},
+            "source_url": "",
+            "source_title": "Long-term memory",
+            "excerpt": summary,
+            "confidence": float(memory.get("confidence", 0.6) or 0.6),
+            "time_scope": "timeless",
+        })
+
     source_policy = source_policy or {}
     primary_types = set(source_policy.get("primary_source_types", []))
     secondary_types = set(source_policy.get("secondary_source_types", []))
@@ -274,7 +362,7 @@ def _heuristic_records(
             continue
         academic_relevant = source_type not in {"degree_page", "schedule_page", "certificate_page", "admissions_page", "general_web"} or (
             query_focus.get("primary") != "academic"
-        ) or is_academic_source_relevant(title, content, url, program_text, level)
+        ) or is_academic_source_relevant(title, content, url, program_text, level, institution_text)
         if source_type == "certificate_page" and query_focus.get("primary") in {"academic", "comparison"} and extract_course_codes(combined):
             academic_relevant = True
 
@@ -400,6 +488,7 @@ def _filter_records_for_context(
     records: list[EvidenceRecord],
     program_text: str,
     level: str,
+    institution_text: str,
 ) -> list[EvidenceRecord]:
     """Drop academic records that do not match the student's program context."""
     filtered: list[EvidenceRecord] = []
@@ -413,7 +502,7 @@ def _filter_records_for_context(
         if source_type in {"degree_page", "schedule_page", "certificate_page", "admissions_page", "general_web"} and entity_type in {
             "course", "availability", "requirement", "certificate", "prerequisite", "program_constraint"
         }:
-            is_relevant = is_academic_source_relevant(title, excerpt, url, program_text, level)
+            is_relevant = is_academic_source_relevant(title, excerpt, url, program_text, level, institution_text)
             if source_type == "certificate_page" and entity_type in {"course", "certificate"} and record.get("value", {}).get("code", ""):
                 is_relevant = True
             if not is_relevant:
@@ -450,6 +539,7 @@ def _annotate_record_tiers(
     record: EvidenceRecord,
     program_text: str,
     level: str,
+    institution_text: str = "",
 ) -> EvidenceRecord:
     """Attach trust/fit/freshness tiers to an evidence record."""
     source_type = str(record.get("source_type", "general_web"))
@@ -460,6 +550,7 @@ def _annotate_record_tiers(
         level,
         record.get("source_title", ""),
         record.get("excerpt", ""),
+        institution_text,
     )
     enriched = dict(record)
     enriched["trust_tier"] = trust_tier

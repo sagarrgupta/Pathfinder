@@ -76,7 +76,7 @@ export default function ChatPage() {
     // Check each newly added file for duplicates in the profile
     for (const file of justAdded) {
       try {
-        const { exists } = await checkDocumentExists(file.name);
+        const { exists } = await checkDocumentExists(file.name, state.activeStudentId);
         if (exists) {
           setDupDialog({ open: true, filename: file.name, pendingFile: file });
           // Remove this file from the list until user decides
@@ -147,7 +147,14 @@ export default function ChatPage() {
     let tokenBuffer = '';
 
     abortRef.current = chatSSE(
-      { query, sessionId: sid, files: pendingFiles, isGlobalUpload, replaceFilenames: pendingReplaceNames },
+      {
+        query,
+        sessionId: sid,
+        studentId: state.activeStudentId,
+        files: pendingFiles,
+        isGlobalUpload,
+        replaceFilenames: pendingReplaceNames,
+      },
       {
         onProgress: (data) => {
           dispatch({

@@ -13,34 +13,15 @@ from langchain_core.messages import AIMessage
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm, strip_repetition, is_garbage_output
+from app.core.prompts import (
+    RESPONDER_CONTEXTUAL_SYSTEM_PROMPT,
+    RESPONDER_FORMATTER_SYSTEM_PROMPT,
+    RESPONDER_GREETING_SYSTEM_PROMPT,
+    RESPONDER_SYNTHESIS_PROMPT,
+)
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.responder")
-
-_SYNTHESIS_PROMPT = """You are the final Responder in Pathfinder, an AI academic and career guidance assistant for students.
-
-Your job is to take a draft answer and polish it into a personalized, well-formatted response.
-
-Student name: {student_name}
-
-Rules:
-1. Keep the substance of the draft answer — don't remove important information.
-2. Preserve brevity. If the draft is already direct and clear, make only light edits.
-3. Use simple markdown only when it helps. Do NOT add headers or tables to short answers.
-4. Weave citations naturally into the text with clickable links when present.
-5. Tone: warm, professional, encouraging. Never generic, inflated, or lecture-like.
-6. Do not expand the answer with new advice that was not in the draft.
-7. Do not turn a narrow answer into a long roadmap.
-8. If the draft asks a follow-up question, keep it to one targeted question.
-9. If confidence is low, acknowledge uncertainty honestly but still be helpful.
-10. End with at most one specific next step, and only if it adds value.
-11. If the student's name is available, use it sparingly.
-12. Use "Sources:" at the end only when there are actual URLs to list.
-
-Draft answer: {draft}
-Confidence: {confidence}
-Intent: {intent}
-"""
 
 
 async def responder(state: PathfinderState) -> PathfinderState:
@@ -51,6 +32,7 @@ async def responder(state: PathfinderState) -> PathfinderState:
     confidence = state.get("confidence_score", 0.5)
     is_blocked = state.get("is_blocked", False)
     block_reason = state.get("block_reason", "")
+    stop_reason = str(state.get("stop_reason", "") or "")
     decision_payload = state.get("decision_payload", {})
 
     step_progress = list(state.get("step_progress", []))
@@ -61,6 +43,16 @@ async def responder(state: PathfinderState) -> PathfinderState:
             **state,
             "final_answer": block_reason,
             "messages": [AIMessage(content=block_reason)],
+            "step_progress": step_progress,
+        }
+
+    if stop_reason == "dependency_unavailable":
+        message = draft or "A required runtime dependency is currently unavailable."
+        step_progress.append("Dependency issue surfaced with actionable guidance.")
+        return {
+            **state,
+            "final_answer": message,
+            "messages": [AIMessage(content=message)],
             "step_progress": step_progress,
         }
 
@@ -129,6 +121,32 @@ async def responder(state: PathfinderState) -> PathfinderState:
 
     if decision_payload and not draft:
         draft = _render_decision_payload(decision_payload, confidence)
+    workflow = str(state.get("workflow", "") or "")
+    deterministic_workflows = {
+        "academic_planning",
+        "program_understanding",
+        "eligibility_check",
+        "comparison_guidance",
+        "career_alignment",
+    }
+    if (
+        decision_payload
+        and workflow in deterministic_workflows
+        and (
+            decision_payload.get("recommended_items")
+            or decision_payload.get("semester_plan_options")
+            or decision_payload.get("verified_requirements")
+        )
+    ):
+        final_structured = _render_decision_payload(decision_payload, confidence)
+        step_progress.append("Response ready!")
+        return {
+            **state,
+            "final_answer": final_structured,
+            "citations": citations,
+            "messages": [AIMessage(content=final_structured)],
+            "step_progress": step_progress,
+        }
 
     # If it's a greeting, generate a personalized welcome
     if intent == "greeting":
@@ -150,16 +168,7 @@ async def responder(state: PathfinderState) -> PathfinderState:
                     greeting_context += f" They have {docs_count} documents uploaded."
 
             response = await llm.ainvoke([
-                SystemMessage(content=(
-                    "You are Pathfinder, a warm and knowledgeable AI academic and career guidance assistant "
-                    "designed for students. "
-                    "Respond to the user's greeting personally. If you know their name, use it. "
-                    "Briefly mention what you can help with: course planning, career guidance, "
-                    "interview prep, resume analysis, and web research. "
-                    "If they have profile data, acknowledge it (e.g., 'I see you have your courses loaded'). "
-                    "Keep it concise — 2-3 sentences max. Don't use bullet points for greetings.\n\n"
-                    f"Context: {greeting_context}"
-                )),
+                SystemMessage(content=RESPONDER_GREETING_SYSTEM_PROMPT.format(greeting_context=greeting_context)),
                 HumanMessage(content=state.get("query", "Hello")),
             ])
             draft = response.content if isinstance(response.content, str) else str(response.content)
@@ -222,19 +231,7 @@ async def responder(state: PathfinderState) -> PathfinderState:
 
         name_intro = f"The student's name is {student_name}. " if student_name else ""
         response = await llm.ainvoke([
-            SystemMessage(content=(
-                "You are Pathfinder, a warm and knowledgeable AI academic and career guidance assistant "
-                "for students. "
-                + name_intro +
-                "Answer the student's question using the context provided below. "
-                "If the context includes their resume or profile data, USE it to give "
-                "a personalized, specific answer. Do NOT ask the student to tell you "
-                "things that are already in the context. "
-                "When summarizing web page content, include only what is relevant to the question. "
-                "Be concise by default. Do not invent facts, course names, or requirements. "
-                "If context is insufficient, say exactly what is missing in one short follow-up question. "
-                "Use simple markdown only if it improves readability."
-            )),
+            SystemMessage(content=RESPONDER_CONTEXTUAL_SYSTEM_PROMPT.format(name_intro=name_intro)),
             HumanMessage(content=f"Context:\n{context}\n\nStudent's question: {query}"),
         ])
         draft = strip_repetition(response.content if isinstance(response.content, str) else str(response.content))
@@ -253,11 +250,8 @@ async def responder(state: PathfinderState) -> PathfinderState:
     llm = get_text_llm()
 
     response = await llm.ainvoke([
-        SystemMessage(content=(
-            "You are a response formatter for Pathfinder. "
-            "Polish lightly, preserve meaning, and prefer concise direct answers over elaborate formatting."
-        )),
-        HumanMessage(content=_SYNTHESIS_PROMPT.format(
+        SystemMessage(content=RESPONDER_FORMATTER_SYSTEM_PROMPT),
+        HumanMessage(content=RESPONDER_SYNTHESIS_PROMPT.format(
             student_name=student_name or "the student",
             draft=draft[:4000],
             confidence=f"{confidence:.0%}",
@@ -331,6 +325,27 @@ def _render_decision_payload(payload: dict[str, Any], confidence: float) -> str:
         lines.append("\n**Assumptions**")
         for assumption in assumptions[:3]:
             lines.append(f"- {assumption}")
+
+    requirements = payload.get("verified_requirements", [])
+    if requirements:
+        lines.append("\n**Verified Program Rules**")
+        for req in requirements[:5]:
+            lines.append(f"- {req}")
+
+    semester_plan_options = payload.get("semester_plan_options", [])
+    if semester_plan_options:
+        lines.append("\n**Semester-Wise Sample Plan**")
+        for option in semester_plan_options[:4]:
+            term = str(option.get("term", "")).strip()
+            course_labels = []
+            for course in option.get("courses", [])[:5]:
+                if isinstance(course, dict):
+                    course_labels.append(str(course.get("label", "")).strip())
+                else:
+                    course_labels.append(str(course).strip())
+            if term and any(course_labels):
+                lines.append(f"- **{term}**: {', '.join([c for c in course_labels if c])}")
+        lines.append("- This is catalog-based unless marked as confirmed open; verify live sections before registering.")
 
     next_best_action = payload.get("next_best_action", "")
     if next_best_action:

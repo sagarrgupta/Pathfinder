@@ -13,50 +13,21 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
+from app.core.prompts import PROGRAM_ADVISOR_PROMPT
 from app.core.quality import (
     DecisionPayload,
+    add_handoff_note,
     add_working_memory_item,
     build_support_ref,
     complete_task,
     group_evidence_records,
     init_working_memory,
+    recent_handoff_context,
+    start_task,
 )
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.program_advisor")
-
-_PROGRAM_PROMPT = """You are Pathfinder's Program Advisor.
-
-Produce a structured decision payload for academic-program and requirements questions.
-
-Return ONLY valid JSON:
-{
-  "decision_type": "program_guidance",
-  "answer_outline": ["..."],
-  "recommended_items": [
-    {
-      "label": "MS in Computer Science requirement summary",
-      "reason": "Why this matters for the user's decision",
-      "status": "verified|recommended|comparison_note",
-      "support_codes": [],
-      "assumption": ""
-    }
-  ],
-  "blocked_or_uncertain_items": [
-    {"label": "...", "reason": "...", "kind": "uncertain|blocked|needs_verification"}
-  ],
-  "assumptions": ["..."],
-  "next_best_action": "one concrete next step",
-  "source_refs": [{"title": "...", "url": "...", "excerpt": "...", "source_type": "degree_page", "entity_type": "requirement"}]
-}
-
-Rules:
-1. Answer the user's decision question first, not with a general summary.
-2. Prefer direct recommendations, comparisons, and requirement implications.
-3. Distinguish verified requirements from assumptions.
-4. Do not invent policies, deadlines, or prerequisites.
-5. Every recommendation must be supported by source refs.
-"""
 
 
 async def program_advisor(state: PathfinderState) -> PathfinderState:
@@ -68,12 +39,16 @@ async def program_advisor(state: PathfinderState) -> PathfinderState:
     working_memory = init_working_memory(state.get("working_memory", {}))
     task_graph = state.get("task_graph", [])
     blocked_reasons = list(state.get("blocked_reasons", []))
+    task_graph = start_task(task_graph, "compare_to_student_state")
+    task_graph = start_task(task_graph, "check_blockers")
+    task_graph = start_task(task_graph, "rank_options")
+    handoff_context = recent_handoff_context(working_memory, to_node="program_advisor")
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Building program guidance...")
 
-    baseline = _heuristic_program_payload(summary, evidence_groups)
-    llm_payload = await _llm_program_payload(query, summary, evidence_groups)
+    baseline = _heuristic_program_payload(query, summary, evidence_groups)
+    llm_payload = await _llm_program_payload(query, summary, evidence_groups, handoff_context)
     merged = _merge_payloads(baseline, llm_payload)
     for assumption in merged.get("assumptions", []):
         working_memory = add_working_memory_item(working_memory, "active_assumptions", assumption)
@@ -90,6 +65,16 @@ async def program_advisor(state: PathfinderState) -> PathfinderState:
     if blocked_reasons:
         task_graph = complete_task(task_graph, "check_blockers")
     task_graph = complete_task(task_graph, "rank_options")
+    working_memory = add_handoff_note(
+        working_memory,
+        from_node="program_advisor",
+        to_node="evaluator",
+        contract="decision_payload",
+        summary=(
+            f"recommended={len(merged.get('recommended_items', []))}; "
+            f"blocked={len(merged.get('blocked_or_uncertain_items', []))}"
+        ),
+    )
 
     step_progress.append("Program guidance prepared")
     log.info(
@@ -114,16 +99,18 @@ async def _llm_program_payload(
     query: str,
     summary: dict[str, Any],
     evidence_groups: dict[str, Any],
+    handoff_context: list[dict[str, str]],
 ) -> DecisionPayload:
     if not any(evidence_groups.values()):
         return {}
 
     llm = get_text_llm()
     response = await llm.ainvoke([
-        SystemMessage(content=_PROGRAM_PROMPT),
+        SystemMessage(content=PROGRAM_ADVISOR_PROMPT),
         HumanMessage(content=(
             f"User query:\n{query}\n\n"
             f"Session summary:\n{json.dumps(summary, ensure_ascii=True)}\n\n"
+            f"Handoff notes:\n{json.dumps(handoff_context, ensure_ascii=True)}\n\n"
             f"Evidence groups:\n{json.dumps(evidence_groups, ensure_ascii=True)}"
         )),
     ])
@@ -140,6 +127,7 @@ async def _llm_program_payload(
 
 
 def _heuristic_program_payload(
+    query: str,
     summary: dict[str, Any],
     evidence_groups: dict[str, Any],
 ) -> DecisionPayload:
@@ -150,6 +138,15 @@ def _heuristic_program_payload(
 
     institution = summary.get("institution", {}).get("value", "")
     program = summary.get("program", {}).get("value", "")
+    query_lower = (query or "").lower()
+    asks_university_selection = (
+        "which universities" in query_lower
+        or "rank universities" in query_lower
+        or "safe" in query_lower and "ambitious" in query_lower
+        or "realistic" in query_lower and "universit" in query_lower
+        or "top" in query_lower and "universit" in query_lower
+    )
+    asks_admission_chances = any(token in query_lower for token in ("chances", "chance", "odds", "probability"))
 
     for record in evidence_groups.get("requirements", []):
         title = record.get("source_title", "")
@@ -192,7 +189,61 @@ def _heuristic_program_payload(
     if evidence_groups.get("availability"):
         assumptions.append("Live schedule evidence exists, but program guidance should still be anchored primarily in official requirements and constraints.")
 
-    if not recommended:
+    if not recommended and asks_university_selection:
+        recommended.extend([
+            {
+                "label": "Build a 3-tier target list (safe, moderate, ambitious)",
+                "reason": "A realistic university strategy should include all three tiers to balance outcome risk.",
+                "status": "recommended",
+                "support_codes": [],
+                "assumption": "",
+            },
+            {
+                "label": "Score each target on fit dimensions (GPA, research, projects, budget, location, deadlines)",
+                "reason": "A weighted fit score is more reliable than ranking by prestige alone.",
+                "status": "recommended",
+                "support_codes": [],
+                "assumption": "",
+            },
+            {
+                "label": "Prioritize programs with strong CS outcomes in your intended subfield",
+                "reason": "Department-level fit and lab alignment matter more than overall brand rank for admission success.",
+                "status": "recommended",
+                "support_codes": [],
+                "assumption": "",
+            },
+        ])
+        uncertain.extend([
+            {
+                "label": "Missing profile evidence for precise shortlist",
+                "reason": "Need GPA scale, transcript rigor, projects/research depth, test scores, and budget to produce program-by-program shortlisting.",
+                "kind": "needs_verification",
+            }
+        ])
+        assumptions.append("Providing structured strategy because source-backed program shortlist evidence is currently limited.")
+    elif not recommended and asks_admission_chances:
+        recommended.extend([
+            {
+                "label": "Estimate admission probability in bands (low / moderate / high) per target program",
+                "reason": "Probability should be tied to profile-program fit, not a single global estimate.",
+                "status": "recommended",
+                "support_codes": [],
+                "assumption": "",
+            },
+            {
+                "label": "Use evidence-based factors: GPA trend, prerequisite match, research output, project quality, and statement fit",
+                "reason": "These factors typically drive graduate CS admissions outcomes.",
+                "status": "recommended",
+                "support_codes": [],
+                "assumption": "",
+            },
+        ])
+        uncertain.append({
+            "label": "Insufficient profile details for accurate probability estimate",
+            "reason": "Need program list, GPA scale, transcript strength, and research/project evidence.",
+            "kind": "needs_verification",
+        })
+    elif not recommended:
         recommended.append({
             "label": f"{program or 'Program'} guidance for {institution or 'the student'}".strip(),
             "reason": "Use the verified degree and department sources as the main basis for advising the next academic step.",
@@ -204,12 +255,16 @@ def _heuristic_program_payload(
     return {
         "decision_type": "program_guidance",
         "answer_outline": [
-            "Here is the most relevant program guidance from the verified sources for your question.",
+            "Here is the most relevant guidance for your question.",
         ],
         "recommended_items": _dedupe_sequence(recommended)[:5],
         "blocked_or_uncertain_items": _dedupe_sequence(uncertain)[:4],
         "assumptions": assumptions,
-        "next_best_action": "Use the official program page as the primary source and verify any time-sensitive or policy-specific details before acting.",
+        "next_best_action": (
+            "If you share your GPA, preferred locations, budget range, and target subfield, I can produce a concrete safe/moderate/ambitious shortlist next."
+            if (asks_university_selection or asks_admission_chances)
+            else "Use the official program page as the primary source and verify any time-sensitive or policy-specific details before acting."
+        ),
         "source_refs": _dedupe_source_refs(source_refs)[:8],
     }
 

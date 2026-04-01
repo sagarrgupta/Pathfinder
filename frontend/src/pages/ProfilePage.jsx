@@ -1,7 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
-import { getProfile, addProfileText, uploadDocument, deleteProfileEntity, updateProfile, updateProfileEntity, checkDocumentExists } from '@/services/api';
+import {
+  addProfileText,
+  autoResolveProfileConflicts,
+  checkDocumentExists,
+  deleteProfileEntity,
+  getProfile,
+  getProfileConflicts,
+  updateProfile,
+  updateProfileEntity,
+  uploadDocument,
+} from '@/services/api';
 import {
   User, Upload, FileText, Trash2, Plus, BookOpen,
   Briefcase, Target, Star, GraduationCap, Loader2,
@@ -66,6 +76,8 @@ export default function ProfilePage() {
   const [isUploading, setIsUploading] = useState(false);
   const [isProcessingText, setIsProcessingText] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
+  const [conflicts, setConflicts] = useState([]);
+  const [isResolvingConflicts, setIsResolvingConflicts] = useState(false);
   const fileInputRef = useRef(null);
   const profile = state.profile;
 
@@ -77,16 +89,34 @@ export default function ProfilePage() {
 
   useEffect(() => {
     loadProfile();
-  }, []);
+  }, [state.activeStudentId]);
 
   const loadProfile = async () => {
     dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
     try {
-      const data = await getProfile();
+      const data = await getProfile(state.activeStudentId);
       dispatch({ type: 'SET_PROFILE', payload: data });
+      const conflictData = await getProfileConflicts(state.activeStudentId);
+      setConflicts(Array.isArray(conflictData) ? conflictData : []);
     } catch (err) {
       console.error('Failed to load profile:', err);
       dispatch({ type: 'SET_PROFILE_LOADING', payload: false });
+      setConflicts([]);
+    }
+  };
+
+  const handleAutoResolveConflicts = async () => {
+    setIsResolvingConflicts(true);
+    try {
+      const result = await autoResolveProfileConflicts(state.activeStudentId);
+      toast.success(
+        `Resolved ${result.resolved || 0} conflicts and superseded ${result.superseded || 0} entries`
+      );
+      await loadProfile();
+    } catch (err) {
+      toast.error(`Auto-resolve failed: ${err.message}`);
+    } finally {
+      setIsResolvingConflicts(false);
     }
   };
 
@@ -95,7 +125,7 @@ export default function ProfilePage() {
     setProcessingStep('Uploading document...');
     try {
       setProcessingStep('Processing and extracting entities...');
-      const result = await uploadDocument(file, 'global', null, replace);
+      const result = await uploadDocument(file, 'global', null, replace, state.activeStudentId);
       toast.success(
         replace
           ? `Replaced ${file.name}: ${result.entities_extracted} entities extracted`
@@ -118,7 +148,7 @@ export default function ProfilePage() {
 
     // Check for duplicate
     try {
-      const { exists } = await checkDocumentExists(file.name);
+      const { exists } = await checkDocumentExists(file.name, state.activeStudentId);
       if (exists) {
         setConfirmDialog({
           open: true,
@@ -146,7 +176,7 @@ export default function ProfilePage() {
     setProcessingStep('Analyzing your text...');
     try {
       setProcessingStep('Extracting entities and updating knowledge graph...');
-      const result = await addProfileText(freeText);
+      const result = await addProfileText(freeText, state.activeStudentId);
       toast.success(`Extracted ${result.entities_extracted} entities from your text`);
       setFreeText('');
       setProcessingStep('Refreshing profile...');
@@ -168,7 +198,7 @@ export default function ProfilePage() {
       onConfirm: async () => {
         setConfirmDialog((prev) => ({ ...prev, open: false }));
         try {
-          await deleteProfileEntity(label, name);
+          await deleteProfileEntity(label, name, state.activeStudentId);
           toast.success(`Deleted ${name}`);
           await loadProfile();
         } catch (err) {
@@ -182,7 +212,7 @@ export default function ProfilePage() {
 
   const handleEditField = async (field, value) => {
     try {
-      await updateProfile(field, value);
+      await updateProfile(field, value, state.activeStudentId);
       toast.success(`Updated ${formatFieldLabel(field)}`);
       await loadProfile();
     } catch (err) {
@@ -192,7 +222,7 @@ export default function ProfilePage() {
 
   const handleEditEntity = async (label, name, properties) => {
     try {
-      await updateProfileEntity(label, name, properties);
+      await updateProfileEntity(label, name, properties, state.activeStudentId);
       toast.success(`Updated ${name}`);
       await loadProfile();
     } catch (err) {
@@ -201,6 +231,21 @@ export default function ProfilePage() {
   };
 
   const isProcessing = isUploading || isProcessingText;
+  const completeness = Math.round((profile?.completeness || 0) * 100);
+  const confidence = Math.round((profile?.confidence || 0) * 100);
+  const memoryOverview = profile?.memory_overview || {};
+  const completenessChecklist = [
+    { label: 'Name', done: !!profile?.personal?.name },
+    { label: 'University', done: !!profile?.personal?.university },
+    { label: 'Program', done: !!profile?.personal?.program },
+    { label: 'GPA', done: !!profile?.personal?.gpa },
+    { label: 'Semester', done: !!profile?.personal?.semester },
+    { label: 'Email', done: !!profile?.personal?.email },
+    { label: 'Skills', done: (profile?.skills?.length || 0) > 0 },
+    { label: 'Goals', done: (profile?.goals?.length || 0) > 0 },
+    { label: 'Documents', done: (profile?.documents?.length || 0) > 0 },
+  ];
+  const missingCoverageItems = completenessChecklist.filter((item) => !item.done);
 
   // ── Build dynamic tabs ──────────────────────────────────────
   const tabs = [{ id: 'personal', label: 'Personal', icon: User, count: null }];
@@ -247,6 +292,42 @@ export default function ProfilePage() {
             </p>
           </div>
         </div>
+
+        {profile && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+            <div className="rounded-xl border bg-card p-5">
+              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
+                <Sparkles className="h-4 w-4 text-primary" /> Profile Completeness
+              </h3>
+              <p className="text-2xl font-bold">{completeness}%</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {missingCoverageItems.length === 0
+                  ? 'Your profile has strong academic coverage.'
+                  : `${missingCoverageItems.length} profile areas are still missing.`}
+              </p>
+            </div>
+            <div className="rounded-xl border bg-card p-5">
+              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
+                <Star className="h-4 w-4 text-primary" /> Memory Confidence
+              </h3>
+              <p className="text-2xl font-bold">{confidence}%</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Based on the confidence of the facts and memories Pathfinder has stored.
+              </p>
+            </div>
+            <div className="rounded-xl border bg-card p-5">
+              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
+                <AlertTriangle className="h-4 w-4 text-primary" /> Memory Health
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                {memoryOverview.candidate_facts || 0} candidate facts, {memoryOverview.memory_items || 0} memories
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">
+                {memoryOverview.conflicts || 0} unresolved conflicts, {memoryOverview.evidence || 0} evidence items
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Processing Banner */}
         {isProcessing && processingStep && (
@@ -307,6 +388,41 @@ export default function ProfilePage() {
               {isProcessingText ? 'Processing...' : 'Add to Profile'}
             </button>
           </div>
+        </div>
+
+        <div className="rounded-xl border bg-card p-5 mb-8">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h3 className="font-semibold text-sm flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-primary" /> Profile Conflicts
+            </h3>
+            <button
+              onClick={handleAutoResolveConflicts}
+              disabled={isResolvingConflicts || conflicts.length === 0}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium border hover:bg-accent disabled:opacity-50 flex items-center gap-1.5"
+            >
+              {isResolvingConflicts ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              {isResolvingConflicts ? 'Resolving...' : 'Auto-resolve'}
+            </button>
+          </div>
+          {conflicts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No unresolved profile conflicts.</p>
+          ) : (
+            <div className="space-y-2">
+              {conflicts.slice(0, 5).map((item) => (
+                <div key={item.id || `${item.fact_type}-${item.current_option}`} className="rounded-lg border bg-muted/20 p-3">
+                  <p className="text-sm font-medium">{item.question || `Resolve ${item.fact_type}`}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Current: <span className="text-foreground">{item.current_option || '-'}</span>
+                  </p>
+                  {Array.isArray(item.other_options) && item.other_options.length > 0 && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Alternatives: {item.other_options.join(', ')}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Profile Tabs */}
