@@ -717,7 +717,13 @@ def infer_evidence_tiers(
     institution_text: str = "",
 ) -> tuple[TrustTier, FitTier, FreshnessTier]:
     """Infer trust, fit, and freshness tiers for an evidence record."""
-    domain = urlparse(source_url or "").netloc.lower()
+    source_url = _to_text(source_url)
+    title = _to_text(title)
+    excerpt = _to_text(excerpt)
+    program_text = _to_text(program_text)
+    institution_text = _to_text(institution_text)
+
+    domain = urlparse(source_url).netloc.lower()
     official_domain = _is_official_domain(domain)
     trust_tier: TrustTier
     if source_type == "profile_doc":
@@ -769,8 +775,11 @@ def record_source_audit(
 
 def classify_web_source(url: str, title: str, content: str) -> tuple[SourceType, TimeScope]:
     """Classify a fetched web source into a coarse evidence bucket."""
-    domain = urlparse(url).netloc.lower()
-    combined = f"{title} {content}".lower()
+    safe_url = _to_text(url)
+    safe_title = _to_text(title)
+    safe_content = _to_text(content)
+    domain = urlparse(safe_url).netloc.lower()
+    combined = f"{safe_title} {safe_content}".lower()
 
     if any(word in combined for word in ("schedule of classes", "class schedule", "open seats", "section", "course schedule", "registration")):
         return "schedule_page", "live_schedule"
@@ -1473,6 +1482,15 @@ def course_code_matches_level(
 
 def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
     return any(re.search(rf"\b{re.escape(term)}\b", text or "", re.I) for term in terms)
+
+
+def _to_text(value: Any) -> str:
+    """Normalize unknown values (including bytes) to safe strings."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _is_official_domain(domain: str) -> bool:

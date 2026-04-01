@@ -304,6 +304,12 @@ def _render_decision_payload(payload: dict[str, Any], confidence: float) -> str:
     if recommended:
         lines.append("\n**Recommended options**")
         for item in recommended[:5]:
+            if isinstance(item, str):
+                lines.append(f"- {item}")
+                continue
+            if not isinstance(item, dict):
+                lines.append(f"- {str(item)}")
+                continue
             status = item.get("status", "")
             status_label = {
                 "confirmed_open": "confirmed open",
@@ -318,7 +324,12 @@ def _render_decision_payload(payload: dict[str, Any], confidence: float) -> str:
     if blocked:
         lines.append("\n**Blocked or uncertain**")
         for item in blocked[:4]:
-            lines.append(f"- **{item.get('label', '')}**: {item.get('reason', '')}")
+            if isinstance(item, str):
+                lines.append(f"- {item}")
+            elif isinstance(item, dict):
+                lines.append(f"- **{item.get('label', '')}**: {item.get('reason', '')}")
+            else:
+                lines.append(f"- {str(item)}")
 
     assumptions = payload.get("assumptions", [])
     if assumptions:
@@ -336,6 +347,9 @@ def _render_decision_payload(payload: dict[str, Any], confidence: float) -> str:
     if semester_plan_options:
         lines.append("\n**Semester-Wise Sample Plan**")
         for option in semester_plan_options[:4]:
+            if not isinstance(option, dict):
+                lines.append(f"- {str(option)}")
+                continue
             term = str(option.get("term", "")).strip()
             course_labels = []
             for course in option.get("courses", [])[:5]:
@@ -361,6 +375,8 @@ def _merge_citations_with_payload(
     merged = list(citations)
     seen = {(c.get("source", ""), c.get("metadata", {}).get("title", "")) for c in merged}
     for ref in payload.get("source_refs", []):
+        if not isinstance(ref, dict):
+            continue
         key = (ref.get("url", ""), ref.get("title", ""))
         if key in seen:
             continue
