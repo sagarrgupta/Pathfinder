@@ -6,6 +6,26 @@ const AppContext = createContext(null);
 // ── LocalStorage helpers ────────────────────────────────────────
 
 const STORAGE_KEY = 'pathfinder_state';
+const RUNTIME_STUDENT_KEY = 'pathfinder_runtime_student_id';
+
+function generateRuntimeStudentId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `student_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  }
+  return `student_${Math.random().toString(16).slice(2, 14)}`;
+}
+
+function getOrCreateRuntimeStudentId() {
+  try {
+    const saved = localStorage.getItem(RUNTIME_STUDENT_KEY);
+    if (saved) return saved;
+    const created = generateRuntimeStudentId();
+    localStorage.setItem(RUNTIME_STUDENT_KEY, created);
+    return created;
+  } catch {
+    return generateRuntimeStudentId();
+  }
+}
 
 function loadPersistedState() {
   try {
@@ -14,7 +34,7 @@ function loadPersistedState() {
       const saved = JSON.parse(raw);
       return {
         profiles: saved.profiles || [],
-        activeStudentId: saved.activeStudentId || 'default',
+        activeStudentId: saved.activeStudentId || null,
         sessions: saved.sessions || [],
         activeSessionId: saved.activeSessionId || null,
         messagesBySession: saved.messagesBySession || {},
@@ -60,7 +80,7 @@ const persisted = loadPersistedState();
 
 const initialState = {
   profiles: persisted?.profiles || [],
-  activeStudentId: persisted?.activeStudentId || 'default',
+  activeStudentId: persisted?.activeStudentId || getOrCreateRuntimeStudentId(),
   // Sessions (restored from localStorage if available)
   sessions: persisted?.sessions || [],
   activeSessionId: persisted?.activeSessionId || null,
@@ -96,7 +116,7 @@ function appReducer(state, action) {
 
     case 'SET_ACTIVE_STUDENT': {
       const nextStudentId = action.payload;
-      const nextSessions = state.sessions.filter((s) => (s.student_id || 'default') === nextStudentId);
+      const nextSessions = state.sessions.filter((s) => s.student_id === nextStudentId);
       return {
         ...state,
         activeStudentId: nextStudentId,
@@ -132,7 +152,7 @@ function appReducer(state, action) {
     case 'CLEAR_STUDENT_DATA': {
       const targetStudentId = action.payload || state.activeStudentId;
       const remainingSessions = state.sessions.filter(
-        (session) => (session.student_id || 'default') !== targetStudentId
+        (session) => session.student_id !== targetStudentId
       );
       const remainingSessionIds = new Set(remainingSessions.map((session) => session.session_id));
       const nextMessagesBySession = Object.fromEntries(
@@ -146,6 +166,21 @@ function appReducer(state, action) {
         sessions: remainingSessions,
         messagesBySession: nextMessagesBySession,
         activeSessionId: nextActiveSessionId,
+        streamProgress: [],
+      };
+    }
+
+    case 'CLEAR_ALL_LOCAL_DATA': {
+      const runtimeId = getOrCreateRuntimeStudentId();
+      return {
+        ...state,
+        profiles: [],
+        activeStudentId: runtimeId,
+        sessions: [],
+        activeSessionId: null,
+        messagesBySession: {},
+        profile: null,
+        profileLoading: false,
         streamProgress: [],
       };
     }
@@ -267,7 +302,9 @@ export function AppProvider({ children }) {
         dispatch({ type: 'SET_PROFILES', payload: profiles });
 
         const hasActive = profiles.some((profile) => profile.student_id === state.activeStudentId);
-        const preferredStudentId = hasActive ? state.activeStudentId : (profiles[0]?.student_id || 'default');
+        const preferredStudentId = hasActive
+          ? state.activeStudentId
+          : (profiles[0]?.student_id || state.activeStudentId || getOrCreateRuntimeStudentId());
 
         if (!profileLoaded.current) {
           profileLoaded.current = true;

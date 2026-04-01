@@ -13,7 +13,7 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from app.adapters.llm.lmstudio import get_text_llm
+from app.adapters.llm.lmstudio import get_json_llm, get_text_llm
 from app.adapters.neo4j.graph_store import store_extracted_entities, update_student
 from app.core.prompts import (
     EVALUATOR_PROMPT,
@@ -33,6 +33,7 @@ from app.core.quality import (
     summarize_trace,
 )
 from app.core.state import PathfinderState
+from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.evaluator")
 
@@ -44,6 +45,7 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     documents = state.get("retrieved_documents", [])
     web_results = state.get("web_results", [])
     evidence_records = state.get("evidence_records", [])
+    tool_call_log = state.get("tool_call_log", [])
     decision_payload = state.get("decision_payload", {})
     working_memory = init_working_memory(state.get("working_memory", {}))
     task_graph = state.get("task_graph", [])
@@ -66,7 +68,7 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
             "next_node": "responder",
         }
 
-    llm = get_text_llm()
+    llm = get_json_llm()
 
     # Compile sources
     sources = []
@@ -78,12 +80,17 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
         content = w.get("content", "")
         sources.append(f"[Web: {title}] ({url}) {content[:1500]}")
     sources_text = "\n".join(sources) if sources else "No sources available."
+    provenance_text = _format_tool_call_log(tool_call_log)
 
     response = await llm.ainvoke([
         SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
         HumanMessage(content=EVALUATOR_PROMPT.format(
             draft=draft[:2000],
-            sources=f"{sources_text}\n\nHandoff context:\n{json.dumps(handoff_context, ensure_ascii=True)}",
+            sources=(
+                f"{sources_text}\n\n"
+                f"Tool provenance log:\n{provenance_text}\n\n"
+                f"Handoff context:\n{json.dumps(handoff_context, ensure_ascii=True)}"
+            ),
             query=query,
         )),
     ])
@@ -92,10 +99,8 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
 
     # Parse evaluation
     try:
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        parsed = json.loads(content[json_start:json_end])
-    except (json.JSONDecodeError, ValueError):
+        parsed = parse_json_object(content) or {}
+    except Exception:
         parsed = {
             "is_grounded": False,
             "confidence_score": 0.0,
@@ -133,26 +138,38 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
 
     structured_recommendations = len(decision_payload.get("recommended_items", [])) if isinstance(decision_payload, dict) else 0
     has_structured_plan = structured_recommendations > 0
-    must_rewrite = ((confidence < 0.65) or (not is_grounded)) and not has_structured_plan
-    if must_rewrite:
+    # Provenance-first policy: strict on factual claims, lenient on advisory guidance.
+    has_tool_evidence = any(item.get("status") == "ok" for item in tool_call_log if isinstance(item, dict))
+    issue_stats = _issue_stats(issues)
+    severity = _issue_severity(issues, confidence, is_grounded, has_tool_evidence)
+    rewrite_threshold = 0.58 if has_tool_evidence else 0.48
+    should_rewrite_for_score = ((confidence < rewrite_threshold) or (not is_grounded)) and not has_structured_plan
+
+    if severity == "severe" or should_rewrite_for_score:
         rewrite = await _rewrite_grounded_answer(query, draft, issues, sources_text)
         if rewrite:
             final_draft = rewrite
-            log.warning("Evaluator rewrote low-grounded answer (confidence %.2f)", confidence)
-        elif confidence < 0.4 and not is_grounded:
+            log.warning("Evaluator full rewrite applied (severity=%s confidence=%.2f)", severity, confidence)
+        elif confidence < 0.35 and not is_grounded:
             warning = (
                 "I could not verify enough official information to answer this confidently. "
                 "Please check the official catalog or share the specific program page you want me to analyze."
             )
             final_draft = warning
             blocked_reasons.append(warning)
+    elif severity == "mild" and issue_stats["factual_issues"] > 0:
+        patched = _patch_mild_factual_issues(draft, issues)
+        if patched:
+            final_draft = patched
+            confidence = max(confidence, 0.62)
+            log.info("Evaluator applied mild factual patch")
     elif needs_disclaimer and disclaimer:
         final_draft = f"{draft}\n\n⚠️ *{disclaimer}*"
     elif has_structured_plan and confidence < 0.65:
         confidence = max(confidence, 0.68)
 
     # ── Passively learn: persist profile updates detected from conversation ──
-    student_id = state.get("student_id", "default")
+    student_id = state.get("student_id", "")
     if profile_updates:
         try:
             # Separate student-level properties from entity updates
@@ -186,7 +203,10 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
         except Exception as exc:
             log.warning("Evaluator: failed to persist profile updates: %s", exc)
 
-    step_progress.append(f"Confidence: {confidence:.0%} — Grounded: {'Yes' if is_grounded else 'Needs review'}")
+    step_progress.append(
+        f"Confidence: {confidence:.0%} — Grounded: {'Yes' if is_grounded else 'Needs review'} "
+        f"(issues: {issue_stats['total']}, severity: {severity})"
+    )
     task_graph = complete_task(task_graph, "render_final_answer")
     trace_summary = summarize_trace({
         **state,
@@ -222,6 +242,100 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
         "step_progress": step_progress,
         "next_node": "responder",
     }
+
+
+def _format_tool_call_log(tool_call_log: list[dict[str, Any]]) -> str:
+    """Format a concise provenance trace for evaluator grounding checks."""
+    if not tool_call_log:
+        return "No tool calls recorded."
+
+    lines = []
+    for idx, record in enumerate(tool_call_log[:20], start=1):
+        if not isinstance(record, dict):
+            continue
+        tool = str(record.get("tool", "unknown"))
+        status = str(record.get("status", "unknown"))
+        args = record.get("args", {})
+        summary = record.get("result_summary", {})
+        lines.append(
+            f"{idx}. tool={tool}; status={status}; args={json.dumps(args, ensure_ascii=True)}; "
+            f"result={json.dumps(summary, ensure_ascii=True)}"
+        )
+    return "\n".join(lines) if lines else "No tool calls recorded."
+
+
+def _issue_stats(issues: list[Any]) -> dict[str, int]:
+    """Count factual vs advisory issues from evaluator output."""
+    stats = {"total": 0, "factual_issues": 0}
+    for item in issues or []:
+        stats["total"] += 1
+        text = ""
+        issue_type = ""
+        if isinstance(item, dict):
+            issue_type = str(item.get("type", "")).lower()
+            text = str(item.get("text", "")).lower()
+        else:
+            text = str(item).lower()
+        if (
+            issue_type in {"unverified_claim", "possibly_hallucinated", "fabricated_fact"}
+            or any(token in text for token in ("unverified", "hallucinat", "unsupported", "fabricated", "deadline", "tuition", "gpa", "acceptance rate", "prerequisite"))
+        ):
+            stats["factual_issues"] += 1
+    return stats
+
+
+def _issue_severity(
+    issues: list[Any], confidence: float, is_grounded: bool, has_tool_evidence: bool
+) -> str:
+    """Classify issue severity for patch-vs-rewrite handling."""
+    stats = _issue_stats(issues)
+    if not is_grounded and (confidence < 0.45 or stats["factual_issues"] >= 2):
+        return "severe"
+    if stats["factual_issues"] >= 3:
+        return "severe"
+    if stats["factual_issues"] >= 1:
+        return "mild"
+    if not has_tool_evidence and confidence < 0.45:
+        return "mild"
+    return "none"
+
+
+def _patch_mild_factual_issues(draft: str, issues: list[Any]) -> str:
+    """Patch mild factual issues by removing unsupported-claim sentences."""
+    text = draft.strip()
+    if not text:
+        return ""
+    remove_markers: list[str] = []
+    for item in issues or []:
+        if isinstance(item, dict):
+            marker = str(item.get("text", "") or item.get("claim", "")).strip()
+        else:
+            marker = str(item).strip()
+        if marker:
+            remove_markers.append(marker.lower())
+
+    if not remove_markers:
+        return text
+
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    kept: list[str] = []
+    removed_any = False
+    for sentence in sentences:
+        low = sentence.lower()
+        if any(marker and marker[:80] in low for marker in remove_markers):
+            removed_any = True
+            continue
+        kept.append(sentence)
+
+    if not removed_any:
+        return text
+    patched = " ".join(kept).strip()
+    if not patched:
+        return ""
+    return (
+        f"{patched}\n\n"
+        "I removed one or more potentially unverified factual claims to keep this answer grounded."
+    )
 
 
 async def _rewrite_grounded_answer(

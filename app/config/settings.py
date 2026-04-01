@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # ---------- LM Studio (Text + Vision LLM) ----------
     LLM_BASE_URL: str = "http://localhost:1234/v1"
-    LLM_MODEL: str = "openai/gpt-oss-20b"
+    LLM_MODEL: str = "qwen/qwen3-14b"
     LLM_API_KEY: str = "sk-no-key"
     VISION_MODEL: str = "qwen/qwen3-vl-8b"
     LLM_TEMPERATURE: float = 0.2
@@ -64,14 +64,15 @@ class Settings(BaseSettings):
     ALLOWED_FILE_TYPES: list[str] = [".pdf", ".png", ".jpg", ".jpeg", ".heif", ".heic", ".docx"]
 
     # ---------- LLM Limits ----------
-    # gpt-oss-20b is a thinking/reasoning model — it uses tokens for internal
-    # chain-of-thought before producing visible output.  With max_tokens=2048
-    # the model exhausts the budget on thinking and returns empty content.
-    # 16384 gives ample room for both reasoning (~12k) and output (~4k).
+    # Keep a generous token budget for local reasoning models to avoid
+    # empty responses on longer multi-step tasks.
     LLM_MAX_TOKENS: int = 16384
     LLM_REQUEST_TIMEOUT: float = 300.0   # Thinking models can take longer
     LLM_FREQUENCY_PENALTY: float = 0.6   # Penalise repeated tokens (prevents repetition loops)
     LLM_PRESENCE_PENALTY: float = 0.3    # Encourage topic diversity
+    LLM_JSON_RESPONSE_FORMAT: bool = True # Enforce JSON outputs for structured tasks
+    TOOL_CALL_TIMEOUT_SECONDS: float = 20.0
+    TOOL_CALL_LOG_MAX_ENTRIES: int = 80
 
     # ---------- Server ----------
     HOST: str = "0.0.0.0"

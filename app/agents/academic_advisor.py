@@ -12,6 +12,7 @@ from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm, strip_repetition, is_garbage_output
+from app.agents.tool_calling import run_advisor_tool_loop
 from app.core.prompts import (
     ACADEMIC_ADVISOR_INSUFFICIENT_DATA_PROMPT,
     ACADEMIC_ADVISOR_SYSTEM_PROMPT,
@@ -72,18 +73,31 @@ async def academic_advisor(state: PathfinderState) -> PathfinderState:
     # Sufficient data — provide full advice
     has_live_schedule = _has_live_schedule_sources(web_results)
 
-    response = await llm.ainvoke([
-        SystemMessage(content=ACADEMIC_ADVISOR_SYSTEM_PROMPT.format(
-            profile=profile_text,
-            recent_messages=recent_messages,
-            web_results=web_text,
-            has_live_schedule="yes" if has_live_schedule else "no",
-            documents=doc_text,
-        )),
-        HumanMessage(content=query),
-    ])
+    system_prompt = ACADEMIC_ADVISOR_SYSTEM_PROMPT.format(
+        profile=profile_text,
+        recent_messages=recent_messages,
+        web_results=web_text,
+        has_live_schedule="yes" if has_live_schedule else "no",
+        documents=doc_text,
+    )
+    tool_call_log = list(state.get("tool_call_log", []))
+    try:
+        answer, tool_call_log = await run_advisor_tool_loop(
+            llm=llm,
+            system_prompt=system_prompt,
+            user_query=query,
+            state=state,
+            max_rounds=4,
+        )
+    except Exception as exc:
+        log.warning("Academic advisor tool loop failed, falling back to direct generation: %s", exc)
+        response = await llm.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=query),
+        ])
+        answer = response.content if isinstance(response.content, str) else str(response.content)
 
-    answer = strip_repetition(response.content if isinstance(response.content, str) else str(response.content))
+    answer = strip_repetition(answer)
 
     if is_garbage_output(answer):
         log.warning("Academic advisor produced garbage output (%d chars), discarding", len(answer))
@@ -95,6 +109,7 @@ async def academic_advisor(state: PathfinderState) -> PathfinderState:
     return {
         **state,
         "draft_answer": answer,
+        "tool_call_log": tool_call_log,
         "step_progress": step_progress,
         "next_node": "evaluator",
     }

@@ -162,7 +162,7 @@ export default function Sidebar({ open, onToggle }) {
 
   // ── Filtered & sorted sessions ──
   const currentStudentSessions = state.sessions.filter(
-    (s) => (s.student_id || 'default') === state.activeStudentId
+    (s) => s.student_id === state.activeStudentId
   );
   const filteredSessions = currentStudentSessions.filter((s) => {
     if (!searchQuery.trim()) return true;
@@ -328,7 +328,7 @@ export default function Sidebar({ open, onToggle }) {
               className="w-full rounded-md border bg-background px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring/50"
             >
               {state.profiles.length === 0 ? (
-                <option value="default">default</option>
+                <option value={state.activeStudentId}>{state.activeStudentId}</option>
               ) : (
                 state.profiles.map((profile) => (
                   <option key={profile.student_id} value={profile.student_id}>

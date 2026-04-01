@@ -13,7 +13,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.adapters.llm.lmstudio import get_text_llm
+from app.adapters.llm.lmstudio import get_json_llm
 from app.core.prompts import COURSE_PLANNER_PROMPT
 from app.core.quality import (
     DecisionPayload,
@@ -31,6 +31,7 @@ from app.core.quality import (
     start_task,
 )
 from app.core.state import PathfinderState
+from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.course_planner")
 
@@ -136,7 +137,7 @@ async def _llm_course_payload(
     if not any(evidence_groups.values()):
         return {}
 
-    llm = get_text_llm()
+    llm = get_json_llm()
     response = await llm.ainvoke([
         SystemMessage(content=COURSE_PLANNER_PROMPT),
         HumanMessage(content=(
@@ -149,9 +150,7 @@ async def _llm_course_payload(
 
     content = response.content if isinstance(response.content, str) else str(response.content)
     try:
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        parsed = json.loads(content[json_start:json_end])
+        parsed = parse_json_object(content) or {}
         return parsed if isinstance(parsed, dict) else {}
     except Exception as exc:
         log.warning("Course planner parse failed: %s", exc)
@@ -176,67 +175,34 @@ def _heuristic_course_payload(
     asks_major_or_electives = any(token in query_lower for token in ("major", "elective", "specialization", "concentration"))
     allowed_prefixes = _allowed_course_prefixes(target_program)
 
+    assumptions = list(summary.get("assumptions", []))
+
     if asks_major_or_electives and not target_institution:
         return {
             "decision_type": "course_planning",
             "answer_outline": [
-                "Here is a practical major-and-elective path aligned to your goal.",
+                "I need to know your university and program to give you accurate major and elective recommendations.",
             ],
-            "recommended_items": [
-                {
-                    "label": "Major focus: Computer Science or Data Engineering-aligned CS track",
-                    "reason": "This gives the strongest systems + software foundation for production data engineering roles.",
-                    "status": "recommended",
-                    "support_codes": [],
-                    "support_refs": [],
-                    "assumption": "",
-                },
-                {
-                    "label": "Core electives: Databases, Data Modeling, Distributed Systems, Cloud Computing",
-                    "reason": "These are foundational for building reliable data platforms and pipelines.",
-                    "status": "recommended",
-                    "support_codes": [],
-                    "support_refs": [],
-                    "assumption": "",
-                },
-                {
-                    "label": "Applied electives: Data Warehousing, ETL/ELT, Big Data Processing, Data Engineering Project",
-                    "reason": "These electives map directly to day-to-day data engineer responsibilities.",
-                    "status": "recommended",
-                    "support_codes": [],
-                    "support_refs": [],
-                    "assumption": "",
-                },
-                {
-                    "label": "Career accelerators: SQL mastery, Python, Spark, orchestration tools",
-                    "reason": "Hands-on tooling depth substantially improves internship and job readiness.",
-                    "status": "recommended",
-                    "support_codes": [],
-                    "support_refs": [],
-                    "assumption": "",
-                },
-            ],
+            "recommended_items": [],
             "blocked_or_uncertain_items": [
                 {
-                    "label": "University-specific course codes not available in this query",
-                    "reason": "Without a target institution/program catalog, exact course-code sequencing cannot be verified.",
+                    "label": "University and program context needed",
+                    "reason": "Without knowing your institution and program, I cannot look up the correct catalog or verify course availability.",
                     "kind": "needs_verification",
                 }
             ],
-            "assumptions": assumptions + ["Providing domain-general advising because institution-specific catalog context is missing."],
-            "next_best_action": "Share your university/program and I can convert this into an exact semester-wise course-code plan.",
+            "assumptions": assumptions,
+            "next_best_action": "Please share your university and program so I can look up your specific catalog and give personalized recommendations.",
             "source_refs": [],
             "verified_requirements": [],
             "semester_plan_options": [],
-            "blocked_reasons": ["safe_partial_plan:domain_general_without_institution_context"],
+            "blocked_reasons": ["safe_partial_plan:missing_institution_context"],
         }
 
     required: list[dict[str, Any]] = []
     goal_aligned: list[dict[str, Any]] = []
     uncertain: list[dict[str, Any]] = []
     support_refs = []
-    assumptions = list(summary.get("assumptions", []))
-
     goal_text = " ".join(summary.get("goals", {}).get("value", []))
     completed = set(summary.get("completed_courses", {}).get("value", []))
     availability_records = evidence_groups.get("availability", [])
@@ -584,7 +550,10 @@ def _record_matches_program_context(
     number_match = re.search(r"(\d{3})", code)
     if target_level == "graduate" and number_match:
         number = int(number_match.group(1))
-        if number < 200:
+        # Only filter out very low course numbers (< 100) that are almost
+        # certainly intro/remedial. Different universities use different
+        # numbering conventions, so we cannot assume < 200 = undergraduate.
+        if number < 100:
             prereq_context = f"{title} {excerpt}".lower()
             if source_type == "schedule_page":
                 return False
@@ -625,13 +594,9 @@ def _extract_course_codes_from_text(text: str) -> list[str]:
 
 
 def _allowed_course_prefixes(target_program: str) -> set[str]:
-    lowered = (target_program or "").lower()
-    if "computer science" in lowered:
-        return {"CSC", "CPE", "CMPE", "DATA", "DS", "STAT", "EE"}
-    if "data" in lowered:
-        return {"DATA", "DS", "STAT", "CSC", "CPE", "MATH"}
-    if "software" in lowered:
-        return {"CSC", "SE", "SWE", "CPE"}
+    # No hardcoded prefix filtering — course relevance is determined
+    # by evidence records and source context, not by code prefix.
+    # Different universities use different prefix conventions.
     return set()
 
 
@@ -763,7 +728,7 @@ def _build_semester_plan_options(
         return [{
             "term": "Next semester",
             "courses": normalized_courses[:3],
-            "units_note": "Typical full-time graduate load is often around 6-9 units; verify your program's policy.",
+            "units_note": "Verify your program's required course load and unit limits before registering.",
         }]
 
     # Generic four-term sample structure for long-range planning requests.

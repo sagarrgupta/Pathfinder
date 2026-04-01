@@ -9,7 +9,6 @@ Processes uploaded documents through the adaptive pipeline:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -35,6 +34,7 @@ from app.core.prompts import (
     DOC_ANALYST_ENTITY_EXTRACTION_USER_PROMPT,
 )
 from app.core.state import PathfinderState
+from app.utils.json_extract import parse_json_object
 from app.utils.ids import generate_document_id, generate_chunk_id
 
 log = logging.getLogger("pathfinder.agents.doc_analyst")
@@ -47,7 +47,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
     """Process uploaded files: extract, chunk, embed, store."""
     files = state.get("files", [])
     session_id = state.get("session_id", "")
-    student_id = state.get("student_id", "default")
+    student_id = state.get("student_id", "")
     is_global = state.get("is_global_upload", False)
     scope = "global" if is_global else "session"
 
@@ -136,10 +136,8 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
 
             content_text = response.content if isinstance(response.content, str) else str(response.content)
 
-            json_start = content_text.find("{")
-            json_end = content_text.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                parsed = json.loads(content_text[json_start:json_end])
+            parsed = parse_json_object(content_text)
+            if parsed:
                 entities = parsed.get("entities", [])
                 student_props = parsed.get("student_properties", {})
 

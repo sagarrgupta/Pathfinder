@@ -206,6 +206,12 @@ export async function resetAllData(studentId) {
   return response.json();
 }
 
+export async function deleteAllDataEverywhere() {
+  const response = await fetch(`${API_BASE}/settings/delete-all-data`, { method: 'DELETE' });
+  if (!response.ok) throw new Error(`Failed to delete all data: ${response.status}`);
+  return response.json();
+}
+
 // ── Sessions ────────────────────────────────────────────────────
 
 export async function getSessions(studentId) {

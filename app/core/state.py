@@ -63,6 +63,7 @@ class PathfinderState(TypedDict, total=False):
     extracted_entities: list[dict[str, Any]]  # Entities extracted from documents
     evidence_records: list[dict[str, Any]]    # Typed evidence extracted from web/profile/doc sources
     decision_payload: dict[str, Any]          # Structured planner output used for final response
+    tool_call_log: list[dict[str, Any]]       # Provenance log of tool calls/results used this turn
 
     # ── Evaluation ──────────────────────────────────────────────
     draft_answer: str                         # Answer before evaluation

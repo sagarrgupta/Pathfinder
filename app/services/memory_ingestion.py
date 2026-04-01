@@ -19,6 +19,7 @@ from app.adapters.neo4j.graph_store import (
     update_student,
 )
 from app.core.prompts import MEMORY_INGESTION_EXTRACTION_PROMPT
+from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.memory.ingestion")
 
@@ -506,12 +507,9 @@ async def _extract_memory_candidates(text: str) -> dict[str, Any]:
     )
     content = response.content if isinstance(response.content, str) else str(response.content)
     try:
-        import json
-
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        if json_start >= 0 and json_end > json_start:
-            return json.loads(content[json_start:json_end])
+        parsed = parse_json_object(content)
+        if isinstance(parsed, dict):
+            return parsed
     except Exception as exc:
         log.warning("Memory extraction parse failed: %s", exc)
     return {"student_properties": {}, "candidate_facts": [], "generic_memories": []}
