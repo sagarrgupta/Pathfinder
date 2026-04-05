@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
-import { createProfile, getProfiles, getSettings, updateSettings, getHealth, getProfile, getSavedRecommendations, resetAllData } from '@/services/api';
+import { getSettings, updateSettings, getHealth, resetAllData, deleteAllDataEverywhere } from '@/services/api';
 import {
   Settings, Shield, Monitor, Server, Loader2,
   CheckCircle2, XCircle, Trash2, AlertTriangle, X,
-  Sun, Moon, SunMoon, Zap, RefreshCw, ExternalLink,
+  Sun, Moon, SunMoon, Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -25,13 +25,32 @@ const THEME_OPTIONS = [
   { value: 'system', label: 'System', icon: SunMoon },
 ];
 
+const ADVISOR_MODE_OPTIONS = [
+  { value: 'adaptive', label: 'Adaptive' },
+  { value: 'semester_planning', label: 'Semester Planning' },
+  { value: 'degree_audit', label: 'Degree Audit' },
+  { value: 'resume_review', label: 'Resume Review' },
+  { value: 'internship_targeting', label: 'Internship Targeting' },
+  { value: 'graduate_school_planning', label: 'Graduate School Planning' },
+];
+
 export default function SettingsPage() {
-  const { state, dispatch } = useApp();
-  const studentId = state.activeStudentId;
+  const { state, dispatch, refreshProfile, refreshProfiles } = useApp();
   const toast = useToast();
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showResetModal, setShowResetModal] = useState(false);
+  const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
+  const modelEntries = Object.entries(state.settings.models || {});
+  const dependencyPairs = health
+    ? [
+        ['Neo4j', health.neo4j],
+        ['LM Studio', health.lm_studio],
+        ['Ollama', health.ollama],
+      ]
+    : [];
+  const connectedCount = dependencyPairs.filter(([, status]) => status === 'connected').length;
+  const runtimeReadiness = health ? Math.round((connectedCount / Math.max(dependencyPairs.length, 1)) * 100) : 0;
 
   useEffect(() => {
     loadData();
@@ -63,6 +82,18 @@ export default function SettingsPage() {
     }
   };
 
+  const handleAdvisorMode = async (newValue) => {
+    const previous = state.settings.advisor_mode || 'adaptive';
+    dispatch({ type: 'SET_SETTINGS', payload: { advisor_mode: newValue } });
+    try {
+      await updateSettings({ advisor_mode: newValue });
+      toast.success('Advisor mode updated');
+    } catch {
+      dispatch({ type: 'SET_SETTINGS', payload: { advisor_mode: previous } });
+      toast.error('Failed to update advisor mode');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -84,17 +115,8 @@ export default function SettingsPage() {
           </div>
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-            <p className="text-muted-foreground text-sm mt-0.5">
-              Configure Pathfinder for {state.profile?.personal?.name || 'the active profile'}
-            </p>
+            <p className="text-muted-foreground text-sm mt-0.5">Configure Pathfinder behavior and appearance</p>
           </div>
-          <button
-            onClick={loadData}
-            className="ml-auto inline-flex items-center gap-2 rounded-xl border bg-card px-3 py-2 text-sm font-medium transition-colors hover:bg-accent"
-          >
-            <RefreshCw className="h-4 w-4" />
-            Refresh
-          </button>
         </div>
 
         {/* Appearance */}
@@ -153,6 +175,25 @@ export default function SettingsPage() {
               )} />
             </button>
           </div>
+          <div className="flex items-center justify-between mt-4 pt-4 border-t border-border/50">
+            <div>
+              <p className="text-sm font-medium">Default Advisor Mode</p>
+              <p className="text-xs text-muted-foreground">
+                Choose whether Pathfinder should stay adaptive or start from a focused advising workflow.
+              </p>
+            </div>
+            <select
+              value={state.settings.advisor_mode || 'adaptive'}
+              onChange={(e) => handleAdvisorMode(e.target.value)}
+              className="h-10 rounded-lg border border-border bg-background px-3 text-sm"
+            >
+              {ADVISOR_MODE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* Models */}
@@ -161,7 +202,7 @@ export default function SettingsPage() {
             <Monitor className="h-4 w-4 text-primary" /> Models
           </h2>
           <div className="space-y-0">
-            {Object.entries(state.settings.models || {}).map(([key, value]) => (
+            {modelEntries.map(([key, value]) => (
               <div key={key} className="flex justify-between items-center py-3 border-b last:border-0 border-border/50">
                 <span className="text-sm text-muted-foreground">{formatModelKey(key)}</span>
                 <code className="text-sm font-mono bg-muted px-2.5 py-1 rounded-md">{value}</code>
@@ -170,6 +211,45 @@ export default function SettingsPage() {
           </div>
         </div>
 
+        {(health || modelEntries.length > 0) && (
+          <div className="rounded-xl border bg-card p-5">
+            <h2 className="font-semibold flex items-center gap-2 mb-4">
+              <Zap className="h-4 w-4 text-primary" /> Runtime Readiness
+            </h2>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Readiness</p>
+                <p className="text-xl font-bold">{runtimeReadiness}%</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Active Retrieval</p>
+                <p className="text-sm font-medium">{state.settings.models?.retrieval || 'Unknown'}</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Active Text Model</p>
+                <p className="text-sm font-medium break-words">{state.settings.models?.text_llm || 'Unknown'}</p>
+              </div>
+            </div>
+            {dependencyPairs.length > 0 && (
+              <div className="space-y-2">
+                {dependencyPairs.map(([name, status]) => (
+                  <div key={name} className="flex items-center justify-between text-sm rounded-lg border bg-muted/20 px-3 py-2">
+                    <span className="font-medium">{name}</span>
+                    <span className={cn(
+                      'px-2 py-0.5 rounded-full text-xs font-medium',
+                      status === 'connected'
+                        ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                        : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                    )}>
+                      {status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* System Health */}
         {health && (
           <div className="rounded-xl border bg-card p-5">
@@ -177,24 +257,19 @@ export default function SettingsPage() {
               <Server className="h-4 w-4 text-primary" /> System Health
             </h2>
             <div className="space-y-0">
-              {[
-                ['Neo4j', health.neo4j],
-                ['LM Studio', health.lm_studio],
-                ['Ollama', health.ollama],
-              ].map(([name, status]) => (
+              {dependencyPairs.map(([name, status]) => (
                 <div key={name} className="flex items-center justify-between py-3 border-b last:border-0 border-border/50">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">{name}</span>
                     {name === 'Neo4j' && (
                       <a
-                        href="http://localhost:7474"
+                        href="http://localhost:7474/browser/"
                         target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                        rel="noreferrer"
+                        className="text-xs font-medium text-primary hover:underline"
                         title="Open Neo4j Browser"
                       >
-                        Open Browser
-                        <ExternalLink className="h-3 w-3" />
+                        Open panel
                       </a>
                     )}
                   </div>
@@ -248,11 +323,11 @@ export default function SettingsPage() {
           <h2 className="font-semibold flex items-center gap-2 mb-4 text-destructive">
             <AlertTriangle className="h-4 w-4" /> Danger Zone
           </h2>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between mb-4">
             <div>
               <p className="text-sm font-medium">Reset All Data</p>
               <p className="text-xs text-muted-foreground">
-                Permanently delete this profile's chats, documents, courses, skills, and knowledge graph data.
+                Permanently delete your profile, all documents, courses, skills, and knowledge graph data.
               </p>
             </div>
             <button
@@ -263,58 +338,44 @@ export default function SettingsPage() {
               Reset
             </button>
           </div>
+          <div className="flex items-center justify-between pt-4 border-t border-destructive/20">
+            <div>
+              <p className="text-sm font-medium">Delete All Data (All Profiles)</p>
+              <p className="text-xs text-muted-foreground">
+                Permanently delete every profile, all Neo4j graph data, and all chat history across profiles.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowDeleteAllModal(true)}
+              className="px-4 py-2 text-sm rounded-lg border-2 border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground transition-all flex items-center gap-1.5 font-medium active:scale-95"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete All
+            </button>
+          </div>
         </div>
       </div>
 
       {/* Reset Confirmation Modal */}
       {showResetModal && (
         <ResetModal
-          studentId={studentId}
+          studentId={state.activeStudentId}
           onClose={() => setShowResetModal(false)}
           onSuccess={async (msg) => {
-            dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
-            dispatch({ type: 'RESET_STUDENT_LOCAL_DATA', payload: { studentId } });
-            let profiles = [];
-            try {
-              profiles = await getProfiles();
-            } catch {
-              profiles = [];
-            }
+            dispatch({ type: 'CLEAR_STUDENT_DATA', payload: state.activeStudentId });
+            await refreshProfiles().catch(() => {});
+            await refreshProfile(state.activeStudentId).catch(() => {});
+            toast.success(msg);
+          }}
+        />
+      )}
 
-            if (profiles.length === 0) {
-              try {
-                const created = await createProfile({ name: 'Student' });
-                profiles = [created];
-              } catch {
-                profiles = [];
-              }
-            }
-
-            dispatch({ type: 'SET_PROFILES', payload: profiles });
-
-            const nextStudentId = profiles.find((profile) => profile.student_id === studentId)
-              ? studentId
-              : profiles[0]?.student_id || null;
-
-            if (!nextStudentId) {
-              dispatch({ type: 'SET_ACTIVE_STUDENT', payload: null });
-              dispatch({ type: 'SET_PROFILE', payload: null });
-              dispatch({ type: 'SET_SAVED_RECOMMENDATIONS', payload: [] });
-              toast.success(msg);
-              return;
-            }
-
-            dispatch({ type: 'SET_ACTIVE_STUDENT', payload: nextStudentId });
-
-            const [profileResult, recommendationsResult] = await Promise.allSettled([
-              getProfile(nextStudentId),
-              getSavedRecommendations(nextStudentId),
-            ]);
-            dispatch({ type: 'SET_PROFILE', payload: profileResult.status === 'fulfilled' ? profileResult.value : null });
-            dispatch({
-              type: 'SET_SAVED_RECOMMENDATIONS',
-              payload: recommendationsResult.status === 'fulfilled' ? recommendationsResult.value : [],
-            });
+      {showDeleteAllModal && (
+        <DeleteAllModal
+          onClose={() => setShowDeleteAllModal(false)}
+          onSuccess={async (msg) => {
+            dispatch({ type: 'CLEAR_ALL_LOCAL_DATA' });
+            await refreshProfiles().catch(() => {});
             toast.success(msg);
           }}
         />
@@ -326,21 +387,16 @@ export default function SettingsPage() {
 // ── Reset Confirmation Modal ────────────────────────────────────
 
 function ResetModal({ studentId, onClose, onSuccess }) {
-  const [confirmText, setConfirmText] = useState('');
   const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState('');
   const backdropRef = useRef(null);
-  const CONFIRM_PHRASE = 'DELETE';
-
-  const canConfirm = confirmText === CONFIRM_PHRASE;
 
   const handleReset = async () => {
-    if (!canConfirm) return;
     setIsResetting(true);
     setError('');
     try {
       await resetAllData(studentId);
-      await onSuccess('All profile data has been reset successfully.');
+      onSuccess('All profile data has been reset successfully.');
       onClose();
     } catch (err) {
       setError(`Reset failed: ${err.message}`);
@@ -388,7 +444,6 @@ function ResetModal({ studentId, onClose, onSuccess }) {
           <ul className="text-sm space-y-2 pl-1">
             {[
               'Your student profile and personal information',
-              'All chats and session history for this profile',
               'All uploaded documents and extracted text',
               'Courses, skills, goals, experience, and other entities',
               'Entire knowledge graph data',
@@ -407,22 +462,6 @@ function ResetModal({ studentId, onClose, onSuccess }) {
             </p>
           </div>
 
-          {/* Confirmation input */}
-          <div>
-            <label className="text-sm font-medium block mb-2">
-              Type <code className="px-1.5 py-0.5 bg-muted rounded-md text-destructive font-bold">DELETE</code> to confirm
-            </label>
-            <input
-              type="text"
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
-              placeholder="Type DELETE here"
-              className="w-full rounded-lg border bg-background px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-destructive/40 transition-shadow"
-              autoFocus
-              onKeyDown={(e) => { if (e.key === 'Enter' && canConfirm) handleReset(); }}
-            />
-          </div>
-
           {error && (
             <p className="text-sm text-destructive">{error}</p>
           )}
@@ -434,15 +473,110 @@ function ResetModal({ studentId, onClose, onSuccess }) {
             onClick={onClose}
             className="px-4 py-2.5 text-sm rounded-lg border hover:bg-accent transition-colors font-medium"
           >
-            Cancel
+            No
           </button>
           <button
             onClick={handleReset}
-            disabled={!canConfirm || isResetting}
+            disabled={isResetting}
             className="px-4 py-2.5 text-sm rounded-lg bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-40 transition-all flex items-center gap-1.5 font-medium active:scale-95"
           >
             {isResetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-            {isResetting ? 'Deleting...' : 'Delete Everything'}
+            {isResetting ? 'Deleting...' : 'Yes'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeleteAllModal({ onClose, onSuccess }) {
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [error, setError] = useState('');
+  const backdropRef = useRef(null);
+
+  const handleDeleteAll = async () => {
+    setIsDeleting(true);
+    setError('');
+    try {
+      await deleteAllDataEverywhere();
+      onSuccess('All profiles, graph data, and chats have been deleted.');
+      onClose();
+    } catch (err) {
+      setError(`Delete all failed: ${err.message}`);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleBackdropClick = (e) => {
+    if (e.target === backdropRef.current) onClose();
+  };
+
+  useEffect(() => {
+    const handleKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  return (
+    <div
+      ref={backdropRef}
+      onClick={handleBackdropClick}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
+    >
+      <div className="bg-card border rounded-2xl shadow-2xl max-w-md w-full mx-4 animate-fade-in-up">
+        <div className="flex items-center justify-between p-5 pb-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
+              <AlertTriangle className="h-5 w-5 text-destructive" />
+            </div>
+            <h3 className="text-lg font-bold">Delete All Data</h3>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            This will permanently delete <strong className="text-destructive">everything for all profiles</strong>:
+          </p>
+          <ul className="text-sm space-y-2 pl-1">
+            {[
+              'All student profiles',
+              'All Neo4j nodes and relationships',
+              'All persisted chat history',
+              'All uploaded documents and extracted entities',
+            ].map((text, i) => (
+              <li key={i} className="flex items-center gap-2.5 text-muted-foreground">
+                <span className="w-1.5 h-1.5 rounded-full bg-destructive flex-shrink-0" />
+                {text}
+              </li>
+            ))}
+          </ul>
+          <div className="p-3 rounded-lg bg-destructive/5 border border-destructive/20">
+            <p className="text-xs text-destructive font-medium flex items-center gap-1.5">
+              <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+              This action cannot be undone.
+            </p>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </div>
+
+        <div className="flex justify-end gap-2 p-5 pt-0">
+          <button
+            onClick={onClose}
+            className="px-4 py-2.5 text-sm rounded-lg border hover:bg-accent transition-colors font-medium"
+          >
+            No
+          </button>
+          <button
+            onClick={handleDeleteAll}
+            disabled={isDeleting}
+            className="px-4 py-2.5 text-sm rounded-lg bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-40 transition-all flex items-center gap-1.5 font-medium active:scale-95"
+          >
+            {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+            {isDeleting ? 'Deleting...' : 'Yes, Delete All'}
           </button>
         </div>
       </div>

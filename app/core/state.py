@@ -30,56 +30,58 @@ class PathfinderState(TypedDict, total=False):
     session_id: str                           # Chat session ID
     student_id: str                           # Student identifier
     is_global_upload: bool                    # Whether uploaded docs go to global profile
-    interpreted_query: str                    # LLM-expanded helper version of the user request
-    interpreted_goal: str                     # LLM-inferred user goal for this turn
-    interpreted_constraints: list[str]        # LLM-inferred constraints or preferences for this turn
-    interpreted_search_brief: str             # LLM-inferred search/research brief when helpful
-    interpretation_notes: str                 # Short explanation of how the query was interpreted
-    task_type: str                            # Question task type within domain
-    reasoning_depth: str                      # light|standard|deep
-    needs_web: bool                           # Whether fresh external information is required
-    needs_documents: bool                     # Whether attached or stored docs should be prioritized
-    needs_profile: bool                       # Whether profile memory should be used
-    planner_trace: list[str]                  # Planner execution notes
-    active_capabilities: list[str]            # Selected capability agent path
-    answer_style: str                         # direct_specialist|composed
+    advisor_mode: str                         # User-selected focused advisor mode
+    request_plan: dict[str, Any]              # Deterministic request-planning hints for this turn
+    runtime_policy: dict[str, Any]            # Explicit runtime policy decisions for this turn
 
     # ── Orchestrator output ─────────────────────────────────────
     intent: str                               # Classified intent
     plan: list[str]                           # Ordered list of agent nodes to execute
     next_node: str                            # Next node to route to
     missing_info: list[str]                   # Info the system needs but doesn't have
+    session_summary: dict[str, Any]           # Normalized summary of session/profile context
+    workflow: str                             # General student workflow for this turn
+    student_strategy: dict[str, Any]          # What the student is optimizing for right now
+    student_operating_model: dict[str, Any]   # How the student tends to make tradeoffs
+    recommendation_outcome_profile: dict[str, Any]  # How the student tends to respond to past recommendations
+    decision_continuity: dict[str, Any]       # Whether this turn continues a prior decision plan
+    target_entity: dict[str, Any]             # Normalized target the user is asking about
+    source_policy: dict[str, Any]             # Retrieval/extraction strategy for the current query
+    task_graph: list[dict[str, Any]]          # Ordered dependency-aware task graph for the current turn
+    working_memory: dict[str, Any]            # Shared reasoning substrate across nodes
+    dependency_status: dict[str, Any]         # Health snapshot for external dependencies
+    recovery_events: list[dict[str, Any]]     # Structured recovery/degradation events for this turn
+    blocked_reasons: list[str]                # Explicit blockers surfaced by planners/evaluator
+    trace_summary: dict[str, Any]             # Compact execution trace for debugging/UX
+    compacted_session: dict[str, Any]         # Long-term condensed advising state
+    session_memory: dict[str, Any]            # Session-scoped transcript/carry-forward memory
+    short_memory_policy: dict[str, Any]       # Explicit TTL/eviction policy for short-term session memory
+    stop_reason: str                          # Why a turn stopped early or partially
 
     # ── Data gathered by nodes ──────────────────────────────────
     profile_data: dict[str, Any]              # Student profile from Neo4j KG
     retrieved_documents: list[dict[str, Any]] # Chunks from Neo4j vector search
-    graph_results: list[dict[str, Any]]       # Structured results from graph queries
     web_results: list[dict[str, Any]]         # Results from web search
-    web_search_hint: str                      # Planner-provided goal for web research
+    semantic_memory: dict[str, Any]           # Retrieved candidate facts/memory items/evidence
+    memory_pack: dict[str, Any]               # Compact retrieval pack for downstream reasoning
+    evidence_pack: dict[str, Any]             # Normalized evidence envelope for downstream reasoning
+    latest_ingestion_result: dict[str, Any]   # Last in-turn memory ingestion summary for debugging/tracing
+    conflicts: list[dict[str, Any]]           # Retrieved memory/profile conflicts for the current turn
     extracted_entities: list[dict[str, Any]]  # Entities extracted from documents
-    semantic_memory: dict[str, list[dict[str, Any]]]  # Candidate facts, evidence, memory items
-    memory_pack: dict[str, Any]               # Retrieval output bundle
-    conflicts: list[dict[str, Any]]           # Active conflicting memories
-    conflict_nudges: list[dict[str, Any]]     # One-time user-facing conflict nudges
-    saved_recommendations: list[dict[str, Any]]  # Prior saved plans/recommendations to revisit
-    recommended_actions: list[str]            # Action plan steps
-    retrieval_sources: list[str]              # Sources selected for this answer
-    retrieval_summary: dict[str, Any]         # Counts and source mix for observability
+    evidence_records: list[dict[str, Any]]    # Typed evidence extracted from web/profile/doc sources
+    decision_payload: dict[str, Any]          # Structured planner output used for final response
+    tool_call_log: list[dict[str, Any]]       # Provenance log of tool calls/results used this turn
 
     # ── Evaluation ──────────────────────────────────────────────
     draft_answer: str                         # Answer before evaluation
     confidence_score: float                   # 0.0 to 1.0
     is_grounded: bool                         # Whether answer is grounded in sources
     profile_updates: list[dict[str, Any]]     # Profile updates detected from conversation
-    latest_ingestion_result: dict[str, Any]   # Most recent memory-ingestion output for current turn
     citations: list[dict[str, Any]]           # Sources for the answer
 
     # ── Output ──────────────────────────────────────────────────
     final_answer: str                         # Final formatted answer
     step_progress: list[str]                  # Progress messages for SSE streaming
-    answer_rationale: list[str]               # Why this answer path/sources were chosen
-    consolidation_summary: dict[str, Any]     # Memory consolidation output
-    execution_trace: list[dict[str, Any]]     # Per-question structured execution trace
 
     # ── Guard ───────────────────────────────────────────────────
     is_blocked: bool                          # Whether input was blocked by guard

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     # ---------- SQLite (LangGraph Memory) ----------
     SQLITE_DB_PATH: str = "data/pathfinder.db"
+    REPLAY_ARTIFACT_DIR: str = "data/replays"
 
     # ---------- Retrieval ----------
     TOP_K: int = 5

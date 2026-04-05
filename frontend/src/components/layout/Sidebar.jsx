@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
-import { useToast } from '@/components/shared/Toast';
 import {
   MessageSquare, User, Settings, Plus, Trash2,
   PanelLeftClose, PanelLeftOpen, GraduationCap,
-  Pin, PinOff, Pencil, Check, X, Search, CheckSquare, Activity, Layers3,
+  Pin, PinOff, Pencil, Check, X, Search, ShieldAlert,
+  History,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useToast } from '@/components/shared/Toast';
 
 const MIN_WIDTH = 220;
 const MAX_WIDTH = 480;
@@ -17,12 +18,12 @@ const COLLAPSED_WIDTH = 48;
 export default function Sidebar({ open, onToggle }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { state, dispatch, createSession, createProfileAndActivate } = useApp();
+  const { state, dispatch, createSession, switchStudent, createProfile } = useApp();
   const toast = useToast();
-  const studentId = state.activeStudentId;
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isCreatingProfile, setIsCreatingProfile] = useState(false);
   const editRef = useRef(null);
 
   // ── Resizable width ──
@@ -74,8 +75,8 @@ export default function Sidebar({ open, onToggle }) {
   const navItems = [
     { path: '/chat', label: 'Chat', icon: MessageSquare },
     { path: '/profile', label: 'My Profile', icon: User },
-    { path: '/plans', label: 'Saved Plans', icon: CheckSquare },
-    { path: '/analytics', label: 'Analytics', icon: Activity },
+    { path: '/profile/conflicts', label: 'Conflicts', icon: ShieldAlert },
+    { path: '/replays', label: 'Replays', icon: History },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
 
@@ -84,24 +85,39 @@ export default function Sidebar({ open, onToggle }) {
     navigate('/chat');
   };
 
-  const handleCreateProfile = async () => {
+  const handleDeleteSession = (e, sessionId) => {
+    e.stopPropagation();
+    dispatch({ type: 'REMOVE_SESSION', payload: sessionId });
+  };
+
+  const handleStudentChange = async (e) => {
+    const nextStudentId = e.target.value;
     try {
-      const created = await createProfileAndActivate('Student');
-      toast.success(`Created ${created.name}`);
-      navigate('/profile');
-    } catch (error) {
-      toast.error(error?.message || 'Failed to create profile');
+      await switchStudent(nextStudentId);
+      navigate('/chat');
+    } catch (err) {
+      toast.error(`Failed to switch profile: ${err.message}`);
     }
   };
 
-  const handleDeleteSession = (e, sessionId) => {
-    e.stopPropagation();
-    dispatch({ type: 'REMOVE_SESSION', payload: { studentId, sessionId } });
+  const handleCreateProfile = async () => {
+    const name = window.prompt('Enter a name for the new profile');
+    if (!name?.trim()) return;
+    setIsCreatingProfile(true);
+    try {
+      await createProfile({ name: name.trim() });
+      toast.success(`Created profile for ${name.trim()}`);
+      navigate('/profile');
+    } catch (err) {
+      toast.error(`Failed to create profile: ${err.message}`);
+    } finally {
+      setIsCreatingProfile(false);
+    }
   };
 
   const handleSelectSession = (sessionId) => {
     if (editingId) return;
-    dispatch({ type: 'SET_ACTIVE_SESSION', studentId, payload: sessionId });
+    dispatch({ type: 'SET_ACTIVE_SESSION', payload: sessionId });
     navigate('/chat');
   };
 
@@ -116,7 +132,7 @@ export default function Sidebar({ open, onToggle }) {
     if (e) e.stopPropagation();
     const trimmed = editValue.trim();
     if (trimmed && editingId) {
-      dispatch({ type: 'RENAME_SESSION', payload: { studentId, sessionId: editingId, title: trimmed } });
+      dispatch({ type: 'RENAME_SESSION', payload: { sessionId: editingId, title: trimmed } });
     }
     setEditingId(null);
     setEditValue('');
@@ -143,14 +159,16 @@ export default function Sidebar({ open, onToggle }) {
   // ── Pin handler ──
   const handleTogglePin = (e, sessionId) => {
     e.stopPropagation();
-    dispatch({ type: 'TOGGLE_PIN_SESSION', payload: { studentId, sessionId } });
+    dispatch({ type: 'TOGGLE_PIN_SESSION', payload: sessionId });
   };
 
   // ── Filtered & sorted sessions ──
-  const filteredSessions = state.sessions.filter((s) => {
+  const currentStudentSessions = state.sessions.filter(
+    (s) => s.student_id === state.activeStudentId
+  );
+  const filteredSessions = currentStudentSessions.filter((s) => {
     if (!searchQuery.trim()) return true;
-    const target = `${s.title || ''} ${s.last_message || ''}`.toLowerCase();
-    return target.includes(searchQuery.toLowerCase());
+    return s.title.toLowerCase().includes(searchQuery.toLowerCase());
   });
   const pinnedSessions = filteredSessions.filter((s) => s.pinned);
   const unpinnedSessions = filteredSessions.filter((s) => !s.pinned);
@@ -217,9 +235,6 @@ export default function Sidebar({ open, onToggle }) {
               {session.pinned && <Pin className="h-3 w-3 text-primary flex-shrink-0" />}
               <div className="flex-1 min-w-0">
                 <span className="truncate text-left block" title={session.title}>{session.title}</span>
-                <span className="truncate text-[11px] text-muted-foreground/75 block">
-                  {session.last_message || formatRelativeTime(session.updated_at || session.created_at)}
-                </span>
               </div>
             </div>
 
@@ -278,9 +293,9 @@ export default function Sidebar({ open, onToggle }) {
             </div>
             <div className="min-w-0">
               <h1 className="font-semibold text-base whitespace-nowrap tracking-tight leading-tight">Pathfinder</h1>
-              {state.profile?.personal?.name && (
+              {(state.profile?.personal?.name || state.activeStudentId) && (
                 <p className="text-[10px] text-muted-foreground truncate leading-tight">
-                  {state.profile.personal.name.split(' ')[0]}'s Guide
+                  {(state.profile?.personal?.name || state.activeStudentId).split(' ')[0]}'s Guide
                 </p>
               )}
             </div>
@@ -291,37 +306,44 @@ export default function Sidebar({ open, onToggle }) {
         </div>
       )}
 
-      {open && state.profiles.length > 0 && (
-        <div className="px-3 pt-3">
-          <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest px-1 block mb-1.5">
-            Active Profile
-          </label>
-          <div className="space-y-2">
-            <select
-              value={studentId || ''}
-              onChange={(e) => dispatch({ type: 'SET_ACTIVE_STUDENT', payload: e.target.value })}
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring/50"
-            >
-              {state.profiles.map((profile) => (
-                <option key={profile.student_id} value={profile.student_id}>
-                  {profile.name}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={handleCreateProfile}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-dashed px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <Layers3 className="h-4 w-4" />
-              Add Profile
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* New Chat Button (expanded) */}
       {open && (
-        <div className="p-3 pb-1">
+        <div className="p-3 pb-1 space-y-2">
+          <div className="rounded-lg border bg-background/80 p-2.5">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">
+                Active Profile
+              </p>
+              <button
+                onClick={handleCreateProfile}
+                disabled={isCreatingProfile}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-primary hover:bg-accent disabled:opacity-50"
+                title="Create profile"
+              >
+                <Plus className="h-3 w-3" />
+                New
+              </button>
+            </div>
+            <select
+              value={state.activeStudentId}
+              onChange={handleStudentChange}
+              className="w-full rounded-md border bg-background px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring/50"
+            >
+              {state.profiles.length === 0 ? (
+                <option value={state.activeStudentId}>{state.activeStudentId}</option>
+              ) : (
+                state.profiles.map((profile) => (
+                  <option key={profile.student_id} value={profile.student_id}>
+                    {profile.name || profile.student_id}
+                    {profile.program ? ` — ${profile.program}` : ''}
+                  </option>
+                ))
+              )}
+            </select>
+            <p className="mt-2 text-[11px] text-muted-foreground truncate">
+              {state.profile?.personal?.program || state.profile?.personal?.university || 'Switch profiles to change chat and profile context.'}
+            </p>
+          </div>
           <button
             onClick={handleNewChat}
             className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-border hover:bg-accent hover:border-primary/20 text-sm transition-all active:scale-[0.98]"
@@ -377,7 +399,7 @@ export default function Sidebar({ open, onToggle }) {
       {open && (
         <div className="flex-1 overflow-y-auto scrollbar-fade mt-3 px-3">
           {/* Search bar */}
-          {state.sessions.length > 3 && (
+          {currentStudentSessions.length > 3 && (
             <div className="relative mb-2">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <input

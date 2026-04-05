@@ -31,3 +31,8 @@ def generate_evidence_id() -> str:
 def generate_memory_id(prefix: str = "memory") -> str:
     """Generate a unique layered-memory ID."""
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def generate_replay_id() -> str:
+    """Generate a unique replay artifact ID."""
+    return f"replay_{uuid.uuid4().hex[:12]}"

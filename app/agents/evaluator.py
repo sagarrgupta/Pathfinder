@@ -8,66 +8,34 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from app.adapters.llm.lmstudio import get_text_llm
+from app.adapters.llm.lmstudio import get_json_llm, get_text_llm
+from app.adapters.neo4j.graph_store import store_extracted_entities, update_student
+from app.core.prompts import (
+    EVALUATOR_PROMPT,
+    EVALUATOR_REWRITE_PROMPT,
+    EVALUATOR_REWRITE_SYSTEM_PROMPT,
+    EVALUATOR_SYSTEM_PROMPT,
+)
+from app.core.quality import (
+    DecisionPayload,
+    add_handoff_note,
+    add_working_memory_item,
+    complete_task,
+    fail_task,
+    init_working_memory,
+    recent_handoff_context,
+    start_task,
+    summarize_trace,
+)
 from app.core.state import PathfinderState
-from app.services.memory_ingestion import ingest_memory
+from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.evaluator")
-
-_EVALUATION_PROMPT = """You are the Evaluator agent in Pathfinder. Your job is to assess the quality of a draft answer.
-
-Evaluate the draft answer against the available sources and respond with JSON:
-{{
-    "is_grounded": true/false,
-    "confidence_score": 0.0 to 1.0,
-    "issues": ["list of any issues found"],
-    "profile_updates": [
-        {{"field": "FIELD_TYPE", "value": "detected value", "source": "conversation"}}
-    ],
-    "needs_disclaimer": true/false,
-    "disclaimer": "optional disclaimer text if the answer contains uncertain claims"
-}}
-
-Scoring guide:
-- 1.0: Every claim is directly supported by sources
-- 0.8-0.9: Most claims supported, minor inferences
-- 0.6-0.7: Some claims supported, some reasonable inferences
-- 0.4-0.5: Limited source support, significant inferences
-- 0.0-0.3: Mostly unsupported or fabricated
-
-Key checks:
-- Are specific course codes/names real or fabricated?
-- Are university-specific claims backed by web results?
-- Does the answer acknowledge what data it lacks?
-- Is the advice appropriate given the available information?
-
-IMPORTANT — Profile Updates (Passive Learning):
-Scan the user's original query for NEW information about themselves that should be saved.
-For each piece, set "field" to one of: name, gpa, university, program, email, semester,
-interest, goal, skill, company, project, course.
-
-Examples:
-- "I'm interested in machine learning" → {{"field": "interest", "value": "Machine Learning", "source": "conversation"}}
-- "I got an A in CSC 200" → {{"field": "course", "value": "CSC 200", "source": "conversation"}}
-- "I want to work at Google" → {{"field": "goal", "value": "Work at Google", "source": "conversation"}}
-- "My GPA is 3.8" → {{"field": "gpa", "value": "3.8", "source": "conversation"}}
-- "I know Python and React" → [{{"field": "skill", "value": "Python"}}, {{"field": "skill", "value": "React"}}]
-
-Only extract genuinely new information. Don't extract questions or hypotheticals.
-
-Draft answer:
-{draft}
-
-Available sources:
-{sources}
-
-Original user query:
-{query}
-"""
 
 
 async def evaluator(state: PathfinderState) -> PathfinderState:
@@ -76,35 +44,57 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     query = state.get("query", "")
     documents = state.get("retrieved_documents", [])
     web_results = state.get("web_results", [])
+    evidence_records = state.get("evidence_records", [])
+    evidence_pack = state.get("evidence_pack", {})
+    tool_call_log = state.get("tool_call_log", [])
+    decision_payload = state.get("decision_payload", {})
+    working_memory = init_working_memory(state.get("working_memory", {}))
+    task_graph = state.get("task_graph", [])
+    blocked_reasons = list(state.get("blocked_reasons", []))
+    task_graph = start_task(task_graph, "render_final_answer")
+    handoff_context = recent_handoff_context(working_memory, to_node="evaluator")
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Verifying answer quality...")
 
     if not draft:
         # No draft to evaluate — nothing to do
+        task_graph = fail_task(task_graph, "render_final_answer", reason="No draft answer produced by upstream planner.")
         return {
             **state,
             "confidence_score": 0.0,
             "is_grounded": False,
+            "task_graph": task_graph,
             "step_progress": step_progress,
             "next_node": "responder",
         }
 
-    llm = get_text_llm()
+    llm = get_json_llm()
 
     # Compile sources
+    source_documents = list(evidence_pack.get("document_records", []) or documents)
+    source_web_results = list(evidence_pack.get("web_records", []) or web_results)
+    source_evidence_records = list(evidence_pack.get("evidence_records", []) or evidence_records)
     sources = []
-    for d in documents[:5]:
-        sources.append(f"[Document: {d.get('filename', 'unknown')}] {d.get('text', '')[:300]}")
-    for w in web_results[:5]:
-        sources.append(f"[Web: {w.get('title', '')}] {w.get('content', '')[:300]}")
+    for d in source_documents[:5]:
+        sources.append(f"[Document: {d.get('filename', 'unknown')}] {d.get('text', '')[:1000]}")
+    for w in source_web_results[:8]:
+        title = w.get("title", "")
+        url = w.get("url", "")
+        content = w.get("content", "")
+        sources.append(f"[Web: {title}] ({url}) {content[:1500]}")
     sources_text = "\n".join(sources) if sources else "No sources available."
+    provenance_text = _format_tool_call_log(tool_call_log)
 
     response = await llm.ainvoke([
-        SystemMessage(content="You are an answer quality evaluator."),
-        HumanMessage(content=_EVALUATION_PROMPT.format(
+        SystemMessage(content=EVALUATOR_SYSTEM_PROMPT),
+        HumanMessage(content=EVALUATOR_PROMPT.format(
             draft=draft[:2000],
-            sources=sources_text,
+            sources=(
+                f"{sources_text}\n\n"
+                f"Tool provenance log:\n{provenance_text}\n\n"
+                f"Handoff context:\n{json.dumps(handoff_context, ensure_ascii=True)}"
+            ),
             query=query,
         )),
     ])
@@ -113,11 +103,16 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
 
     # Parse evaluation
     try:
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        parsed = json.loads(content[json_start:json_end])
-    except (json.JSONDecodeError, ValueError):
-        parsed = {"is_grounded": True, "confidence_score": 0.5, "issues": [], "profile_updates": []}
+        parsed = parse_json_object(content) or {}
+    except Exception:
+        parsed = {
+            "is_grounded": False,
+            "confidence_score": 0.0,
+            "issues": ["Evaluator could not parse its own review output"],
+            "profile_updates": [],
+            "needs_disclaimer": False,
+            "disclaimer": "",
+        }
 
     is_grounded = parsed.get("is_grounded", True)
     confidence = parsed.get("confidence_score", 0.5)
@@ -128,41 +123,113 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
 
     # ── Handle low-confidence / ungrounded answers ──
     final_draft = draft
+    validated_payload = _validate_decision_payload(decision_payload, source_evidence_records)
+    if validated_payload:
+        original_recommendations = len(decision_payload.get("recommended_items", []))
+        kept_recommendations = len(validated_payload.get("recommended_items", []))
+        decision_payload = validated_payload
+        dropped_count = max(0, original_recommendations - kept_recommendations)
+        if dropped_count:
+            working_memory = add_working_memory_item(
+                working_memory,
+                "dropped_claims",
+                f"Dropped {dropped_count} unsupported recommendation(s) during evaluator validation.",
+            )
+        for item in validated_payload.get("blocked_or_uncertain_items", []):
+            if item.get("kind") in {"blocked", "needs_verification"}:
+                blocked_reasons.append(item.get("reason", ""))
+                working_memory = add_working_memory_item(working_memory, "planner_blockers", item.get("reason", ""))
 
-    if confidence < 0.4 and not is_grounded:
-        # Very low confidence — prepend a strong warning
-        warning = (
-            "⚠️ **Important Notice:** The information below is based on general knowledge "
-            "and may not reflect your university's actual course offerings. "
-            "I recommend checking your university's course catalog for accurate, up-to-date information.\n\n"
-        )
-        final_draft = warning + draft
-        log.warning("Low confidence (%.2f) — added warning disclaimer", confidence)
+    structured_recommendations = len(decision_payload.get("recommended_items", [])) if isinstance(decision_payload, dict) else 0
+    has_structured_plan = structured_recommendations > 0
+    # Provenance-first policy: strict on factual claims, lenient on advisory guidance.
+    has_tool_evidence = any(item.get("status") == "ok" for item in tool_call_log if isinstance(item, dict))
+    issue_stats = _issue_stats(issues)
+    severity = _issue_severity(issues, confidence, is_grounded, has_tool_evidence)
+    rewrite_threshold = 0.58 if has_tool_evidence else 0.48
+    should_rewrite_for_score = ((confidence < rewrite_threshold) or (not is_grounded)) and not has_structured_plan
+
+    if severity == "severe" or should_rewrite_for_score:
+        rewrite = await _rewrite_grounded_answer(query, draft, issues, sources_text)
+        if rewrite:
+            final_draft = rewrite
+            log.warning("Evaluator full rewrite applied (severity=%s confidence=%.2f)", severity, confidence)
+        elif confidence < 0.35 and not is_grounded:
+            warning = (
+                "I could not verify enough official information to answer this confidently. "
+                "Please check the official catalog or share the specific program page you want me to analyze."
+            )
+            final_draft = warning
+            blocked_reasons.append(warning)
+    elif severity == "mild" and issue_stats["factual_issues"] > 0:
+        patched = _patch_mild_factual_issues(draft, issues)
+        if patched:
+            final_draft = patched
+            confidence = max(confidence, 0.62)
+            log.info("Evaluator applied mild factual patch")
     elif needs_disclaimer and disclaimer:
         final_draft = f"{draft}\n\n⚠️ *{disclaimer}*"
+    elif has_structured_plan and confidence < 0.65:
+        confidence = max(confidence, 0.68)
 
     # ── Passively learn: persist profile updates detected from conversation ──
     student_id = state.get("student_id", "")
     if profile_updates:
         try:
-            serialized = "\n".join(
-                f"{update.get('field', '')}: {update.get('value', '')}" for update in profile_updates
-            )
-            await ingest_memory(
-                student_id=student_id,
-                source_type="conversation_inference",
-                content=serialized,
-                source_ref=state.get("session_id"),
-                session_id=state.get("session_id"),
-                metadata={"query": query},
-            )
+            # Separate student-level properties from entity updates
+            student_props = {}
+            entities = []
+            for update in profile_updates:
+                field = update.get("field", "")
+                value = update.get("value", "")
+                if not field or not value:
+                    continue
+                # Student-level fields (name, gpa, university, etc.)
+                if field.lower() in ("name", "gpa", "university", "program", "email", "semester"):
+                    student_props[field.lower()] = value
+                else:
+                    # Treat as entity (interest, goal, skill, etc.)
+                    label = _field_to_label(field)
+                    entities.append({
+                        "label": label,
+                        "properties": {"name": value},
+                        "relationship": _label_to_relationship(label),
+                    })
+
+            if student_props:
+                await update_student(student_id, **student_props)
+                log.info("Evaluator: passively updated student props: %s", list(student_props.keys()))
+
+            if entities:
+                count = await store_extracted_entities(entities, "conversation", student_id)
+                log.info("Evaluator: passively stored %d entities from conversation", count)
+
         except Exception as exc:
             log.warning("Evaluator: failed to persist profile updates: %s", exc)
 
-    step_progress.append(f"Confidence: {confidence:.0%} — Grounded: {'Yes' if is_grounded else 'Needs review'}")
+    step_progress.append(
+        f"Confidence: {confidence:.0%} — Grounded: {'Yes' if is_grounded else 'Needs review'} "
+        f"(issues: {issue_stats['total']}, severity: {severity})"
+    )
+    task_graph = complete_task(task_graph, "render_final_answer")
+    trace_summary = summarize_trace({
+        **state,
+        "task_graph": task_graph,
+        "working_memory": working_memory,
+        "blocked_reasons": [reason for reason in blocked_reasons if reason],
+        "confidence_score": confidence,
+        "decision_payload": decision_payload,
+    })
 
     log.info("Evaluator: confidence=%.2f grounded=%s updates=%d issues=%s",
              confidence, is_grounded, len(profile_updates), issues)
+    working_memory = add_handoff_note(
+        working_memory,
+        from_node="evaluator",
+        to_node="responder",
+        contract="validated_answer",
+        summary=f"confidence={confidence:.2f}; grounded={bool(is_grounded)}; blocked={len(blocked_reasons)}",
+    )
 
     return {
         **state,
@@ -170,6 +237,273 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
         "confidence_score": confidence,
         "is_grounded": is_grounded,
         "profile_updates": profile_updates,
+        "decision_payload": decision_payload,
+        "working_memory": working_memory,
+        "task_graph": task_graph,
+        "blocked_reasons": [reason for reason in blocked_reasons if reason],
+        "trace_summary": trace_summary,
+        "stop_reason": state.get("stop_reason", "") or _evaluate_stop_reason(decision_payload, blocked_reasons),
         "step_progress": step_progress,
         "next_node": "responder",
     }
+
+
+def _format_tool_call_log(tool_call_log: list[dict[str, Any]]) -> str:
+    """Format a concise provenance trace for evaluator grounding checks."""
+    if not tool_call_log:
+        return "No tool calls recorded."
+
+    lines = []
+    for idx, record in enumerate(tool_call_log[:20], start=1):
+        if not isinstance(record, dict):
+            continue
+        tool = str(record.get("tool", "unknown"))
+        status = str(record.get("status", "unknown"))
+        args = record.get("args", {})
+        summary = record.get("result_summary", {})
+        lines.append(
+            f"{idx}. tool={tool}; status={status}; args={json.dumps(args, ensure_ascii=True)}; "
+            f"result={json.dumps(summary, ensure_ascii=True)}"
+        )
+    return "\n".join(lines) if lines else "No tool calls recorded."
+
+
+def _issue_stats(issues: list[Any]) -> dict[str, int]:
+    """Count factual vs advisory issues from evaluator output."""
+    stats = {"total": 0, "factual_issues": 0}
+    for item in issues or []:
+        stats["total"] += 1
+        text = ""
+        issue_type = ""
+        if isinstance(item, dict):
+            issue_type = str(item.get("type", "")).lower()
+            text = str(item.get("text", "")).lower()
+        else:
+            text = str(item).lower()
+        if (
+            issue_type in {"unverified_claim", "possibly_hallucinated", "fabricated_fact"}
+            or any(token in text for token in ("unverified", "hallucinat", "unsupported", "fabricated", "deadline", "tuition", "gpa", "acceptance rate", "prerequisite"))
+        ):
+            stats["factual_issues"] += 1
+    return stats
+
+
+def _issue_severity(
+    issues: list[Any], confidence: float, is_grounded: bool, has_tool_evidence: bool
+) -> str:
+    """Classify issue severity for patch-vs-rewrite handling."""
+    stats = _issue_stats(issues)
+    if not is_grounded and (confidence < 0.45 or stats["factual_issues"] >= 2):
+        return "severe"
+    if stats["factual_issues"] >= 3:
+        return "severe"
+    if stats["factual_issues"] >= 1:
+        return "mild"
+    if not has_tool_evidence and confidence < 0.45:
+        return "mild"
+    return "none"
+
+
+def _patch_mild_factual_issues(draft: str, issues: list[Any]) -> str:
+    """Patch mild factual issues by removing unsupported-claim sentences."""
+    text = draft.strip()
+    if not text:
+        return ""
+    remove_markers: list[str] = []
+    for item in issues or []:
+        if isinstance(item, dict):
+            marker = str(item.get("text", "") or item.get("claim", "")).strip()
+        else:
+            marker = str(item).strip()
+        if marker:
+            remove_markers.append(marker.lower())
+
+    if not remove_markers:
+        return text
+
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    kept: list[str] = []
+    removed_any = False
+    for sentence in sentences:
+        low = sentence.lower()
+        if any(marker and marker[:80] in low for marker in remove_markers):
+            removed_any = True
+            continue
+        kept.append(sentence)
+
+    if not removed_any:
+        return text
+    patched = " ".join(kept).strip()
+    if not patched:
+        return ""
+    return (
+        f"{patched}\n\n"
+        "I removed one or more potentially unverified factual claims to keep this answer grounded."
+    )
+
+
+async def _rewrite_grounded_answer(
+    query: str, draft: str, issues: list[str], sources_text: str
+) -> str:
+    """Attempt to repair an answer by restricting it to verified sources."""
+    if not sources_text or sources_text == "No sources available.":
+        return ""
+
+    llm = get_text_llm()
+    response = await llm.ainvoke([
+        SystemMessage(content=EVALUATOR_REWRITE_SYSTEM_PROMPT),
+        HumanMessage(content=EVALUATOR_REWRITE_PROMPT.format(
+            query=query,
+            draft=draft[:2500],
+            issues=", ".join(issues[:8]) if issues else "None listed",
+            sources=sources_text[:12000],
+        )),
+    ])
+    content = response.content if isinstance(response.content, str) else str(response.content)
+    return content.strip()
+
+
+def _field_to_label(field: str) -> str:
+    """Map a profile update field name to an entity label."""
+    mapping = {
+        "interest": "Interest", "interests": "Interest",
+        "goal": "Goal", "goals": "Goal",
+        "skill": "Skill", "skills": "Skill",
+        "company": "Company", "experience": "Company",
+        "project": "Project", "projects": "Project",
+        "course": "Course", "courses": "Course",
+    }
+    return mapping.get(field.lower(), "Interest")
+
+
+def _validate_decision_payload(
+    payload: DecisionPayload, evidence_records: list[dict[str, Any]]
+) -> DecisionPayload:
+    """Drop unsupported recommendations from a structured planner payload."""
+    if not payload:
+        return {}
+
+    supported_urls = {record.get("source_url", "") for record in evidence_records if record.get("source_url")}
+    supported_codes = {
+        record.get("value", {}).get("code", "")
+        for record in evidence_records
+        if isinstance(record.get("value"), dict)
+    }
+
+    source_refs = payload.get("source_refs", [])
+    valid_refs = [ref for ref in source_refs if ref.get("url", "") in supported_urls or not ref.get("url")]
+    evidence_texts = [
+        " ".join(
+            str(part)
+            for part in (
+                record.get("source_title", ""),
+                record.get("excerpt", ""),
+                record.get("value", {}).get("name", "") if isinstance(record.get("value"), dict) else "",
+                record.get("value", {}).get("code", "") if isinstance(record.get("value"), dict) else "",
+                record.get("value", {}).get("summary", "") if isinstance(record.get("value"), dict) else "",
+            )
+        ).lower()
+        for record in evidence_records
+    ]
+
+    validated_recommendations = []
+    for item in payload.get("recommended_items", []):
+        codes = set(item.get("support_codes", []))
+        has_code_support = bool(codes & supported_codes)
+        support_refs = item.get("support_refs", []) if isinstance(item.get("support_refs"), list) else []
+        has_item_ref_support = any(
+            isinstance(ref, dict) and (ref.get("url", "") in supported_urls or not ref.get("url"))
+            for ref in support_refs
+        )
+        has_ref_support = _item_has_textual_support(item, evidence_texts, valid_refs)
+        if has_code_support or has_ref_support or has_item_ref_support:
+            validated_recommendations.append(item)
+
+    validated = dict(payload)
+    validated["recommended_items"] = validated_recommendations
+    validated["source_refs"] = valid_refs
+
+    dropped = len(payload.get("recommended_items", [])) - len(validated_recommendations)
+    if dropped > 0:
+        blocked = list(validated.get("blocked_or_uncertain_items", []))
+        blocked.append({
+            "label": "Some recommendations were removed",
+            "reason": f"{dropped} unsupported recommendation(s) were dropped during quality validation.",
+            "kind": "needs_verification",
+        })
+        validated["blocked_or_uncertain_items"] = blocked
+
+    return validated
+
+
+def _item_has_textual_support(
+    item: dict[str, Any],
+    evidence_texts: list[str],
+    valid_refs: list[dict[str, Any]],
+) -> bool:
+    """Check whether a recommendation is textually grounded in evidence."""
+    label = str(item.get("label", "")).strip().lower()
+    reason = str(item.get("reason", "")).strip().lower()
+    if not label and not reason:
+        return False
+
+    item_tokens = _support_tokens(label)
+    if len(item_tokens) < 2 and not _looks_like_course_label(label):
+        return False
+
+    ref_texts = [
+        " ".join(
+            str(part)
+            for part in (ref.get("title", ""), ref.get("excerpt", ""), ref.get("entity_type", ""))
+        ).lower()
+        for ref in valid_refs
+    ]
+
+    for text in evidence_texts + ref_texts:
+        if _looks_like_course_label(label) and label in text:
+            return True
+        overlap = [token for token in item_tokens if token in text]
+        if len(overlap) >= min(2, len(item_tokens)):
+            return True
+        if reason:
+            reason_tokens = _support_tokens(reason)
+            if len([token for token in reason_tokens if token in text]) >= 3:
+                return True
+    return False
+
+
+def _support_tokens(text: str) -> list[str]:
+    tokens = []
+    for token in re.findall(r"[a-z0-9]{2,}", text.lower()):
+        if token not in {"the", "and", "for", "with", "this", "that", "from", "your", "good", "best", "option"} and token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def _looks_like_course_label(label: str) -> bool:
+    return bool(re.search(r"\b[A-Z]{2,4}\s?-?\d{3}[A-Z]?\b", label or "", re.I))
+
+
+def _label_to_relationship(label: str) -> str:
+    """Map an entity label to a relationship type."""
+    mapping = {
+        "Interest": "INTERESTED_IN",
+        "Goal": "HAS_GOAL",
+        "Skill": "HAS_SKILL",
+        "Company": "WORKED_AT",
+        "Project": "COMPLETED",
+        "Course": "TOOK",
+    }
+    return mapping.get(label, "HAS")
+
+
+def _evaluate_stop_reason(payload: dict[str, Any], blocked_reasons: list[str]) -> str:
+    blocked_markers = payload.get("blocked_reasons", []) if isinstance(payload, dict) else []
+    for marker in blocked_markers:
+        if isinstance(marker, str) and marker.startswith("hard_blocked"):
+            return "hard_blocked"
+        if isinstance(marker, str) and marker.startswith("safe_partial_plan"):
+            return "safe_partial_plan"
+    if blocked_reasons:
+        return "partial_answer"
+    return ""

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -9,25 +9,17 @@ import { cn } from '@/lib/utils';
 
 // Map technical node names to user-friendly phase labels
 const STEP_LABELS = {
-  guardrail_agent: 'Guardrails',
-  question_triage: 'Triage',
-  reasoning_planner: 'Planner',
-  profile_memory_agent: 'Profile Memory',
-  semantic_memory_agent: 'Semantic Memory',
-  document_evidence_agent: 'Document Evidence',
+  input_guard: 'Validation',
+  orchestrator: 'Planning',
+  clarifier: 'Clarifying',
+  doc_analyst: 'Documents',
+  profile_manager: 'Your Profile',
   web_researcher: 'Research',
-  evidence_judge_agent: 'Evidence Judge',
-  conflict_resolution_agent: 'Conflict Check',
-  missing_info_agent: 'Missing Info',
-  academic_strategy_agent: 'Academic Strategy',
-  career_strategy_agent: 'Career Strategy',
-  interview_coach_agent: 'Interview Coach',
-  decision_comparison_agent: 'Decision Support',
-  document_understanding_agent: 'Document Insight',
-  plan_action_agent: 'Action Plan',
-  answer_composer_agent: 'Answer Composer',
-  memory_writer_agent: 'Memory Writer',
-  memory_consolidation_agent: 'Memory Consolidation',
+  academic_advisor: 'Academic Advice',
+  career_planner: 'Career',
+  interview_prep: 'Interview Prep',
+  evaluator: 'Quality Check',
+  responder: 'Response',
 };
 
 function formatStep(step) {
@@ -35,94 +27,84 @@ function formatStep(step) {
   return { label, message: step.message || '' };
 }
 
-export default function Message({ message, isLast, isStreaming, onConflictAction }) {
+function formatPriority(value) {
+  return String(value || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+export default function Message({ message, isLast, isStreaming }) {
   const [showCitations, setShowCitations] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
-  const [showDetails, setShowDetails] = useState(false);
+  const [showAdvisorContext, setShowAdvisorContext] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [selectedConflictAction, setSelectedConflictAction] = useState('');
-  const [conflictActionState, setConflictActionState] = useState({ loading: false, done: false, message: '', error: '' });
   const isUser = message.role === 'user';
   const metadata = message.metadata || {};
   const citations = metadata.citations || [];
   const progress = message.progress || [];
   const attachments = message.attachments || [];
-  const rationale = metadata.rationale || [];
-  const sources = metadata.sources || [];
-  const recommendedActions = metadata.recommendedActions || [];
-  const conflictNudges = metadata.conflictNudges || [];
-  const missingInfo = metadata.missingInfo || [];
-  const retrievalSummary = metadata.retrievalSummary || {};
-  const executionTrace = metadata.executionTrace || [];
   const isCurrentlyStreaming = isLast && isStreaming && !isUser;
   const hasContent = !!message.content;
-  const compactContextSummary = `${retrievalSummary.candidate_facts || 0} facts • ${retrievalSummary.documents || 0} docs • ${retrievalSummary.web_results || 0} web`;
-  const hasDetails = Boolean(
-    metadata.confidence !== undefined
-      || sources.length > 0
-      || rationale.length > 0
-      || missingInfo.length > 0
-      || retrievalSummary.documents
-      || retrievalSummary.web_results
-      || retrievalSummary.candidate_facts
-      || executionTrace.length > 0
+  const studentStrategy = metadata.studentStrategy || {};
+  const studentOperatingModel = metadata.studentOperatingModel || {};
+  const recommendationOutcomeProfile = metadata.recommendationOutcomeProfile || {};
+  const decisionContinuity = metadata.decisionContinuity || {};
+  const sessionMemory = metadata.sessionMemory || {};
+  const retrievalSummary = metadata.retrievalSummary || {};
+  const retrievalTrace = metadata.retrievalTrace || [];
+  const retrievalDiagnostics = metadata.retrievalDiagnostics || {};
+  const runtimeSnapshot = metadata.runtimeSnapshot || {};
+  const dependencyStatus = metadata.dependencyStatus || {};
+  const replayId = metadata.replayId || '';
+  const advisorContextAvailable = !isUser && (
+    studentStrategy.primary_priority ||
+    studentOperatingModel.risk_tolerance ||
+    recommendationOutcomeProfile.follow_through_style ||
+    decisionContinuity.is_continuation ||
+    sessionMemory.transcript_digest?.kept_turns ||
+    retrievalSummary.strategy ||
+    retrievalDiagnostics.evidence_quality?.overall_quality ||
+    retrievalTrace.length > 0 ||
+    runtimeSnapshot.selected_retrieval_mode ||
+    Object.keys(dependencyStatus).length > 0 ||
+    replayId
   );
-  const primaryConflictNudge = conflictNudges[0] || null;
-  const conflictOptions = useMemo(() => {
-    if (!primaryConflictNudge) return [];
-    if (primaryConflictNudge.options?.length) return primaryConflictNudge.options;
-    const value = primaryConflictNudge.value || '';
-    const alternatives = primaryConflictNudge.alternatives || [];
-    return [
-      ...(value ? [{ action: 'choose_value', value, label: `Use '${value}' as current` }] : []),
-      ...alternatives.filter(Boolean).map((alt) => ({ action: 'choose_value', value: alt, label: `Use '${alt}' as current` })),
-      { action: 'keep_both', label: 'Keep both for now' },
-      { action: 'ask_later', label: 'Ask me later' },
-    ];
-  }, [primaryConflictNudge]);
+
+  const buildCopyText = () => {
+    const parts = [];
+
+    if (message.content) {
+      parts.push(message.content.trim());
+    }
+
+    if (citations.length > 0) {
+      const sourcesText = citations
+        .map((c, i) => {
+          const title = c.metadata?.title || `Source ${i + 1}`;
+          return `${i + 1}. ${title}\n${c.source}`;
+        })
+        .join('\n\n');
+      parts.push(`Sources:\n${sourcesText}`);
+    }
+
+    return parts.filter(Boolean).join('\n\n').trim();
+  };
 
   const handleCopy = async () => {
+    const copyText = buildCopyText();
     try {
-      await navigator.clipboard.writeText(message.content || '');
+      await navigator.clipboard.writeText(copyText);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
       const textarea = document.createElement('textarea');
-      textarea.value = message.content || '';
+      textarea.value = copyText;
       document.body.appendChild(textarea);
       textarea.select();
       document.execCommand('copy');
       document.body.removeChild(textarea);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    }
-  };
-
-  const handleConflictApply = async () => {
-    if (!primaryConflictNudge || !selectedConflictAction || !onConflictAction) return;
-    const [action, ...valueParts] = selectedConflictAction.split('::');
-    const selectedValue = valueParts.join('::') || undefined;
-    setConflictActionState({ loading: true, done: false, message: '', error: '' });
-    try {
-      const result = await onConflictAction({
-        conflict_id: primaryConflictNudge.id,
-        fact_type: primaryConflictNudge.fact_type,
-        action,
-        selected_value: selectedValue,
-      });
-      setConflictActionState({
-        loading: false,
-        done: true,
-        message: result?.message || 'Saved your choice.',
-        error: '',
-      });
-    } catch (error) {
-      setConflictActionState({
-        loading: false,
-        done: false,
-        message: '',
-        error: error?.message || 'Could not save your choice.',
-      });
     }
   };
 
@@ -137,27 +119,35 @@ export default function Message({ message, isLast, isStreaming, onConflictAction
 
       {/* Content */}
       <div className={cn(
-        'group rounded-2xl px-4 py-3 shadow-sm transition-colors',
+        'group rounded-2xl px-4 py-3 transition-colors',
         isUser
           ? 'max-w-[75%] bg-primary text-primary-foreground'
-          : 'max-w-[min(100%,820px)] border border-border/60 bg-muted/55'
+          : 'max-w-full bg-muted/70'
       )}>
         {/* ── Collapsible Progress (bot only) ── */}
         {!isUser && progress.length > 0 && (
           <div className="mb-3">
             {/* During streaming: show live progress */}
             {isCurrentlyStreaming && !hasContent ? (
-              (() => {
-                const latest = progress[progress.length - 1];
-                const { label, message } = formatStep(latest);
-                return (
-                  <div className="flex items-center gap-2 text-xs animate-fade-in rounded-lg bg-background/60 px-2.5 py-2">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-primary flex-shrink-0" />
-                    <span className="font-medium text-foreground/80">{label}</span>
-                    <span className="text-muted-foreground truncate">{message}</span>
-                  </div>
-                );
-              })()
+              <div className="space-y-1.5">
+                {progress.map((step, i) => {
+                  const { label, message } = formatStep(step);
+                  return (
+                    <div key={i} className={cn(
+                      'flex items-center gap-2 text-xs',
+                      i === progress.length - 1 ? 'animate-fade-in' : ''
+                    )}>
+                      {i === progress.length - 1 ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-primary flex-shrink-0" />
+                      ) : (
+                        <CheckCircle2 className="h-3 w-3 text-green-500 dark:text-green-400 flex-shrink-0" />
+                      )}
+                      <span className="font-medium text-foreground/70">{label}</span>
+                      <span className="text-muted-foreground">{message}</span>
+                    </div>
+                  );
+                })}
+              </div>
             ) : (
               /* After streaming: collapsible summary */
               <div>
@@ -234,143 +224,277 @@ export default function Message({ message, isLast, isStreaming, onConflictAction
           </div>
         )}
 
-        {!isUser && conflictNudges.length > 0 && (
-          <div className="mt-3 rounded-lg border border-amber-200/60 bg-amber-50/80 dark:border-amber-800/50 dark:bg-amber-950/30 px-3 py-2">
-            <p className="text-xs font-semibold text-amber-800 dark:text-amber-300 mb-1">Profile uncertainty</p>
-            {primaryConflictNudge && (
-              <>
-                <p className="text-xs text-amber-900/80 dark:text-amber-200/80">{primaryConflictNudge.message}</p>
-                {primaryConflictNudge.summary?.question && (
-                  <div className="mt-2 rounded-md bg-amber-100/70 px-2.5 py-2 text-xs text-amber-950 dark:bg-amber-900/30 dark:text-amber-100">
-                    <p className="font-medium">{primaryConflictNudge.summary.question}</p>
-                    <div className="mt-1 space-y-0.5 text-amber-900/80 dark:text-amber-200/85">
-                      {primaryConflictNudge.summary.current_option && (
-                        <p>Current option: {primaryConflictNudge.summary.current_option}</p>
-                      )}
-                      {primaryConflictNudge.summary.other_options?.length > 0 && (
-                        <p>Other option{primaryConflictNudge.summary.other_options.length > 1 ? 's' : ''}: {primaryConflictNudge.summary.other_options.join(', ')}</p>
-                      )}
-                    </div>
-                  </div>
-                )}
-                {!conflictActionState.done && conflictOptions.length > 0 && (
-                  <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <select
-                      value={selectedConflictAction}
-                      onChange={(e) => setSelectedConflictAction(e.target.value)}
-                      className="h-8 rounded-md border border-amber-200 bg-background px-2 text-xs text-foreground dark:border-amber-800 dark:bg-background"
-                    >
-                      <option value="">Choose what to do</option>
-                      {conflictOptions.map((option) => (
-                        <option
-                          key={`${option.action}-${option.value || option.label}`}
-                          value={option.value ? `${option.action}::${option.value}` : option.action}
-                        >
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={handleConflictApply}
-                      disabled={!selectedConflictAction || conflictActionState.loading}
-                      className="inline-flex h-8 items-center justify-center rounded-md bg-amber-600 px-3 text-xs font-medium text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {conflictActionState.loading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Apply'}
-                    </button>
-                  </div>
-                )}
-                {conflictActionState.message && (
-                  <p className="mt-2 text-xs text-amber-900/80 dark:text-amber-200/80">{conflictActionState.message}</p>
-                )}
-                {conflictActionState.error && (
-                  <p className="mt-2 text-xs text-red-700 dark:text-red-300">{conflictActionState.error}</p>
-                )}
-              </>
+        {/* ── Metadata badges ── */}
+        {!isUser && metadata.confidence !== undefined && (
+          <div className="flex flex-wrap items-center gap-2 mt-3 pt-2.5 border-t border-border/40">
+            <span className={cn(
+              'inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium',
+              metadata.confidence >= 0.8
+                ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                : metadata.confidence >= 0.5
+                  ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300'
+                  : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+            )}>
+              <Shield className="h-3 w-3 flex-shrink-0" />
+              {Math.round(metadata.confidence * 100)}% confidence
+            </span>
+            {metadata.method && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                {metadata.method}
+              </span>
+            )}
+            {metadata.qualityPath && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+                {metadata.qualityPath}
+              </span>
             )}
           </div>
         )}
 
-        {!isUser && missingInfo.length > 0 && (
-          <div className="mt-2 text-xs text-muted-foreground">
-            Most useful extra info: {missingInfo.slice(0, 2).join(', ')}
-          </div>
-        )}
-
-        {!isUser && recommendedActions.length > 0 && (
-          <div className="mt-3 rounded-xl border bg-background/75 px-3 py-3">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-foreground/75">Suggested next steps</p>
-            <ul className="space-y-1.5 text-sm text-muted-foreground">
-              {recommendedActions.slice(0, 3).map((item, index) => (
-                <li key={index} className="flex gap-2">
-                  <span className="mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary/60" />
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {!isUser && hasDetails && (
-          <div className="mt-3">
+        {!isUser && advisorContextAvailable && (
+          <div className="mt-2">
             <button
-              onClick={() => setShowDetails(!showDetails)}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded-md px-1.5 py-0.5 -ml-1.5 hover:bg-accent/50"
+              onClick={() => setShowAdvisorContext(!showAdvisorContext)}
+              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 rounded-md px-1.5 py-0.5 -ml-1.5 hover:bg-accent/50 transition-colors"
             >
-              {showDetails ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-              <span>Answer details</span>
+              {showAdvisorContext ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+              Advisor context
             </button>
-            {showDetails && (
-              <div className="mt-2 space-y-3 rounded-xl border bg-background/70 px-3 py-3 animate-fade-in">
-                {metadata.confidence !== undefined && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className={cn(
-                      'inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium',
-                      metadata.confidence >= 0.8
-                        ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                        : metadata.confidence >= 0.5
-                          ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300'
-                          : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-                    )}>
-                      <Shield className="h-3 w-3 flex-shrink-0" />
-                      {Math.round(metadata.confidence * 100)}% confidence
-                    </span>
-                    {metadata.method && (
+            {showAdvisorContext && (
+              <div className="mt-2 rounded-xl border bg-card/60 p-3 space-y-3 animate-fade-in">
+                {studentStrategy.primary_priority && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Student Strategy</p>
+                    <div className="flex flex-wrap gap-1.5">
                       <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
-                        {metadata.method}
+                        {formatPriority(studentStrategy.primary_priority)}
                       </span>
-                    )}
-                    {sources.length > 0 && (
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
-                        {sources.slice(0, 2).join(' + ')}
+                      {(studentStrategy.priorities || []).slice(1, 4).map((priority) => (
+                        <span key={priority} className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {formatPriority(priority)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {studentOperatingModel.risk_tolerance && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Operating Model</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                        {formatPriority(studentOperatingModel.risk_tolerance)} risk
                       </span>
+                      {studentOperatingModel.workload_preference && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {formatPriority(studentOperatingModel.workload_preference)} load
+                        </span>
+                      )}
+                      {studentOperatingModel.internship_urgency && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Internship urgency: {formatPriority(studentOperatingModel.internship_urgency)}
+                        </span>
+                      )}
+                      {studentOperatingModel.certainty_preference && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Certainty: {formatPriority(studentOperatingModel.certainty_preference)}
+                        </span>
+                      )}
+                      {studentOperatingModel.grad_school_seriousness && studentOperatingModel.grad_school_seriousness !== 'low' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Grad school: {formatPriority(studentOperatingModel.grad_school_seriousness)}
+                        </span>
+                      )}
+                      {studentOperatingModel.planning_style && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {formatPriority(studentOperatingModel.planning_style)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {recommendationOutcomeProfile.follow_through_style && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Recommendation History</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                        {formatPriority(recommendationOutcomeProfile.follow_through_style)}
+                      </span>
+                      {Array.isArray(recommendationOutcomeProfile.preferred_recommendation_types) &&
+                        recommendationOutcomeProfile.preferred_recommendation_types.slice(0, 3).map((item) => (
+                          <span key={item} className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                            Prefers {formatPriority(item)}
+                          </span>
+                        ))}
+                      {typeof recommendationOutcomeProfile.follow_through_ratio === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Follow-through {(recommendationOutcomeProfile.follow_through_ratio * 100).toFixed(0)}%
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {decisionContinuity.is_continuation && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Decision Continuity</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                        Continuing prior plan
+                      </span>
+                      {decisionContinuity.latest_title && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {decisionContinuity.latest_title}
+                        </span>
+                      )}
+                      {typeof decisionContinuity.related_count === 'number' && decisionContinuity.related_count > 1 && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {decisionContinuity.related_count} related decisions
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {sessionMemory.transcript_digest?.kept_turns > 0 && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Session Memory</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                        {sessionMemory.transcript_digest.kept_turns} turns kept
+                      </span>
+                      {sessionMemory.transcript_digest?.omitted_turns > 0 && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {sessionMemory.transcript_digest.omitted_turns} compacted
+                        </span>
+                      )}
+                      {sessionMemory.lifecycle?.ttl_seconds > 0 && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          TTL {Math.round(sessionMemory.lifecycle.ttl_seconds / 3600)}h
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {(retrievalSummary.strategy || retrievalTrace.length > 0) && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Evidence Path</p>
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {retrievalSummary.strategy && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                          {retrievalSummary.strategy}
+                        </span>
+                      )}
+                      {typeof retrievalSummary.document_count === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {retrievalSummary.document_count} docs
+                        </span>
+                      )}
+                      {typeof retrievalSummary.web_count === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {retrievalSummary.web_count} web
+                        </span>
+                      )}
+                      {typeof retrievalSummary.evidence_record_count === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {retrievalSummary.evidence_record_count} facts
+                        </span>
+                      )}
+                    </div>
+                    {retrievalTrace.length > 0 && (
+                      <div className="space-y-1.5">
+                        {retrievalTrace.slice(0, 3).map((item, index) => (
+                          <div key={`${item.source}-${item.label}-${index}`} className="text-xs rounded-lg border bg-muted/30 px-2.5 py-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-medium text-foreground truncate">{item.label}</span>
+                              <span className="text-muted-foreground">{item.source}</span>
+                            </div>
+                            {item.reason?.matched_terms?.length > 0 && (
+                              <p className="text-muted-foreground mt-1">
+                                matched: {item.reason.matched_terms.slice(0, 4).join(', ')}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
                 )}
 
-                {(retrievalSummary.documents || retrievalSummary.web_results || retrievalSummary.candidate_facts) && (
-                  <div className="inline-flex items-center rounded-full bg-muted px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
-                    Context used: {compactContextSummary}
+                {retrievalDiagnostics.evidence_quality?.overall_quality > 0 && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Evidence Quality</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                        Overall {(retrievalDiagnostics.evidence_quality.overall_quality * 100).toFixed(0)}%
+                      </span>
+                      {typeof retrievalDiagnostics.evidence_quality.document_trust_avg === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Docs {(retrievalDiagnostics.evidence_quality.document_trust_avg * 100).toFixed(0)}%
+                        </span>
+                      )}
+                      {typeof retrievalDiagnostics.evidence_quality.web_quality_avg === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Web {(retrievalDiagnostics.evidence_quality.web_quality_avg * 100).toFixed(0)}%
+                        </span>
+                      )}
+                      {typeof retrievalDiagnostics.evidence_quality.official_web_hits === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {retrievalDiagnostics.evidence_quality.official_web_hits} official web
+                        </span>
+                      )}
+                    </div>
                   </div>
                 )}
 
-                {rationale.length > 0 && (
-                  <div className="space-y-1 text-xs text-muted-foreground">
-                    {rationale.slice(0, 2).map((item, index) => (
-                      <p key={index}>{item}</p>
-                    ))}
+                {(runtimeSnapshot.selected_text_model || runtimeSnapshot.selected_retrieval_mode || Object.keys(dependencyStatus).length > 0) && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Runtime</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {runtimeSnapshot.advisor_mode && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                          {formatPriority(runtimeSnapshot.advisor_mode)}
+                        </span>
+                      )}
+                      {runtimeSnapshot.selected_text_model && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {runtimeSnapshot.selected_text_model}
+                        </span>
+                      )}
+                      {runtimeSnapshot.selected_retrieval_mode && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {runtimeSnapshot.selected_retrieval_mode}
+                        </span>
+                      )}
+                      {Object.entries(dependencyStatus).map(([name, status]) => (
+                        <span
+                          key={name}
+                          className={cn(
+                            'text-xs px-2 py-0.5 rounded-full font-medium',
+                            status === 'connected'
+                              ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                              : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                          )}
+                        >
+                          {name}: {status}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 )}
 
-                {missingInfo.length > 0 && (
-                  <div className="text-xs text-muted-foreground">
-                    Most useful extra info: {missingInfo.slice(0, 2).join(', ')}
-                  </div>
-                )}
-
-                {executionTrace.length > 0 && (
-                  <div className="text-[11px] text-muted-foreground">
-                    Runtime trace: {executionTrace.map((item) => item.agent).join(' -> ')}
+                {replayId && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Replay</p>
+                    <a
+                      href={`/replays?replay=${encodeURIComponent(replayId)}`}
+                      className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary font-medium hover:bg-primary/15 transition-colors"
+                    >
+                      Open {replayId}
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
                   </div>
                 )}
               </div>
@@ -432,7 +556,6 @@ export default function Message({ message, isLast, isStreaming, onConflictAction
             </button>
           </div>
         )}
-
       </div>
 
       {/* User Avatar */}

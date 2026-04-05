@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 import re
 from typing import Any
@@ -13,47 +14,18 @@ from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import (
     ensure_student,
     link_memory_to_evidence,
+    mark_candidate_fact_promoted,
     store_candidate_fact,
     store_evidence,
     store_memory_item,
     update_student,
 )
+from app.core.prompts import MEMORY_INGESTION_EXTRACTION_PROMPT
+from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.memory.ingestion")
 
-_EXTRACTION_PROMPT = """You extract reusable student memory from evidence.
-
-Return ONLY valid JSON with this shape:
-{
-  "student_properties": {"name": "", "gpa": "", "university": "", "program": "", "semester": ""},
-  "candidate_facts": [
-    {"fact_type": "goal|skill|interest|course|constraint|preference|behavior|identity|experience|project|generic",
-     "value": "short fact",
-     "confidence": 0.0,
-     "salience": 0.0,
-     "time_scope": "short_term|long_term",
-     "route": "resolved_core|candidate_structured|generic_long_term|short_term_only",
-     "metadata": {}}
-  ],
-  "generic_memories": [
-    {"memory_type": "preference|constraint|behavior|context|generic",
-     "summary": "short reusable memory summary",
-     "confidence": 0.0,
-     "salience": 0.0,
-     "time_scope": "short_term|long_term",
-     "tags": [],
-     "route": "generic_long_term|short_term_only",
-     "metadata": {}}
-  ]
-}
-
-Rules:
-- Extract only reusable information that can help future personalization.
-- Prefer "resolved_core" only for strong, direct facts from the user/evidence.
-- Use "short_term_only" for temporary or low-value details.
-- Keep candidate_facts and generic_memories short and concrete.
-- Confidence and salience must be between 0.0 and 1.0.
-"""
+_EXTRACTION_PROMPT = MEMORY_INGESTION_EXTRACTION_PROMPT
 
 _CORE_LABELS = {
     "goal": ("Goal", "HAS_GOAL"),
@@ -66,6 +38,40 @@ _CORE_LABELS = {
     "preference": ("Preference", "HAS_PREFERENCE"),
     "behavior": ("BehavioralPattern", "HAS_BEHAVIOR"),
 }
+
+_AGGRESSIVE_PROMOTION_TYPES = {"goal", "skill", "interest", "preference"}
+_AGGRESSIVE_PROMOTION_CONFIDENCE = 0.8
+_AGGRESSIVE_PROMOTION_SALIENCE = 0.72
+
+
+@dataclass(frozen=True)
+class CandidateFactRecord:
+    """Normalized candidate fact ready for storage."""
+
+    fact_type: str
+    value: str
+    normalized_value: str
+    confidence: float
+    salience: float
+    time_scope: str
+    route: str
+    stability: str
+    evidence_kind: str
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ProfileFactRecord:
+    """Unified durable profile fact projected from core entities or student properties."""
+
+    fact_type: str
+    value: str
+    normalized_value: str
+    source_kind: str
+    stability: str
+    confidence: float
+    status: str
+    metadata: dict[str, Any]
 
 
 def _title_case_words(value: str) -> str:
@@ -182,6 +188,50 @@ def _clean_candidate_value(fact_type: str, value: str) -> str:
     return text.strip()
 
 
+def _classify_fact_stability(fact_type: str, value: str, metadata: dict[str, Any], time_scope: str) -> str:
+    explicit = str(metadata.get("stability", "") or "").strip().lower()
+    if explicit in {"stable", "evolving", "temporary"}:
+        return explicit
+    lowered = value.casefold()
+    if time_scope == "short_term":
+        return "temporary"
+    if fact_type in {"goal", "interest", "preference", "constraint", "behavior"}:
+        if any(token in lowered for token in ("this semester", "right now", "currently", "for now", "temporarily")):
+            return "temporary"
+        return "evolving"
+    return "stable"
+
+
+def _evidence_kind(metadata: dict[str, Any]) -> str:
+    explicit = str(metadata.get("evidence_kind", "") or "").strip().lower()
+    if explicit in {"direct_statement", "document_fact", "inference"}:
+        return explicit
+    if bool(metadata.get("is_direct_statement")):
+        return "direct_statement"
+    return "inference"
+
+
+def _normalize_fact_metadata(
+    *,
+    fact_type: str,
+    value: str,
+    route: str,
+    time_scope: str,
+    metadata: dict[str, Any] | None,
+) -> tuple[str, str, str, dict[str, Any]]:
+    base = dict(metadata or {})
+    normalized_value = str(base.get("normalized_value") or _semantic_fact_key(fact_type, value) or value).strip()
+    evidence_kind = _evidence_kind(base)
+    stability = _classify_fact_stability(fact_type, value, base, time_scope)
+    if route == "resolved_core" and stability == "temporary":
+        stability = "evolving"
+    base["normalized_value"] = normalized_value
+    base["stability"] = stability
+    base["evidence_kind"] = evidence_kind
+    base["is_direct_statement"] = evidence_kind == "direct_statement"
+    return normalized_value, stability, evidence_kind, base
+
+
 def _clean_student_property(key: str, value: str) -> str:
     text = (value or "").strip().rstrip(".")
     if not text:
@@ -262,7 +312,12 @@ def _heuristic_candidate_facts(text: str) -> list[dict[str, Any]]:
                     "salience": 0.8 if fact_type in {"goal", "preference", "constraint"} else 0.72,
                     "time_scope": "long_term",
                     "route": "resolved_core" if fact_type in _CORE_LABELS else "candidate_structured",
-                    "metadata": {"source": "heuristic_extraction"},
+                    "metadata": {
+                        "source": "heuristic_extraction",
+                        "source_span": raw_value,
+                        "evidence_kind": "direct_statement",
+                        "is_direct_statement": True,
+                    },
                 }
             )
     return facts
@@ -290,7 +345,13 @@ def _normalize_candidate_fact(fact: dict[str, Any], student_updates: dict[str, s
     confidence = _safe_float(fact.get("confidence"), 0.6)
     salience = _safe_float(fact.get("salience"), 0.6)
     time_scope = fact.get("time_scope", "long_term")
-    metadata = fact.get("metadata", {}) or {}
+    normalized_value, stability, evidence_kind, metadata = _normalize_fact_metadata(
+        fact_type=fact_type,
+        value=value,
+        route=route,
+        time_scope=time_scope,
+        metadata=fact.get("metadata", {}) or {},
+    )
     normalized_facts: list[dict[str, Any]] = []
 
     for expanded_value in _expand_core_values(fact_type, value):
@@ -305,6 +366,9 @@ def _normalize_candidate_fact(fact: dict[str, Any], student_updates: dict[str, s
                 "salience": salience,
                 "time_scope": time_scope,
                 "route": route,
+                "normalized_value": normalized_value or _semantic_fact_key(fact_type, cleaned),
+                "stability": stability,
+                "evidence_kind": evidence_kind,
                 "metadata": metadata,
             }
         )
@@ -398,6 +462,36 @@ def _safe_float(value: Any, default: float) -> float:
         return default
 
 
+def _should_promote_candidate_structured(
+    fact_type: str,
+    route: str,
+    confidence: float,
+    salience: float,
+    stored_fact: dict[str, Any] | None = None,
+) -> bool:
+    """Promote high-confidence structured facts into core nodes when safe."""
+    if route == "resolved_core":
+        return fact_type in _CORE_LABELS
+    if route != "candidate_structured":
+        return False
+    if fact_type not in _AGGRESSIVE_PROMOTION_TYPES:
+        return False
+    stored_fact = stored_fact or {}
+    support_count = int(stored_fact.get("support_count") or 0)
+    direct_statement_count = int(stored_fact.get("direct_statement_count") or 0)
+    document_support_count = int(stored_fact.get("document_support_count") or 0)
+    promotion_score = _safe_float(stored_fact.get("promotion_score"), 0.0)
+    if confidence >= _AGGRESSIVE_PROMOTION_CONFIDENCE and salience >= _AGGRESSIVE_PROMOTION_SALIENCE:
+        return True
+    if direct_statement_count > 0 and confidence >= 0.76 and promotion_score >= 0.72:
+        return True
+    if support_count >= 2 and promotion_score >= 0.74:
+        return True
+    if document_support_count > 0 and confidence >= 0.7 and salience >= 0.68:
+        return True
+    return False
+
+
 async def ingest_memory(
     *,
     student_id: str,
@@ -449,6 +543,9 @@ async def ingest_memory(
         confidence = _safe_float(fact.get("confidence"), 0.6)
         salience = _safe_float(fact.get("salience"), 0.6)
         status = "resolved" if route == "resolved_core" else "candidate"
+        normalized_value = str(fact.get("normalized_value") or _semantic_fact_key(fact_type, value) or value).strip()
+        stability = str(fact.get("stability") or "evolving").strip().lower()
+        evidence_kind = str(fact.get("evidence_kind") or _evidence_kind(fact.get("metadata", {}) or {})).strip().lower()
 
         fact_key = (fact_type, _semantic_fact_key(fact_type, value))
         if fact_key in seen_fact_keys:
@@ -464,15 +561,21 @@ async def ingest_memory(
             salience=salience,
             status=status,
             time_scope=fact.get("time_scope", "long_term"),
+            normalized_value=normalized_value,
+            stability=stability,
+            evidence_kind=evidence_kind,
             metadata=fact.get("metadata", {}),
             embedding=fact_embedding,
+            source_type=source_type,
         )
         await link_memory_to_evidence("CandidateFact", stored_fact["id"], evidence["id"])
         candidate_results.append(stored_fact)
 
-        if route == "resolved_core":
-            promoted_list = await _promote_to_core(student_id, fact_type, value, fact.get("metadata", {}))
+        if _should_promote_candidate_structured(fact_type, route, confidence, salience, stored_fact):
+            promoted_list = await _promote_to_core(student_id, fact_type, value, stored_fact)
             if promoted_list:
+                stored_fact = await mark_candidate_fact_promoted(stored_fact["id"])
+                candidate_results[-1] = stored_fact
                 promoted_entities.extend(promoted_list)
 
     for memory in extraction.get("generic_memories", []):
@@ -522,19 +625,16 @@ async def _extract_memory_candidates(text: str) -> dict[str, Any]:
     )
     content = response.content if isinstance(response.content, str) else str(response.content)
     try:
-        import json
-
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        if json_start >= 0 and json_end > json_start:
-            return json.loads(content[json_start:json_end])
+        parsed = parse_json_object(content)
+        if isinstance(parsed, dict):
+            return parsed
     except Exception as exc:
         log.warning("Memory extraction parse failed: %s", exc)
     return {"student_properties": {}, "candidate_facts": [], "generic_memories": []}
 
 
 async def _promote_to_core(
-    student_id: str, fact_type: str, value: str, metadata: dict[str, Any]
+    student_id: str, fact_type: str, value: str, stored_fact: dict[str, Any]
 ) -> list[dict[str, Any]]:
     """Promote a high-confidence candidate fact into the controlled core ontology."""
     from app.adapters.neo4j.graph_store import create_entity
@@ -544,8 +644,26 @@ async def _promote_to_core(
         return []
     label, relationship = label_rel
     promoted: list[dict[str, Any]] = []
+    metadata = dict(stored_fact.get("metadata") or {})
     for expanded_value in _expand_core_values(fact_type, value):
-        properties = {"name": expanded_value, "student_id": student_id, **(metadata or {})}
+        properties = {
+            "name": expanded_value,
+            "student_id": student_id,
+            "confidence": stored_fact.get("confidence", 0.0),
+            "source_kind": "candidate_fact",
+            "confirmation_state": "confirmed",
+            "promoted_from_candidate_id": stored_fact.get("id", ""),
+            "support_count": stored_fact.get("support_count", metadata.get("support_count", 1)),
+            "direct_statement_count": stored_fact.get(
+                "direct_statement_count", metadata.get("direct_statement_count", 0)
+            ),
+            "document_support_count": stored_fact.get(
+                "document_support_count", metadata.get("document_support_count", 0)
+            ),
+            "revision_count": stored_fact.get("revision_count", metadata.get("revision_count", 1)),
+            "promotion_score": stored_fact.get("promotion_score", 0.0),
+            **metadata,
+        }
         entity = await create_entity(label, properties, student_id, relationship)
         if entity:
             entity["_label"] = label

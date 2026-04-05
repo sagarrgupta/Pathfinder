@@ -2,6 +2,15 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Square, Paperclip, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
+const ADVISOR_MODE_OPTIONS = [
+  { value: 'adaptive', label: 'Adaptive' },
+  { value: 'semester_planning', label: 'Semester Planning' },
+  { value: 'degree_audit', label: 'Degree Audit' },
+  { value: 'resume_review', label: 'Resume Review' },
+  { value: 'internship_targeting', label: 'Internship Targeting' },
+  { value: 'graduate_school_planning', label: 'Graduate School Planning' },
+];
+
 export default function InputArea({
   onSend,
   onStop,
@@ -10,6 +19,8 @@ export default function InputArea({
   onFilesChange,
   isGlobalUpload,
   onGlobalUploadChange,
+  advisorMode,
+  onAdvisorModeChange,
 }) {
   const [input, setInput] = useState('');
   const fileInputRef = useRef(null);
@@ -138,6 +149,18 @@ export default function InputArea({
                       Global
                     </button>
                   </div>
+                  <select
+                    value={advisorMode || 'adaptive'}
+                    onChange={(e) => onAdvisorModeChange?.(e.target.value)}
+                    className="h-9 rounded-full border border-border/70 bg-muted/20 px-3 text-[11px] text-foreground outline-none"
+                    title="Choose a focused advisor mode"
+                  >
+                    {ADVISOR_MODE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div className="flex items-center gap-2">

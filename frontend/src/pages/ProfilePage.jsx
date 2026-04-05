@@ -1,13 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
-import { getProfile, addProfileText, uploadDocument, deleteProfileEntity, updateProfile, updateProfileEntity, checkDocumentExists } from '@/services/api';
+import {
+  addProfileText,
+  autoResolveProfileConflicts,
+  checkDocumentExists,
+  deleteProfileEntity,
+  getProfile,
+  getProfileConflicts,
+  updateProfile,
+  updateProfileEntity,
+  uploadDocument,
+} from '@/services/api';
 import {
   User, Upload, FileText, Trash2, Plus, BookOpen,
   Briefcase, Target, Star, GraduationCap, Loader2,
   Pencil, Check, X, AlertTriangle, Heart, Folder,
-  Building2, Circle, ArrowUpDown, Calendar, Sparkles, Brain, ShieldCheck, FileSearch, Network, Clock3,
+  Building2, Circle, ArrowUpDown, Calendar, Sparkles,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -21,9 +30,6 @@ const ENTITY_CONFIG = {
   Project:    { label: 'Projects',     icon: Folder,     nameKey: 'name', sortKey: null,       render: (p) => `${p.name || 'Project'} ${p.status ? `(${p.status})` : ''}`.trim() },
   Department: { label: 'Departments',  icon: Building2,  nameKey: 'name', sortKey: 'name',     render: (d) => d.name || 'Department' },
   Document:   { label: 'Documents',    icon: FileText,   nameKey: 'filename', sortKey: null,   render: (d) => `${d.filename || d.name || 'Document'} [${d.scope || 'global'}]` },
-  CandidateFact: { label: 'Candidate Facts', icon: Brain, nameKey: 'value', sortKey: null, cardMode: 'memory' },
-  MemoryItem: { label: 'Memories', icon: Network, nameKey: 'summary', sortKey: null, cardMode: 'memory' },
-  Evidence: { label: 'Evidence', icon: FileSearch, nameKey: 'id', sortKey: null, cardMode: 'evidence' },
 };
 
 const HIDDEN_PERSONAL_FIELDS = new Set(['id', 'created_at', 'updated_at', '_relationship']);
@@ -40,25 +46,6 @@ function getEntityConfig(label) {
     label: label + 's', icon: Circle, nameKey: 'name', sortKey: null,
     render: (item) => item.name || item.title || JSON.stringify(item).slice(0, 60),
   };
-}
-
-function toTitleCase(value) {
-  return String(value || '')
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function formatShortDate(value) {
-  if (!value) return null;
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return parsed.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-function clampText(value, max = 220) {
-  const text = String(value || '').trim();
-  if (!text) return '';
-  return text.length > max ? `${text.slice(0, max).trim()}…` : text;
 }
 
 // ── Skeleton component ──────────────────────────────────────────
@@ -79,26 +66,18 @@ function ProfileSkeleton() {
   );
 }
 
-function SectionCard({ className, children }) {
-  return (
-    <div className={cn('rounded-2xl border bg-card shadow-sm', className)}>
-      {children}
-    </div>
-  );
-}
-
 // ── Main Component ──────────────────────────────────────────────
 
 export default function ProfilePage() {
-  const navigate = useNavigate();
   const { state, dispatch } = useApp();
-  const studentId = state.activeStudentId;
   const toast = useToast();
   const [activeTab, setActiveTab] = useState('personal');
   const [freeText, setFreeText] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [isProcessingText, setIsProcessingText] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
+  const [conflicts, setConflicts] = useState([]);
+  const [isResolvingConflicts, setIsResolvingConflicts] = useState(false);
   const fileInputRef = useRef(null);
   const profile = state.profile;
 
@@ -109,18 +88,35 @@ export default function ProfilePage() {
   });
 
   useEffect(() => {
-    if (!studentId) return;
     loadProfile();
-  }, [studentId]);
+  }, [state.activeStudentId]);
 
   const loadProfile = async () => {
     dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
     try {
-      const data = await getProfile(studentId);
+      const data = await getProfile(state.activeStudentId);
       dispatch({ type: 'SET_PROFILE', payload: data });
+      const conflictData = await getProfileConflicts(state.activeStudentId);
+      setConflicts(Array.isArray(conflictData) ? conflictData : []);
     } catch (err) {
       console.error('Failed to load profile:', err);
       dispatch({ type: 'SET_PROFILE_LOADING', payload: false });
+      setConflicts([]);
+    }
+  };
+
+  const handleAutoResolveConflicts = async () => {
+    setIsResolvingConflicts(true);
+    try {
+      const result = await autoResolveProfileConflicts(state.activeStudentId);
+      toast.success(
+        `Resolved ${result.resolved || 0} conflicts and superseded ${result.superseded || 0} entries`
+      );
+      await loadProfile();
+    } catch (err) {
+      toast.error(`Auto-resolve failed: ${err.message}`);
+    } finally {
+      setIsResolvingConflicts(false);
     }
   };
 
@@ -129,7 +125,7 @@ export default function ProfilePage() {
     setProcessingStep('Uploading document...');
     try {
       setProcessingStep('Processing and extracting entities...');
-      const result = await uploadDocument(file, 'global', null, replace, studentId);
+      const result = await uploadDocument(file, 'global', null, replace, state.activeStudentId);
       toast.success(
         replace
           ? `Replaced ${file.name}: ${result.entities_extracted} entities extracted`
@@ -152,7 +148,7 @@ export default function ProfilePage() {
 
     // Check for duplicate
     try {
-      const { exists } = await checkDocumentExists(file.name, studentId);
+      const { exists } = await checkDocumentExists(file.name, state.activeStudentId);
       if (exists) {
         setConfirmDialog({
           open: true,
@@ -180,7 +176,7 @@ export default function ProfilePage() {
     setProcessingStep('Analyzing your text...');
     try {
       setProcessingStep('Extracting entities and updating knowledge graph...');
-      const result = await addProfileText(freeText, studentId);
+      const result = await addProfileText(freeText, state.activeStudentId);
       toast.success(`Extracted ${result.entities_extracted} entities from your text`);
       setFreeText('');
       setProcessingStep('Refreshing profile...');
@@ -202,7 +198,7 @@ export default function ProfilePage() {
       onConfirm: async () => {
         setConfirmDialog((prev) => ({ ...prev, open: false }));
         try {
-          await deleteProfileEntity(label, name, studentId);
+          await deleteProfileEntity(label, name, state.activeStudentId);
           toast.success(`Deleted ${name}`);
           await loadProfile();
         } catch (err) {
@@ -216,7 +212,7 @@ export default function ProfilePage() {
 
   const handleEditField = async (field, value) => {
     try {
-      await updateProfile(field, value, studentId);
+      await updateProfile(field, value, state.activeStudentId);
       toast.success(`Updated ${formatFieldLabel(field)}`);
       await loadProfile();
     } catch (err) {
@@ -226,7 +222,7 @@ export default function ProfilePage() {
 
   const handleEditEntity = async (label, name, properties) => {
     try {
-      await updateProfileEntity(label, name, properties, studentId);
+      await updateProfileEntity(label, name, properties, state.activeStudentId);
       toast.success(`Updated ${name}`);
       await loadProfile();
     } catch (err) {
@@ -235,16 +231,24 @@ export default function ProfilePage() {
   };
 
   const isProcessing = isUploading || isProcessingText;
+  const completeness = Math.round((profile?.completeness || 0) * 100);
+  const confidence = Math.round((profile?.confidence || 0) * 100);
+  const memoryOverview = profile?.memory_overview || {};
+  const completenessBreakdown = profile?.completeness_breakdown || {};
+  const factSummary = profile?.fact_summary || {};
+  const temporalProfile = profile?.temporal_profile || {};
+  const temporalSummary = temporalProfile.summary || {};
+  const temporalEvents = temporalProfile.recent_events || [];
   const completenessChecklist = [
-    { label: 'Name', done: !!profile?.personal?.name, hint: 'Add your name in Personal.' },
-    { label: 'University', done: !!profile?.personal?.university, hint: 'Add your university in Personal.' },
-    { label: 'Program', done: !!profile?.personal?.program, hint: 'Add your degree or major in Personal.' },
-    { label: 'GPA', done: !!profile?.personal?.gpa, hint: 'Upload a transcript or add your GPA in Personal.' },
-    { label: 'Semester', done: !!profile?.personal?.semester, hint: 'Add your current semester in Personal.' },
-    { label: 'Email', done: !!profile?.personal?.email, hint: 'Add an email so your profile is more complete.' },
-    { label: 'Skills', done: (profile?.skills?.length || 0) > 0, hint: 'Add skills or upload a resume.' },
-    { label: 'Goals', done: (profile?.goals?.length || 0) > 0, hint: 'Add your goals in plain language.' },
-    { label: 'Documents', done: (profile?.documents?.length || 0) > 0, hint: 'Upload a resume, transcript, or supporting document.' },
+    { label: 'Name', done: !!profile?.personal?.name },
+    { label: 'University', done: !!profile?.personal?.university },
+    { label: 'Program', done: !!profile?.personal?.program },
+    { label: 'GPA', done: !!profile?.personal?.gpa },
+    { label: 'Semester', done: !!profile?.personal?.semester },
+    { label: 'Email', done: !!profile?.personal?.email },
+    { label: 'Skills', done: (profile?.skills?.length || 0) > 0 },
+    { label: 'Goals', done: (profile?.goals?.length || 0) > 0 },
+    { label: 'Documents', done: (profile?.documents?.length || 0) > 0 },
   ];
   const missingCoverageItems = completenessChecklist.filter((item) => !item.done);
 
@@ -252,7 +256,7 @@ export default function ProfilePage() {
   const tabs = [{ id: 'personal', label: 'Personal', icon: User, count: null }];
 
   if (profile?.all_entities) {
-    const PREFERRED_ORDER = ['Course', 'Skill', 'Company', 'Goal', 'Interest', 'Project', 'Department', 'Document', 'CandidateFact', 'MemoryItem', 'Evidence'];
+    const PREFERRED_ORDER = ['Course', 'Skill', 'Company', 'Goal', 'Interest', 'Project', 'Department', 'Document'];
     const entityLabels = Object.keys(profile.all_entities);
 
     const ordered = [
@@ -280,136 +284,172 @@ export default function ProfilePage() {
         confirmLabel={confirmDialog.confirmLabel}
         variant={confirmDialog.variant}
       />
-      <div className="mx-auto max-w-4xl space-y-6 p-6 animate-fade-in">
+      <div className="max-w-4xl mx-auto p-6 animate-fade-in">
         {/* Header */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 mb-8">
           <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 ring-1 ring-primary/10 flex items-center justify-center">
             <GraduationCap className="h-7 w-7 text-primary" />
           </div>
           <div>
             <h1 className="text-2xl font-bold tracking-tight">My Profile</h1>
             <p className="text-muted-foreground text-sm mt-0.5">
-              Keep student context accurate so answers stay grounded and personal.
+              Manage your academic data. Upload documents or add information directly.
             </p>
           </div>
         </div>
 
         {profile && (
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.3fr_0.7fr]">
-            <SectionCard className="p-5">
-              <div className="space-y-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h2 className="text-base font-semibold tracking-tight">Profile coverage</h2>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      This score goes up as you add the core details Pathfinder needs to personalize answers well.
-                    </p>
-                  </div>
-                  <p className="pt-0.5 text-sm font-medium text-foreground">
-                    {Math.round((profile.completeness || 0) * 100)}%
-                  </p>
-                </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+            <div className="rounded-xl border bg-card p-5">
+              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
+                <Sparkles className="h-4 w-4 text-primary" /> Profile Completeness
+              </h3>
+              <p className="text-2xl font-bold">{completeness}%</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {missingCoverageItems.length === 0
+                  ? 'Your profile has strong academic coverage.'
+                  : `${missingCoverageItems.length} profile areas are still missing.`}
+              </p>
+            </div>
+            <div className="rounded-xl border bg-card p-5">
+              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
+                <Star className="h-4 w-4 text-primary" /> Memory Confidence
+              </h3>
+              <p className="text-2xl font-bold">{confidence}%</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Based on the confidence of the facts and memories Pathfinder has stored.
+              </p>
+            </div>
+            <div className="rounded-xl border bg-card p-5">
+              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
+                <AlertTriangle className="h-4 w-4 text-primary" /> Memory Health
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                {memoryOverview.candidate_facts || 0} candidate facts, {memoryOverview.memory_items || 0} memories
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">
+                {memoryOverview.conflicts || 0} unresolved conflicts, {memoryOverview.evidence || 0} evidence items
+              </p>
+            </div>
+            <div className="rounded-xl border bg-card p-5">
+              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
+                <Check className="h-4 w-4 text-primary" /> Fact Trust
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                {factSummary.confirmed_candidate_facts || 0} confirmed, {factSummary.reinforced_candidate_facts || 0} reinforced
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">
+                {factSummary.inferred_candidate_facts || 0} inferred, {factSummary.document_backed || 0} document-backed
+              </p>
+            </div>
+          </div>
+        )}
 
+        {profile && (
+          <div className="rounded-xl border bg-card p-5 mb-8">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <h3 className="font-semibold text-sm flex items-center gap-2">
+                <Calendar className="h-4 w-4 text-primary" /> Temporal Memory
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Pathfinder now distinguishes durable facts from changing student context.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Stable Facts</p>
+                <p className="text-xl font-bold">{temporalSummary.stable_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">Durable profile truth like identity, courses, skills, and experience.</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Evolving Facts</p>
+                <p className="text-xl font-bold">{temporalSummary.evolving_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">Goals, interests, and preferences that may shift over time.</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Temporary Facts</p>
+                <p className="text-xl font-bold">{temporalSummary.temporary_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">Short-term or semester-specific constraints and signals.</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Active Candidates</p>
+                <p className="text-xl font-bold">{temporalSummary.active_candidate_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">New inferred facts still being reinforced before becoming durable.</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Stale Signals</p>
+                <p className="text-xl font-bold">{temporalSummary.stale_candidate_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">Superseded or aging temporary facts that should not drive advice.</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Expired Preferences</p>
+                <p className="text-xl font-bold">{temporalSummary.expired_preference_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">Old temporary preferences or constraints that should fade out of planning.</p>
+              </div>
+            </div>
+            {temporalEvents.length > 0 && (
+              <div className="mt-4">
+                <p className="text-xs text-muted-foreground mb-2">Recent Memory Events</p>
                 <div className="space-y-2">
-                  <div className="h-2 overflow-hidden rounded-full bg-muted">
-                    <div
-                      className="h-full rounded-full bg-primary transition-all"
-                      style={{ width: `${Math.max(4, Math.round((profile.completeness || 0) * 100))}%` }}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{completenessChecklist.filter((item) => item.done).length} of {completenessChecklist.length} core items added</span>
-                    <span>{missingCoverageItems.length} left</span>
-                  </div>
-                </div>
-
-                {missingCoverageItems.length > 0 && (
-                  <div className="rounded-2xl border border-primary/15 bg-primary/5 p-4">
-                    <p className="text-sm font-medium text-foreground">How to increase this score</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {missingCoverageItems.slice(0, 4).map((item) => (
-                        <div
-                          key={item.label}
-                          className="rounded-full border bg-background px-3 py-1.5 text-xs text-muted-foreground"
-                          title={item.hint}
-                        >
-                          Add {item.label}
-                        </div>
-                      ))}
-                    </div>
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      Fastest ways: fill missing personal fields, add your goals in plain language, or upload a transcript/resume.
-                    </p>
-                  </div>
-                )}
-
-                <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-3">
-                  {completenessChecklist.map((item) => (
-                    <div
-                      key={item.label}
-                      className={cn(
-                        'rounded-xl border px-3 py-2 text-sm',
-                        item.done
-                          ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300'
-                          : 'border-border bg-muted/30 text-muted-foreground'
-                      )}
-                    >
-                      <div className="flex items-center gap-2">
-                        {item.done ? <Check className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
-                        <span className="font-medium">{item.label}</span>
+                  {temporalEvents.slice(0, 6).map((event, index) => (
+                    <div key={`${event.timestamp}-${event.value}-${index}`} className="rounded-lg border bg-muted/20 px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary">{event.event_type}</span>
+                        <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground">{event.fact_type}</span>
+                        {event.stability && (
+                          <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground">{event.stability}</span>
+                        )}
+                        {event.timestamp && (
+                          <span className="text-muted-foreground">{new Date(event.timestamp).toLocaleDateString()}</span>
+                        )}
                       </div>
-                      {!item.done && (
-                        <p className="mt-1 text-xs text-muted-foreground">{item.hint}</p>
-                      )}
+                      <p className="text-sm mt-2">{event.value || 'Unnamed memory event'}</p>
                     </div>
                   ))}
                 </div>
               </div>
-            </SectionCard>
+            )}
+          </div>
+        )}
 
-            <div className="space-y-4">
-              <ProfileMetricCard
-                label="Memory reliability"
-                value={`${Math.round((profile.confidence || 0) * 100)}%`}
-                description="How trustworthy Pathfinder believes the stored facts are after evidence checks, deduping, and conflict cleanup. This improves as evidence becomes clearer and conflicts are resolved."
-                tone={(profile.confidence || 0) >= 0.7 ? 'good' : 'warn'}
-                icon={ShieldCheck}
-              />
-              <ProfileMetricCard
-                label="Knowledge coverage"
-                value={`${profile.memory_overview?.candidate_facts || 0} facts`}
-                description={`${profile.memory_overview?.memory_items || 0} memories and ${profile.memory_overview?.evidence || 0} evidence items available.`}
-                icon={Brain}
-              />
-              {(profile.memory_overview?.conflicts || 0) > 0 && (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-5 shadow-sm dark:border-amber-900/40 dark:bg-amber-950/20">
-                  <div className="mb-2 flex items-center gap-2">
-                    <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-300" />
-                    <p className="text-xs font-semibold uppercase tracking-widest text-amber-700 dark:text-amber-300">
-                      Needs review
-                    </p>
+        {profile && Object.keys(completenessBreakdown).length > 0 && (
+          <div className="rounded-xl border bg-card p-5 mb-8">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <h3 className="font-semibold text-sm flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" /> Coverage By Category
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Pathfinder now separates durable profile facts from inferred memory.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {Object.entries(completenessBreakdown).map(([category, details]) => {
+                const percent = Math.round((details?.score || 0) * 100);
+                return (
+                  <div key={category} className="rounded-lg border bg-muted/20 p-3">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <p className="text-sm font-medium capitalize">{category}</p>
+                      <span className="text-xs text-muted-foreground">
+                        {details?.covered || 0}/{details?.total || 0}
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full bg-primary transition-all"
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-2">{percent}% coverage</p>
                   </div>
-                  <p className="text-xl font-bold tracking-tight">
-                    {profile.memory_overview?.conflicts || 0} open conflict{(profile.memory_overview?.conflicts || 0) === 1 ? '' : 's'}
-                  </p>
-                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                    Resolve conflicting profile signals so future recommendations use the right current context.
-                  </p>
-                  <button
-                    onClick={() => navigate('/profile/conflicts')}
-                    className="mt-4 inline-flex items-center gap-2 rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
-                  >
-                    Resolve conflicts
-                  </button>
-                </div>
-              )}
+                );
+              })}
             </div>
           </div>
         )}
 
         {/* Processing Banner */}
         {isProcessing && processingStep && (
-          <div className="flex items-center gap-3 rounded-2xl border border-yellow-200 bg-yellow-50 p-4 shadow-sm animate-fade-in-up dark:border-yellow-800 dark:bg-yellow-950/50">
+          <div className="mb-6 p-4 rounded-xl bg-yellow-50 dark:bg-yellow-950/50 border border-yellow-200 dark:border-yellow-800 flex items-center gap-3 animate-fade-in-up">
             <Loader2 className="h-5 w-5 animate-spin text-yellow-600 dark:text-yellow-400" />
             <div>
               <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200">{processingStep}</p>
@@ -422,71 +462,106 @@ export default function ProfilePage() {
         )}
 
         {/* Input Section */}
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
           {/* Document Upload */}
-          <SectionCard className="p-5 transition-shadow hover:shadow-md">
-            <h3 className="mb-1.5 flex items-center gap-2 font-semibold">
+          <div className="rounded-xl border bg-card p-5 hover:shadow-sm transition-shadow">
+            <h3 className="font-semibold mb-1.5 flex items-center gap-2">
               <Upload className="h-4 w-4 text-primary" /> Upload Document
             </h3>
-            <p className="mb-4 text-sm text-muted-foreground">
-              Add a resume, transcript, or supporting document to strengthen profile evidence.
+            <p className="text-xs text-muted-foreground mb-4">
+              Upload transcripts, resumes, or other academic documents (PDF, Images, DOCX).
             </p>
             <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.heif,.heic,.docx" onChange={handleUpload} className="hidden" />
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isProcessing}
-              className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed py-2.5 text-sm transition-all hover:border-primary/20 hover:bg-accent disabled:opacity-50 active:scale-[0.98]"
+              className="w-full py-2.5 border-2 border-dashed rounded-lg text-sm hover:bg-accent hover:border-primary/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2 active:scale-[0.98]"
             >
               {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               {isUploading ? 'Processing...' : 'Select File'}
             </button>
-          </SectionCard>
+          </div>
 
           {/* Free Text Input */}
-          <SectionCard className="p-5 transition-shadow hover:shadow-md">
-            <h3 className="mb-1.5 flex items-center gap-2 font-semibold">
+          <div className="rounded-xl border bg-card p-5 hover:shadow-sm transition-shadow">
+            <h3 className="font-semibold mb-1.5 flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-primary" /> Add Information
             </h3>
-            <p className="mb-4 text-sm text-muted-foreground">
-              Add a short summary in plain language. Pathfinder will extract and remember what matters.
+            <p className="text-xs text-muted-foreground mb-4">
+              Type anything about yourself — we'll extract and store it intelligently.
             </p>
             <textarea
               value={freeText}
               onChange={(e) => setFreeText(e.target.value)}
-              placeholder='e.g., "I am a CS student at Sacramento State, I want backend internships, I prefer remote roles, and I’m strongest in Python and SQL."'
-              className="h-24 w-full resize-none rounded-xl border bg-background px-3 py-2.5 text-sm transition-shadow focus:outline-none focus:ring-2 focus:ring-ring/50"
+              placeholder='e.g., "I have 2 years of Python experience and my GPA is 3.7..."'
+              className="w-full rounded-lg border bg-background px-3 py-2.5 text-sm resize-none h-20 focus:outline-none focus:ring-2 focus:ring-ring/50 transition-shadow"
               disabled={isProcessing}
             />
             <button
               onClick={handleAddText}
               disabled={!freeText.trim() || isProcessing}
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-all hover:opacity-90 disabled:opacity-40 active:scale-[0.98]"
+              className="mt-2 w-full py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
             >
               {isProcessingText ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               {isProcessingText ? 'Processing...' : 'Add to Profile'}
             </button>
-          </SectionCard>
+          </div>
+        </div>
+
+        <div className="rounded-xl border bg-card p-5 mb-8">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h3 className="font-semibold text-sm flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-primary" /> Profile Conflicts
+            </h3>
+            <button
+              onClick={handleAutoResolveConflicts}
+              disabled={isResolvingConflicts || conflicts.length === 0}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium border hover:bg-accent disabled:opacity-50 flex items-center gap-1.5"
+            >
+              {isResolvingConflicts ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              {isResolvingConflicts ? 'Resolving...' : 'Auto-resolve'}
+            </button>
+          </div>
+          {conflicts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No unresolved profile conflicts.</p>
+          ) : (
+            <div className="space-y-2">
+              {conflicts.slice(0, 5).map((item) => (
+                <div key={item.id || `${item.fact_type}-${item.current_option}`} className="rounded-lg border bg-muted/20 p-3">
+                  <p className="text-sm font-medium">{item.question || `Resolve ${item.fact_type}`}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Current: <span className="text-foreground">{item.current_option || '-'}</span>
+                  </p>
+                  {Array.isArray(item.other_options) && item.other_options.length > 0 && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Alternatives: {item.other_options.join(', ')}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Profile Tabs */}
-        <SectionCard className="overflow-hidden">
-          <div className="flex overflow-x-auto border-b bg-muted/15 px-2 scrollbar-fade">
+        <div className="rounded-xl border bg-card overflow-hidden">
+          <div className="flex border-b overflow-x-auto scrollbar-fade bg-muted/30">
             {tabs.map(({ id, label, icon: Icon, count }) => (
               <button
                 key={id}
                 onClick={() => setActiveTab(id)}
                 className={cn(
-                  'my-2 flex items-center gap-1.5 whitespace-nowrap rounded-xl border px-3.5 py-2 text-sm font-medium transition-all',
+                  'flex items-center gap-1.5 px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-all',
                   activeTab === id
-                    ? 'border-primary/20 bg-primary/5 text-primary'
-                    : 'border-transparent text-muted-foreground hover:bg-card/70 hover:text-foreground'
+                    ? 'border-primary text-primary bg-card'
+                    : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-card/50'
                 )}
               >
                 <Icon className="h-4 w-4" />
                 {label}
                 {count !== null && count > 0 && (
                   <span className={cn(
-                    'min-w-[20px] rounded-full px-1.5 py-0.5 text-center text-[10px] font-bold',
+                    'text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[20px] text-center',
                     activeTab === id
                       ? 'bg-primary/10 text-primary'
                       : 'bg-muted text-muted-foreground'
@@ -502,12 +577,13 @@ export default function ProfilePage() {
             {state.profileLoading ? (
               <ProfileSkeleton />
             ) : !profile ? (
-              <div className="py-12 text-center">
-                <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-muted">
+              <div className="text-center py-12">
+                <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
                   <User className="h-6 w-6 text-muted-foreground" />
                 </div>
-                <h3 className="text-base font-semibold tracking-tight">No profile data yet</h3>
-                <p className="mt-1 text-sm text-muted-foreground">Upload a document or add a short summary to start building this profile.</p>
+                <p className="text-muted-foreground text-sm">
+                  No profile data yet. Upload a document or add information above.
+                </p>
               </div>
             ) : activeTab === 'personal' ? (
               <DynamicPersonalTab personal={profile.personal} onEditField={handleEditField} />
@@ -520,7 +596,7 @@ export default function ProfilePage() {
               />
             )}
           </div>
-        </SectionCard>
+        </div>
       </div>
     </div>
   );
@@ -544,8 +620,8 @@ function DynamicPersonalTab({ personal, onEditField }) {
     });
 
   return entries.length > 0 ? (
-      <div className="space-y-1">
-        {entries.map(([key, value]) => (
+    <div className="space-y-0.5">
+      {entries.map(([key, value]) => (
         <EditableField
           key={key}
           label={formatFieldLabel(key)}
@@ -556,25 +632,6 @@ function DynamicPersonalTab({ personal, onEditField }) {
       ))}
     </div>
   ) : <EmptyTab />;
-}
-
-function ProfileMetricCard({ label, value, description, tone = 'neutral', icon: Icon }) {
-  const toneClasses = {
-    good: 'border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/40 dark:bg-emerald-950/20',
-    warn: 'border-amber-200 bg-amber-50/70 dark:border-amber-900/40 dark:bg-amber-950/20',
-    neutral: 'border-border bg-card',
-  };
-
-  return (
-    <div className={cn('rounded-2xl border p-5 shadow-sm', toneClasses[tone] || toneClasses.neutral)}>
-      <div className="mb-2 flex items-center gap-2">
-        {Icon ? <Icon className="h-4 w-4 text-primary" /> : null}
-        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{label}</p>
-      </div>
-      <p className="text-xl font-bold tracking-tight">{value}</p>
-      <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{description}</p>
-    </div>
-  );
 }
 
 // ── Dynamic Entity Tab ──────────────────────────────────────────
@@ -598,28 +655,13 @@ function DynamicEntityTab({ label, items, onDelete, onEdit }) {
     return (
       <div className="space-y-3">
         {sortedItems.map((item, i) => (
-          config.cardMode === 'memory' ? (
-            <MemoryCard
-              key={i}
-              label={label}
-              item={item}
-              onDelete={() => onDelete(label, item[config.nameKey] || item.name || item.id || '')}
-            />
-          ) : config.cardMode === 'evidence' ? (
-            <EvidenceCard
-              key={i}
-              item={item}
-              onDelete={() => onDelete(label, item.id || item[config.nameKey] || '')}
-            />
-          ) : (
-            <ExperienceCard
-              key={i}
-              label={label}
-              item={item}
-              onDelete={() => onDelete(label, item[config.nameKey] || item.name || '')}
-              onEdit={onEdit}
-            />
-          )
+          <ExperienceCard
+            key={i}
+            label={label}
+            item={item}
+            onDelete={() => onDelete(label, item[config.nameKey] || item.name || '')}
+            onEdit={onEdit}
+          />
         ))}
       </div>
     );
@@ -628,10 +670,10 @@ function DynamicEntityTab({ label, items, onDelete, onEdit }) {
   return (
     <div>
       {config.sortKey && sortedItems.length > 1 && (
-        <div className="mb-3 flex justify-end">
+        <div className="flex justify-end mb-2">
           <button
             onClick={() => setSortAsc(!sortAsc)}
-            className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2.5 py-1.5 rounded-lg hover:bg-muted"
           >
             <ArrowUpDown className="h-3 w-3" />
             {sortAsc ? 'A → Z' : 'Z → A'}
@@ -639,9 +681,9 @@ function DynamicEntityTab({ label, items, onDelete, onEdit }) {
         </div>
       )}
 
-      <div className="space-y-1">
+      <div className="space-y-0.5">
         {sortedItems.map((item, i) => (
-          <div key={i} className="group flex items-center justify-between rounded-xl border border-transparent px-3 py-3 transition-colors hover:border-border/60 hover:bg-muted/35">
+          <div key={i} className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-muted/50 group transition-colors">
             <span className="text-sm">{config.render(item)}</span>
             <button
               onClick={() => onDelete(label, item[config.nameKey] || item.name || item.filename || '')}
@@ -653,98 +695,6 @@ function DynamicEntityTab({ label, items, onDelete, onEdit }) {
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function MemoryCard({ label, item, onDelete }) {
-  const title = label === 'CandidateFact'
-    ? (item.value || 'Candidate fact')
-    : (item.title || item.summary || 'Memory');
-  const subtitle = label === 'CandidateFact'
-    ? toTitleCase(item.fact_type || 'fact')
-    : toTitleCase(item.memory_type || 'memory');
-  const confidence = Math.round((Number(item.confidence) || 0) * 100);
-  const salience = Math.round((Number(item.salience) || 0) * 100);
-  const status = toTitleCase(item.status || 'candidate');
-  const source = item.source_ref || item.source_type || item._source_document || 'Unknown source';
-  const updated = formatShortDate(item.last_reinforced_at || item.updated_at || item.created_at);
-  const summary = clampText(item.summary || item.metadata?.summary || item.value, 180);
-
-  return (
-    <div className="group rounded-2xl border bg-card p-4 shadow-sm transition-colors hover:border-border/70 hover:bg-muted/10">
-      <div className="flex items-start justify-between gap-3">
-        <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{subtitle}</span>
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{status}</span>
-          </div>
-          <h4 className="text-sm font-semibold leading-relaxed text-foreground">{title}</h4>
-        </div>
-        <button
-          onClick={onDelete}
-          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-1 rounded-md hover:bg-destructive/10"
-          title="Delete"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-      </div>
-      {summary && summary !== title && (
-        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{summary}</p>
-      )}
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
-        <InfoPill label="Confidence" value={`${confidence}%`} />
-        <InfoPill label="Importance" value={`${salience}%`} />
-        <InfoPill label="Scope" value={toTitleCase(item.time_scope || 'long_term')} />
-        <InfoPill label="Updated" value={updated || 'Recently'} />
-      </div>
-      <div className="mt-3 text-xs text-muted-foreground">
-        Source: <span className="font-medium text-foreground/80">{source}</span>
-      </div>
-    </div>
-  );
-}
-
-function EvidenceCard({ item, onDelete }) {
-  const sourceType = toTitleCase(item.source_type || 'evidence');
-  const created = formatShortDate(item.created_at);
-  const session = item.session_id || item.source_ref || 'No session linked';
-  const preview = clampText(item.content, 280);
-
-  return (
-    <div className="group rounded-2xl border bg-card p-4 shadow-sm transition-colors hover:border-border/70 hover:bg-muted/10">
-      <div className="flex items-start justify-between gap-3">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{sourceType}</span>
-            {created && <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">{created}</span>}
-          </div>
-          <h4 className="text-sm font-semibold text-foreground">{item.filename || item.id || 'Evidence item'}</h4>
-        </div>
-        <button
-          onClick={onDelete}
-          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-1 rounded-md hover:bg-destructive/10"
-          title="Delete"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-      </div>
-      {preview && (
-        <p className="mt-2 rounded-xl bg-muted/35 px-3 py-2 text-sm leading-relaxed text-muted-foreground">{preview}</p>
-      )}
-      <div className="mt-3 grid gap-2 text-xs md:grid-cols-2">
-        <InfoPill label="Linked source" value={item.source_ref || 'Direct input'} />
-        <InfoPill label="Session" value={session} />
-      </div>
-    </div>
-  );
-}
-
-function InfoPill({ label, value }) {
-  return (
-    <div className="rounded-xl bg-muted/35 px-3 py-2">
-      <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">{label}</p>
-      <p className="mt-1 text-sm font-medium text-foreground">{value}</p>
     </div>
   );
 }
@@ -785,7 +735,7 @@ function ExperienceCard({ label, item, onDelete, onEdit }) {
 
   if (editing) {
     return (
-      <div className="animate-fade-in rounded-2xl border p-4 ring-2 ring-primary/20 shadow-sm">
+      <div className="rounded-xl border p-4 ring-2 ring-primary/20 animate-fade-in">
         <div className="space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
@@ -861,7 +811,7 @@ function ExperienceCard({ label, item, onDelete, onEdit }) {
   }
 
   return (
-    <div className="group rounded-2xl border p-4 shadow-sm transition-all hover:bg-muted/20 hover:shadow-md">
+    <div className="rounded-xl border p-4 hover:bg-muted/30 hover:shadow-sm transition-all group">
       <div className="flex items-start justify-between">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -927,10 +877,10 @@ function EditableField({ label, value, fieldKey, onSave }) {
   };
 
   return (
-    <div className="group flex items-center justify-between rounded-xl border border-transparent px-3 py-3 transition-colors hover:border-border/60 hover:bg-muted/25">
-      <span className="w-28 flex-shrink-0 text-sm font-medium text-muted-foreground">{label}</span>
+    <div className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-muted/30 group transition-colors">
+      <span className="text-muted-foreground text-sm w-28 flex-shrink-0 font-medium">{label}</span>
       {editing ? (
-        <div className="ml-4 flex flex-1 items-center gap-2 animate-fade-in">
+        <div className="flex items-center gap-2 flex-1 ml-4 animate-fade-in">
           <input
             type="text"
             value={draft}
@@ -950,7 +900,7 @@ function EditableField({ label, value, fieldKey, onSave }) {
           </button>
         </div>
       ) : (
-        <div className="ml-4 flex flex-1 items-center justify-end gap-2">
+        <div className="flex items-center gap-2 flex-1 ml-4 justify-end">
           <span className="text-sm font-medium">{value || '—'}</span>
           <button
             onClick={() => { setDraft(value || ''); setEditing(true); }}
@@ -967,12 +917,11 @@ function EditableField({ label, value, fieldKey, onSave }) {
 
 function EmptyTab() {
   return (
-    <div className="py-10 text-center">
-      <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-2xl bg-muted">
+    <div className="text-center py-10">
+      <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
         <FileText className="h-5 w-5 text-muted-foreground/50" />
       </div>
-      <p className="text-sm font-medium text-foreground">Nothing here yet</p>
-      <p className="mt-1 text-sm text-muted-foreground">Add information above or upload a document to populate this section.</p>
+      <p className="text-muted-foreground text-sm">No data available yet.</p>
     </div>
   );
 }
@@ -997,7 +946,7 @@ function ConfirmDialog({ open, title, message, onConfirm, onCancel, confirmLabel
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
       {/* Dialog */}
-      <div className="relative mx-4 w-full max-w-sm rounded-2xl border bg-card p-6 shadow-xl animate-fade-in-up">
+      <div className="relative bg-card border rounded-2xl shadow-xl p-6 max-w-sm w-full mx-4 animate-fade-in-up">
         <div className="flex items-start gap-3 mb-4">
           <div className={`w-10 h-10 rounded-full ${iconBgClass} flex items-center justify-center flex-shrink-0`}>
             <AlertTriangle className={`h-5 w-5 ${iconColor}`} />
