@@ -21,6 +21,7 @@ from app.core.quality import (
     academic_source_relevance,
     analyze_query_focus,
     block_task,
+    build_evidence_pack,
     classify_web_source,
     complete_task,
     course_code_matches_level,
@@ -136,6 +137,22 @@ async def fact_extractor(state: PathfinderState) -> PathfinderState:
     step_progress.append(f"Structured {len(evidence_records)} evidence records")
     log.info("Fact extractor produced %d evidence records", len(evidence_records))
     next_node = _determine_next(state)
+    evidence_pack = build_evidence_pack(
+        query=query,
+        workflow=str(state.get("workflow", "") or ""),
+        student_strategy=state.get("student_strategy", {}),
+        student_operating_model=state.get("student_operating_model", {}),
+        recommendation_outcome_profile=state.get("recommendation_outcome_profile", {}),
+        decision_continuity=state.get("decision_continuity", {}),
+        profile=profile,
+        documents=documents,
+        web_results=web_results,
+        semantic_memory=semantic_memory,
+        memory_pack=memory_pack,
+        evidence_records=evidence_records,
+        working_memory=working_memory,
+        missing_information=state.get("missing_info", []),
+    )
     working_memory = add_handoff_note(
         working_memory,
         from_node="fact_extractor",
@@ -151,6 +168,7 @@ async def fact_extractor(state: PathfinderState) -> PathfinderState:
     return {
         **state,
         "evidence_records": evidence_records,
+        "evidence_pack": evidence_pack,
         "working_memory": working_memory,
         "task_graph": task_graph,
         "step_progress": step_progress,

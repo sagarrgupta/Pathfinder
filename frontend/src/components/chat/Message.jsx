@@ -27,9 +27,16 @@ function formatStep(step) {
   return { label, message: step.message || '' };
 }
 
+function formatPriority(value) {
+  return String(value || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 export default function Message({ message, isLast, isStreaming }) {
   const [showCitations, setShowCitations] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
+  const [showAdvisorContext, setShowAdvisorContext] = useState(false);
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
   const metadata = message.metadata || {};
@@ -38,6 +45,30 @@ export default function Message({ message, isLast, isStreaming }) {
   const attachments = message.attachments || [];
   const isCurrentlyStreaming = isLast && isStreaming && !isUser;
   const hasContent = !!message.content;
+  const studentStrategy = metadata.studentStrategy || {};
+  const studentOperatingModel = metadata.studentOperatingModel || {};
+  const recommendationOutcomeProfile = metadata.recommendationOutcomeProfile || {};
+  const decisionContinuity = metadata.decisionContinuity || {};
+  const sessionMemory = metadata.sessionMemory || {};
+  const retrievalSummary = metadata.retrievalSummary || {};
+  const retrievalTrace = metadata.retrievalTrace || [];
+  const retrievalDiagnostics = metadata.retrievalDiagnostics || {};
+  const runtimeSnapshot = metadata.runtimeSnapshot || {};
+  const dependencyStatus = metadata.dependencyStatus || {};
+  const replayId = metadata.replayId || '';
+  const advisorContextAvailable = !isUser && (
+    studentStrategy.primary_priority ||
+    studentOperatingModel.risk_tolerance ||
+    recommendationOutcomeProfile.follow_through_style ||
+    decisionContinuity.is_continuation ||
+    sessionMemory.transcript_digest?.kept_turns ||
+    retrievalSummary.strategy ||
+    retrievalDiagnostics.evidence_quality?.overall_quality ||
+    retrievalTrace.length > 0 ||
+    runtimeSnapshot.selected_retrieval_mode ||
+    Object.keys(dependencyStatus).length > 0 ||
+    replayId
+  );
 
   const buildCopyText = () => {
     const parts = [];
@@ -211,6 +242,262 @@ export default function Message({ message, isLast, isStreaming }) {
               <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
                 {metadata.method}
               </span>
+            )}
+            {metadata.qualityPath && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+                {metadata.qualityPath}
+              </span>
+            )}
+          </div>
+        )}
+
+        {!isUser && advisorContextAvailable && (
+          <div className="mt-2">
+            <button
+              onClick={() => setShowAdvisorContext(!showAdvisorContext)}
+              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 rounded-md px-1.5 py-0.5 -ml-1.5 hover:bg-accent/50 transition-colors"
+            >
+              {showAdvisorContext ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+              Advisor context
+            </button>
+            {showAdvisorContext && (
+              <div className="mt-2 rounded-xl border bg-card/60 p-3 space-y-3 animate-fade-in">
+                {studentStrategy.primary_priority && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Student Strategy</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                        {formatPriority(studentStrategy.primary_priority)}
+                      </span>
+                      {(studentStrategy.priorities || []).slice(1, 4).map((priority) => (
+                        <span key={priority} className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {formatPriority(priority)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {studentOperatingModel.risk_tolerance && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Operating Model</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                        {formatPriority(studentOperatingModel.risk_tolerance)} risk
+                      </span>
+                      {studentOperatingModel.workload_preference && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {formatPriority(studentOperatingModel.workload_preference)} load
+                        </span>
+                      )}
+                      {studentOperatingModel.internship_urgency && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Internship urgency: {formatPriority(studentOperatingModel.internship_urgency)}
+                        </span>
+                      )}
+                      {studentOperatingModel.certainty_preference && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Certainty: {formatPriority(studentOperatingModel.certainty_preference)}
+                        </span>
+                      )}
+                      {studentOperatingModel.grad_school_seriousness && studentOperatingModel.grad_school_seriousness !== 'low' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Grad school: {formatPriority(studentOperatingModel.grad_school_seriousness)}
+                        </span>
+                      )}
+                      {studentOperatingModel.planning_style && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {formatPriority(studentOperatingModel.planning_style)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {recommendationOutcomeProfile.follow_through_style && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Recommendation History</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                        {formatPriority(recommendationOutcomeProfile.follow_through_style)}
+                      </span>
+                      {Array.isArray(recommendationOutcomeProfile.preferred_recommendation_types) &&
+                        recommendationOutcomeProfile.preferred_recommendation_types.slice(0, 3).map((item) => (
+                          <span key={item} className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                            Prefers {formatPriority(item)}
+                          </span>
+                        ))}
+                      {typeof recommendationOutcomeProfile.follow_through_ratio === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Follow-through {(recommendationOutcomeProfile.follow_through_ratio * 100).toFixed(0)}%
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {decisionContinuity.is_continuation && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Decision Continuity</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                        Continuing prior plan
+                      </span>
+                      {decisionContinuity.latest_title && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {decisionContinuity.latest_title}
+                        </span>
+                      )}
+                      {typeof decisionContinuity.related_count === 'number' && decisionContinuity.related_count > 1 && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {decisionContinuity.related_count} related decisions
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {sessionMemory.transcript_digest?.kept_turns > 0 && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Session Memory</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                        {sessionMemory.transcript_digest.kept_turns} turns kept
+                      </span>
+                      {sessionMemory.transcript_digest?.omitted_turns > 0 && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {sessionMemory.transcript_digest.omitted_turns} compacted
+                        </span>
+                      )}
+                      {sessionMemory.lifecycle?.ttl_seconds > 0 && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          TTL {Math.round(sessionMemory.lifecycle.ttl_seconds / 3600)}h
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {(retrievalSummary.strategy || retrievalTrace.length > 0) && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Evidence Path</p>
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {retrievalSummary.strategy && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                          {retrievalSummary.strategy}
+                        </span>
+                      )}
+                      {typeof retrievalSummary.document_count === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {retrievalSummary.document_count} docs
+                        </span>
+                      )}
+                      {typeof retrievalSummary.web_count === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {retrievalSummary.web_count} web
+                        </span>
+                      )}
+                      {typeof retrievalSummary.evidence_record_count === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {retrievalSummary.evidence_record_count} facts
+                        </span>
+                      )}
+                    </div>
+                    {retrievalTrace.length > 0 && (
+                      <div className="space-y-1.5">
+                        {retrievalTrace.slice(0, 3).map((item, index) => (
+                          <div key={`${item.source}-${item.label}-${index}`} className="text-xs rounded-lg border bg-muted/30 px-2.5 py-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-medium text-foreground truncate">{item.label}</span>
+                              <span className="text-muted-foreground">{item.source}</span>
+                            </div>
+                            {item.reason?.matched_terms?.length > 0 && (
+                              <p className="text-muted-foreground mt-1">
+                                matched: {item.reason.matched_terms.slice(0, 4).join(', ')}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {retrievalDiagnostics.evidence_quality?.overall_quality > 0 && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Evidence Quality</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                        Overall {(retrievalDiagnostics.evidence_quality.overall_quality * 100).toFixed(0)}%
+                      </span>
+                      {typeof retrievalDiagnostics.evidence_quality.document_trust_avg === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Docs {(retrievalDiagnostics.evidence_quality.document_trust_avg * 100).toFixed(0)}%
+                        </span>
+                      )}
+                      {typeof retrievalDiagnostics.evidence_quality.web_quality_avg === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          Web {(retrievalDiagnostics.evidence_quality.web_quality_avg * 100).toFixed(0)}%
+                        </span>
+                      )}
+                      {typeof retrievalDiagnostics.evidence_quality.official_web_hits === 'number' && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {retrievalDiagnostics.evidence_quality.official_web_hits} official web
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {(runtimeSnapshot.selected_text_model || runtimeSnapshot.selected_retrieval_mode || Object.keys(dependencyStatus).length > 0) && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Runtime</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {runtimeSnapshot.advisor_mode && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
+                          {formatPriority(runtimeSnapshot.advisor_mode)}
+                        </span>
+                      )}
+                      {runtimeSnapshot.selected_text_model && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {runtimeSnapshot.selected_text_model}
+                        </span>
+                      )}
+                      {runtimeSnapshot.selected_retrieval_mode && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {runtimeSnapshot.selected_retrieval_mode}
+                        </span>
+                      )}
+                      {Object.entries(dependencyStatus).map(([name, status]) => (
+                        <span
+                          key={name}
+                          className={cn(
+                            'text-xs px-2 py-0.5 rounded-full font-medium',
+                            status === 'connected'
+                              ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                              : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                          )}
+                        >
+                          {name}: {status}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {replayId && (
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Replay</p>
+                    <a
+                      href={`/replays?replay=${encodeURIComponent(replayId)}`}
+                      className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary font-medium hover:bg-primary/15 transition-colors"
+                    >
+                      Open {replayId}
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )}

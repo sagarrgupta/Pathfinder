@@ -157,10 +157,8 @@ def get_text_llm() -> LoggingChatOpenAI:
             temperature=settings.LLM_TEMPERATURE,
             max_tokens=settings.LLM_MAX_TOKENS,
             request_timeout=settings.LLM_REQUEST_TIMEOUT,
-            model_kwargs={
-                "frequency_penalty": settings.LLM_FREQUENCY_PENALTY,
-                "presence_penalty": settings.LLM_PRESENCE_PENALTY,
-            },
+            frequency_penalty=settings.LLM_FREQUENCY_PENALTY,
+            presence_penalty=settings.LLM_PRESENCE_PENALTY,
         )
     return _text_llm
 
@@ -177,10 +175,8 @@ def get_vision_llm() -> LoggingChatOpenAI:
             temperature=0.1,
             max_tokens=settings.LLM_MAX_TOKENS,
             request_timeout=settings.LLM_REQUEST_TIMEOUT,
-            model_kwargs={
-                "frequency_penalty": settings.LLM_FREQUENCY_PENALTY,
-                "presence_penalty": settings.LLM_PRESENCE_PENALTY,
-            },
+            frequency_penalty=settings.LLM_FREQUENCY_PENALTY,
+            presence_penalty=settings.LLM_PRESENCE_PENALTY,
         )
     return _vision_llm
 
@@ -189,10 +185,7 @@ def get_json_llm() -> LoggingChatOpenAI:
     """Return a text LLM configured for strict JSON-object outputs."""
     global _json_llm
     if _json_llm is None:
-        model_kwargs = {
-            "frequency_penalty": settings.LLM_FREQUENCY_PENALTY,
-            "presence_penalty": settings.LLM_PRESENCE_PENALTY,
-        }
+        model_kwargs = {}
         if settings.LLM_JSON_RESPONSE_FORMAT:
             model_kwargs["response_format"] = {"type": "json_object"}
         _json_llm = LoggingChatOpenAI(
@@ -203,6 +196,8 @@ def get_json_llm() -> LoggingChatOpenAI:
             temperature=0.0,
             max_tokens=settings.LLM_MAX_TOKENS,
             request_timeout=settings.LLM_REQUEST_TIMEOUT,
+            frequency_penalty=settings.LLM_FREQUENCY_PENALTY,
+            presence_penalty=settings.LLM_PRESENCE_PENALTY,
             model_kwargs=model_kwargs,
         )
     return _json_llm

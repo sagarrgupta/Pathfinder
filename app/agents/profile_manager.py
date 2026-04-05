@@ -27,10 +27,16 @@ from app.adapters.neo4j.vector_store import hybrid_search
 from app.core.quality import (
     add_handoff_note,
     analyze_query_focus,
+    build_evidence_pack,
+    derive_decision_continuity,
+    derive_recommendation_outcome_profile,
+    build_session_memory_state,
     build_session_summary,
     build_source_policy,
     compact_session_state,
     complete_task,
+    derive_student_operating_model,
+    derive_student_strategy,
     start_task,
     infer_student_workflow,
     infer_target_entity,
@@ -40,6 +46,7 @@ from app.core.prompts import PROFILE_MANAGER_TEXT_EXTRACTION_PROMPT
 from app.core.state import PathfinderState
 from app.services.memory_ingestion import ingest_memory
 from app.services.retrieval import build_memory_pack
+from app.services.runtime_recovery import recovery_for_profile_ingestion_failure
 
 log = logging.getLogger("pathfinder.agents.profile_manager")
 
@@ -92,6 +99,7 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
     # so this same turn can reason over freshly learned facts.
     query_ingested = False
     latest_ingestion_result: dict[str, Any] = {}
+    recovery_events = list(state.get("recovery_events", []))
     if _should_ingest_current_query(query):
         try:
             ingest_result = await ingest_memory(
@@ -125,6 +133,9 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
                 "ingested": False,
                 "error": str(exc),
             }
+            recovery_events.append(
+                recovery_for_profile_ingestion_failure("chat_query", str(exc)).as_dict()
+            )
     else:
         latest_ingestion_result = {
             "ingested": False,
@@ -152,6 +163,8 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
         query=query,
         needs_web=False,
         force_refresh=query_ingested,
+        profile_override=profile,
+        documents_override=retrieved,
     )
     semantic_memory = memory_pack.get("semantic_memory", {})
     conflicts = memory_pack.get("conflicts", [])
@@ -180,6 +193,10 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
         state.get("files", []),
         target_entity,
     )
+    student_strategy = derive_student_strategy(session_summary, profile, query)
+    student_operating_model = derive_student_operating_model(session_summary, profile, query)
+    recommendation_outcome_profile = derive_recommendation_outcome_profile(memory_pack.get("saved_recommendations", []))
+    decision_continuity = derive_decision_continuity(query, memory_pack.get("decision_records", []))
     source_policy = build_source_policy(
         query_focus,
         target_entity,
@@ -188,6 +205,22 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
     )
     next_node = _determine_next(state)
     working_memory = init_working_memory(state.get("working_memory", {}))
+    evidence_pack = build_evidence_pack(
+        query=query,
+        workflow=workflow,
+        student_strategy=student_strategy,
+        student_operating_model=student_operating_model,
+        recommendation_outcome_profile=recommendation_outcome_profile,
+        decision_continuity=decision_continuity,
+        profile=profile,
+        documents=retrieved,
+        web_results=state.get("web_results", []),
+        semantic_memory=semantic_memory,
+        memory_pack=memory_pack,
+        evidence_records=state.get("evidence_records", []),
+        working_memory=working_memory,
+        missing_information=state.get("missing_info", []),
+    )
     working_memory = add_handoff_note(
         working_memory,
         from_node="profile_manager",
@@ -205,6 +238,12 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
     for task_id in ("load_student_state", "load_conversation_state", "determine_decision_goal"):
         task_graph = complete_task(task_graph, task_id)
     log.info("Profile manager completed; next=%s", next_node)
+    compacted_session = compact_session_state(
+        session_summary,
+        working_memory,
+        state.get("messages", []),
+        state.get("short_memory_policy", {}),
+    )
 
     return {
         **state,
@@ -212,13 +251,24 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
         "session_summary": session_summary,
         "target_entity": target_entity,
         "workflow": workflow,
+        "student_strategy": student_strategy,
+        "student_operating_model": student_operating_model,
+        "recommendation_outcome_profile": recommendation_outcome_profile,
+        "decision_continuity": decision_continuity,
         "source_policy": source_policy,
         "working_memory": working_memory,
         "task_graph": task_graph,
-        "compacted_session": compact_session_state(session_summary, working_memory),
+        "recovery_events": recovery_events,
+        "compacted_session": compacted_session,
+        "session_memory": build_session_memory_state(
+            session_summary,
+            compacted_session,
+            state.get("short_memory_policy", {}),
+        ),
         "retrieved_documents": retrieved,
         "semantic_memory": semantic_memory,
         "memory_pack": memory_pack,
+        "evidence_pack": evidence_pack,
         "latest_ingestion_result": latest_ingestion_result,
         "conflicts": conflicts,
         "step_progress": step_progress,
@@ -256,6 +306,9 @@ async def process_free_text(
             "memory_items_created": 0,
             "warning": "ingestion_failed_fallback_applied",
             "updated_fields": sorted(list(fallback_updates.keys())),
+            "recovery_events": [
+                recovery_for_profile_ingestion_failure("profile_text", str(exc), fallback_updates).as_dict()
+            ],
         }
 
 

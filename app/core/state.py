@@ -30,6 +30,9 @@ class PathfinderState(TypedDict, total=False):
     session_id: str                           # Chat session ID
     student_id: str                           # Student identifier
     is_global_upload: bool                    # Whether uploaded docs go to global profile
+    advisor_mode: str                         # User-selected focused advisor mode
+    request_plan: dict[str, Any]              # Deterministic request-planning hints for this turn
+    runtime_policy: dict[str, Any]            # Explicit runtime policy decisions for this turn
 
     # ── Orchestrator output ─────────────────────────────────────
     intent: str                               # Classified intent
@@ -38,26 +41,30 @@ class PathfinderState(TypedDict, total=False):
     missing_info: list[str]                   # Info the system needs but doesn't have
     session_summary: dict[str, Any]           # Normalized summary of session/profile context
     workflow: str                             # General student workflow for this turn
+    student_strategy: dict[str, Any]          # What the student is optimizing for right now
+    student_operating_model: dict[str, Any]   # How the student tends to make tradeoffs
+    recommendation_outcome_profile: dict[str, Any]  # How the student tends to respond to past recommendations
+    decision_continuity: dict[str, Any]       # Whether this turn continues a prior decision plan
     target_entity: dict[str, Any]             # Normalized target the user is asking about
     source_policy: dict[str, Any]             # Retrieval/extraction strategy for the current query
     task_graph: list[dict[str, Any]]          # Ordered dependency-aware task graph for the current turn
     working_memory: dict[str, Any]            # Shared reasoning substrate across nodes
-    handoff_notes: list[dict[str, Any]]       # Explicit inter-node handoff contracts/notes
-    source_audit: list[dict[str, Any]]        # Selected/rejected source audit trail
     dependency_status: dict[str, Any]         # Health snapshot for external dependencies
+    recovery_events: list[dict[str, Any]]     # Structured recovery/degradation events for this turn
     blocked_reasons: list[str]                # Explicit blockers surfaced by planners/evaluator
     trace_summary: dict[str, Any]             # Compact execution trace for debugging/UX
     compacted_session: dict[str, Any]         # Long-term condensed advising state
+    session_memory: dict[str, Any]            # Session-scoped transcript/carry-forward memory
     short_memory_policy: dict[str, Any]       # Explicit TTL/eviction policy for short-term session memory
     stop_reason: str                          # Why a turn stopped early or partially
 
     # ── Data gathered by nodes ──────────────────────────────────
     profile_data: dict[str, Any]              # Student profile from Neo4j KG
     retrieved_documents: list[dict[str, Any]] # Chunks from Neo4j vector search
-    graph_results: list[dict[str, Any]]       # Structured results from graph queries
     web_results: list[dict[str, Any]]         # Results from web search
     semantic_memory: dict[str, Any]           # Retrieved candidate facts/memory items/evidence
     memory_pack: dict[str, Any]               # Compact retrieval pack for downstream reasoning
+    evidence_pack: dict[str, Any]             # Normalized evidence envelope for downstream reasoning
     latest_ingestion_result: dict[str, Any]   # Last in-turn memory ingestion summary for debugging/tracing
     conflicts: list[dict[str, Any]]           # Retrieved memory/profile conflicts for the current turn
     extracted_entities: list[dict[str, Any]]  # Entities extracted from documents

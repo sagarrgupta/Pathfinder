@@ -17,6 +17,7 @@ from app.core.prompts import ORCHESTRATOR_SYSTEM_PROMPT
 from app.core.quality import (
     add_handoff_note,
     analyze_query_focus,
+    build_session_memory_state,
     build_session_summary,
     infer_target_entity,
     build_source_policy,
@@ -30,6 +31,12 @@ from app.core.quality import (
     fail_task,
 )
 from app.core.state import PathfinderState
+from app.services.runtime_policy import (
+    apply_runtime_plan_policies,
+    dependency_gate_for_workflow,
+    workflow_needs_web_research,
+)
+from app.services.runtime_recovery import recovery_for_dependency_gate
 from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.orchestrator")
@@ -41,9 +48,13 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     files = state.get("files", [])
     student_id = state.get("student_id", "")
     messages = state.get("messages", [])
+    request_plan = state.get("request_plan", {}) or {}
+    advisor_mode = str(state.get("advisor_mode", request_plan.get("advisor_mode", "adaptive")) or "adaptive")
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Analyzing your question...")
+    if advisor_mode != "adaptive":
+        step_progress.append(f"Focused advisor mode: {advisor_mode.replace('_', ' ')}")
 
     # Pre-check: does the student have profile data in Neo4j?
     existing_profile: dict[str, Any] = {}
@@ -114,17 +125,38 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     session_summary = build_session_summary(profile_snapshot, messages, query)
     query_focus = analyze_query_focus(query)
     target_entity = infer_target_entity(profile_snapshot, session_summary, query, query_focus)
-    workflow = infer_student_workflow(query, query_focus, files, target_entity)
+    workflow = str(request_plan.get("workflow_hint") or infer_student_workflow(query, query_focus, files, target_entity))
     source_policy = build_source_policy(query_focus, target_entity, workflow)
     short_memory_policy = build_short_memory_policy(workflow, query_focus)
     task_graph = build_task_graph(query, workflow, query_focus, target_entity)
     task_graph = start_task(task_graph, "determine_decision_goal")
     task_graph = complete_task(task_graph, "determine_decision_goal")
     working_memory = init_working_memory(state.get("working_memory", {}))
-    compacted_session = compact_session_state(session_summary, working_memory)
+    compacted_session = compact_session_state(
+        session_summary,
+        working_memory,
+        messages,
+        short_memory_policy,
+    )
+    session_memory = build_session_memory_state(
+        session_summary,
+        compacted_session,
+        short_memory_policy,
+    )
 
-    # Deterministic first: only use LLM orchestrator for genuinely general guidance.
-    if workflow == "general_guidance":
+    requested_intent = str(request_plan.get("intent_hint") or "")
+    requested_plan = [item for item in request_plan.get("plan_hint", []) if isinstance(item, str)]
+    skip_llm_routing = bool(request_plan.get("skip_llm_routing"))
+    request_plan_reasons = [item for item in request_plan.get("reasons", []) if isinstance(item, str)]
+
+    # Deterministic first: obvious flows should not spend an LLM call just to route.
+    if skip_llm_routing:
+        intent = requested_intent or _deterministic_intent_for_workflow(workflow)
+        plan = requested_plan or _plan_for_workflow(workflow, [])
+        missing_info = []
+        if request_plan_reasons:
+            step_progress.append(f"Using deterministic request plan: {', '.join(request_plan_reasons)}")
+    elif workflow == "general_guidance":
         llm = get_text_llm()
         response = await llm.ainvoke([
             SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT),
@@ -145,6 +177,9 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         plan = _plan_for_workflow(workflow, [])
         missing_info = []
 
+    if requested_plan:
+        plan = _merge_ordered_plan(plan, requested_plan)
+
     # ── Guardrail: ensure profile_manager is included for personal queries ──
     personal_intents = {"academic", "career", "interview", "profile"}
     if intent in personal_intents and "profile_manager" not in plan:
@@ -154,7 +189,7 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     query_lower = query.lower()
 
     # ── Guardrail: include web_researcher only when workflow/source policy needs it ──
-    needs_web = _workflow_needs_web_research(workflow, source_policy)
+    needs_web = workflow_needs_web_research(workflow, source_policy)
     if needs_web and "web_researcher" not in plan:
         advisory = {"academic_advisor", "career_planner", "interview_prep", "course_planner", "program_advisor", "career_matcher", "eligibility_reasoner"}
         insert_idx = len(plan)
@@ -206,11 +241,20 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
             intent = "career"
 
     # Final deterministic cleanup to reduce redundant hops.
-    plan = _normalize_plan(plan, workflow, source_policy)
+    plan, policy_decisions = apply_runtime_plan_policies(plan, workflow, source_policy)
+    runtime_policy = dict(state.get("runtime_policy", {}) or {})
+    runtime_policy["decisions"] = list(runtime_policy.get("decisions", []) or []) + [
+        decision.as_dict() for decision in policy_decisions
+    ]
 
-    dependency_gate = _dependency_gate(workflow, state.get("dependency_status", {}))
+    dependency_gate = dependency_gate_for_workflow(workflow, state.get("dependency_status", {}))
     if dependency_gate:
         blocked_reasons = [dependency_gate]
+        recovery_events = list(state.get("recovery_events", []))
+        recovery_events.extend(
+            event.as_dict()
+            for event in recovery_for_dependency_gate(workflow, state.get("dependency_status", {}), dependency_gate)
+        )
         task_graph = fail_task(task_graph, "determine_decision_goal", reason=dependency_gate)
         working_memory = add_handoff_note(
             working_memory,
@@ -233,6 +277,9 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
             "task_graph": task_graph,
             "working_memory": working_memory,
             "compacted_session": compacted_session,
+            "session_memory": session_memory,
+            "runtime_policy": runtime_policy,
+            "recovery_events": recovery_events,
             "blocked_reasons": blocked_reasons,
             "stop_reason": "dependency_unavailable",
             "short_memory_policy": short_memory_policy,
@@ -286,18 +333,12 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         "task_graph": task_graph,
         "working_memory": working_memory,
         "compacted_session": compacted_session,
+        "session_memory": session_memory,
+        "runtime_policy": runtime_policy,
         "short_memory_policy": short_memory_policy,
         "stop_reason": "",
         "step_progress": step_progress,
     }
-
-
-def _workflow_needs_web_research(workflow: str, source_policy: dict[str, Any]) -> bool:
-    if workflow == "student_state_update":
-        return False
-    if workflow in {"academic_planning", "program_understanding", "eligibility_check", "comparison_guidance", "career_alignment", "document_guidance"}:
-        return True
-    return bool(source_policy.get("requires_live_data")) or bool(source_policy.get("primary_source_types"))
 
 
 def _deterministic_intent_for_workflow(workflow: str) -> str:
@@ -336,31 +377,6 @@ def _plan_for_workflow(workflow: str, plan: list[str]) -> list[str]:
     return _merge_ordered_plan(plan, ordered)
 
 
-def _dependency_gate(workflow: str, dependency_status: dict[str, Any]) -> str:
-    llm_status = str(dependency_status.get("llm", "unknown"))
-    if llm_status != "connected":
-        return (
-            "LLM runtime is unavailable right now, so I cannot complete this advising turn. "
-            "Please restart LM Studio and retry."
-        )
-
-    neo4j_status = str(dependency_status.get("neo4j", "unknown"))
-    if neo4j_status != "connected":
-        return (
-            "Neo4j is unavailable, so profile/memory-backed advising is blocked. "
-            "Please restart Neo4j and retry."
-        )
-
-    embeddings_status = str(dependency_status.get("embeddings", "unknown"))
-    if workflow in {"academic_planning", "program_understanding", "eligibility_check", "comparison_guidance", "career_alignment", "document_guidance"} and embeddings_status != "connected":
-        return (
-            "Embedding service is unavailable, so evidence retrieval is blocked. "
-            "Please start Ollama (embeddings) and retry."
-        )
-
-    return ""
-
-
 def _ensure_quality_course_plan(plan: list[str]) -> list[str]:
     ordered = ["profile_manager", "web_researcher", "fact_extractor", "course_planner"]
     merged = _merge_ordered_plan(plan, ordered)
@@ -380,30 +396,6 @@ def _merge_ordered_plan(plan: list[str], ordered: list[str]) -> list[str]:
             seen.add(item)
             merged.append(item)
     return merged
-
-
-def _normalize_plan(plan: list[str], workflow: str, source_policy: dict[str, Any]) -> list[str]:
-    """Deduplicate and remove redundant nodes while preserving topology."""
-    cleaned = []
-    seen = set()
-    for node in plan:
-        if node in seen:
-            continue
-        seen.add(node)
-        cleaned.append(node)
-
-    if workflow == "student_state_update":
-        # Keep state updates lightweight and deterministic.
-        return [node for node in cleaned if node in {"profile_manager"}] or ["profile_manager"]
-
-    if "web_researcher" in cleaned and not _workflow_needs_web_research(workflow, source_policy):
-        cleaned = [node for node in cleaned if node != "web_researcher"]
-
-    # Fact extraction only helps after retrieval/document analysis.
-    if "fact_extractor" in cleaned and "web_researcher" not in cleaned and "doc_analyst" not in cleaned:
-        cleaned = [node for node in cleaned if node != "fact_extractor"]
-
-    return cleaned
 
 
 def _replace_agent(plan: list[str], old: str, new: str) -> list[str]:

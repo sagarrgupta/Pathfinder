@@ -234,6 +234,11 @@ export default function ProfilePage() {
   const completeness = Math.round((profile?.completeness || 0) * 100);
   const confidence = Math.round((profile?.confidence || 0) * 100);
   const memoryOverview = profile?.memory_overview || {};
+  const completenessBreakdown = profile?.completeness_breakdown || {};
+  const factSummary = profile?.fact_summary || {};
+  const temporalProfile = profile?.temporal_profile || {};
+  const temporalSummary = temporalProfile.summary || {};
+  const temporalEvents = temporalProfile.recent_events || [];
   const completenessChecklist = [
     { label: 'Name', done: !!profile?.personal?.name },
     { label: 'University', done: !!profile?.personal?.university },
@@ -294,7 +299,7 @@ export default function ProfilePage() {
         </div>
 
         {profile && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
             <div className="rounded-xl border bg-card p-5">
               <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
                 <Sparkles className="h-4 w-4 text-primary" /> Profile Completeness
@@ -325,6 +330,119 @@ export default function ProfilePage() {
               <p className="text-sm text-muted-foreground mt-1">
                 {memoryOverview.conflicts || 0} unresolved conflicts, {memoryOverview.evidence || 0} evidence items
               </p>
+            </div>
+            <div className="rounded-xl border bg-card p-5">
+              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
+                <Check className="h-4 w-4 text-primary" /> Fact Trust
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                {factSummary.confirmed_candidate_facts || 0} confirmed, {factSummary.reinforced_candidate_facts || 0} reinforced
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">
+                {factSummary.inferred_candidate_facts || 0} inferred, {factSummary.document_backed || 0} document-backed
+              </p>
+            </div>
+          </div>
+        )}
+
+        {profile && (
+          <div className="rounded-xl border bg-card p-5 mb-8">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <h3 className="font-semibold text-sm flex items-center gap-2">
+                <Calendar className="h-4 w-4 text-primary" /> Temporal Memory
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Pathfinder now distinguishes durable facts from changing student context.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Stable Facts</p>
+                <p className="text-xl font-bold">{temporalSummary.stable_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">Durable profile truth like identity, courses, skills, and experience.</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Evolving Facts</p>
+                <p className="text-xl font-bold">{temporalSummary.evolving_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">Goals, interests, and preferences that may shift over time.</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Temporary Facts</p>
+                <p className="text-xl font-bold">{temporalSummary.temporary_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">Short-term or semester-specific constraints and signals.</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Active Candidates</p>
+                <p className="text-xl font-bold">{temporalSummary.active_candidate_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">New inferred facts still being reinforced before becoming durable.</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Stale Signals</p>
+                <p className="text-xl font-bold">{temporalSummary.stale_candidate_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">Superseded or aging temporary facts that should not drive advice.</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Expired Preferences</p>
+                <p className="text-xl font-bold">{temporalSummary.expired_preference_count || 0}</p>
+                <p className="text-xs text-muted-foreground mt-1">Old temporary preferences or constraints that should fade out of planning.</p>
+              </div>
+            </div>
+            {temporalEvents.length > 0 && (
+              <div className="mt-4">
+                <p className="text-xs text-muted-foreground mb-2">Recent Memory Events</p>
+                <div className="space-y-2">
+                  {temporalEvents.slice(0, 6).map((event, index) => (
+                    <div key={`${event.timestamp}-${event.value}-${index}`} className="rounded-lg border bg-muted/20 px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary">{event.event_type}</span>
+                        <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground">{event.fact_type}</span>
+                        {event.stability && (
+                          <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground">{event.stability}</span>
+                        )}
+                        {event.timestamp && (
+                          <span className="text-muted-foreground">{new Date(event.timestamp).toLocaleDateString()}</span>
+                        )}
+                      </div>
+                      <p className="text-sm mt-2">{event.value || 'Unnamed memory event'}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {profile && Object.keys(completenessBreakdown).length > 0 && (
+          <div className="rounded-xl border bg-card p-5 mb-8">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <h3 className="font-semibold text-sm flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" /> Coverage By Category
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Pathfinder now separates durable profile facts from inferred memory.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {Object.entries(completenessBreakdown).map(([category, details]) => {
+                const percent = Math.round((details?.score || 0) * 100);
+                return (
+                  <div key={category} className="rounded-lg border bg-muted/20 p-3">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <p className="text-sm font-medium capitalize">{category}</p>
+                      <span className="text-xs text-muted-foreground">
+                        {details?.covered || 0}/{details?.total || 0}
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full bg-primary transition-all"
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-2">{percent}% coverage</p>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

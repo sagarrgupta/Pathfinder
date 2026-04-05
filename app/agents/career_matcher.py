@@ -10,91 +10,74 @@ import json
 import logging
 from typing import Any
 
-from app.adapters.llm.lmstudio import get_text_llm
-from app.agents.tool_calling import run_advisor_tool_loop
+from app.agents.advisor_runtime import (
+    finalize_structured_advisor,
+    prepare_structured_advisor,
+    run_structured_advisor_loop,
+)
 from app.core.prompts import CAREER_MATCHER_PROMPT
 from app.core.quality import (
     DecisionPayload,
-    add_handoff_note,
-    add_working_memory_item,
     build_support_ref,
-    complete_task,
-    group_evidence_records,
-    init_working_memory,
-    recent_handoff_context,
-    start_task,
 )
 from app.core.state import PathfinderState
-from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.career_matcher")
 
 
 async def career_matcher(state: PathfinderState) -> PathfinderState:
     """Generate structured career guidance."""
-    query = state.get("query", "")
-    summary = state.get("session_summary", {})
-    profile = state.get("profile_data", {})
-    evidence_records = state.get("evidence_records", [])
-    evidence_groups = group_evidence_records(evidence_records, profile)
-    working_memory = init_working_memory(state.get("working_memory", {}))
-    task_graph = state.get("task_graph", [])
-    blocked_reasons = list(state.get("blocked_reasons", []))
-    task_graph = start_task(task_graph, "compare_to_student_state")
-    task_graph = start_task(task_graph, "check_blockers")
-    task_graph = start_task(task_graph, "rank_options")
-    handoff_context = recent_handoff_context(working_memory, to_node="career_matcher")
+    runtime = prepare_structured_advisor(
+        state,
+        node_name="career_matcher",
+        progress_message="Matching your profile to career options...",
+    )
+    query = runtime["query"]
+    summary = runtime["summary"]
+    profile = runtime["profile"]
+    evidence_groups = runtime["evidence_groups"]
+    student_strategy = state.get("student_strategy", {})
+    student_operating_model = state.get("student_operating_model", {})
+    recommendation_outcome_profile = state.get("recommendation_outcome_profile", {})
 
-    step_progress = list(state.get("step_progress", []))
-    step_progress.append("Matching your profile to career options...")
-
-    baseline = _heuristic_career_payload(summary, profile, evidence_groups)
-    llm_payload, tool_call_log = await _llm_career_payload(query, summary, profile, evidence_groups, handoff_context, state)
+    baseline = _heuristic_career_payload(
+        summary,
+        profile,
+        evidence_groups,
+        student_strategy,
+        student_operating_model,
+        recommendation_outcome_profile,
+    )
+    llm_payload, tool_call_log = await _llm_career_payload(
+        query,
+        summary,
+        profile,
+        evidence_groups,
+        runtime["handoff_context"],
+        state,
+    )
     merged = _merge_payloads(baseline, llm_payload)
-    for assumption in merged.get("assumptions", []):
-        working_memory = add_working_memory_item(working_memory, "active_assumptions", assumption)
-    for item in merged.get("blocked_or_uncertain_items", []):
-        if item.get("kind") in {"blocked", "needs_verification"}:
-            blocked_reasons.append(item.get("reason", ""))
-            working_memory = add_working_memory_item(working_memory, "planner_blockers", item.get("reason", ""))
-    working_memory = add_working_memory_item(
-        working_memory,
-        "ranking_rationale",
-        "Career matcher compared typed role evidence against profile skills and goals.",
+    merged["student_strategy"] = dict(student_strategy or {})
+    merged["recommendation_paths"] = _build_career_paths(
+        merged.get("recommended_items", []),
+        merged.get("blocked_or_uncertain_items", []),
+        student_strategy,
+        student_operating_model,
+        recommendation_outcome_profile,
     )
-    task_graph = complete_task(task_graph, "compare_to_student_state")
-    if blocked_reasons:
-        task_graph = complete_task(task_graph, "check_blockers")
-    task_graph = complete_task(task_graph, "rank_options")
-    working_memory = add_handoff_note(
-        working_memory,
-        from_node="career_matcher",
-        to_node="evaluator",
-        contract="decision_payload",
-        summary=(
-            f"recommended={len(merged.get('recommended_items', []))}; "
-            f"blocked={len(merged.get('blocked_or_uncertain_items', []))}"
-        ),
-    )
-
-    step_progress.append("Career matching prepared")
     log.info(
         "Career matcher produced %d recommendation(s)",
         len(merged.get("recommended_items", [])),
     )
-
-    return {
-        **state,
-        "decision_payload": merged,
-        "draft_answer": "",
-        "tool_call_log": tool_call_log,
-        "working_memory": working_memory,
-        "task_graph": task_graph,
-        "blocked_reasons": [reason for reason in blocked_reasons if reason],
-        "stop_reason": state.get("stop_reason", "") or ("partial_answer" if blocked_reasons else ""),
-        "step_progress": step_progress,
-        "next_node": "evaluator",
-    }
+    return finalize_structured_advisor(
+        state,
+        node_name="career_matcher",
+        completion_message="Career matching prepared",
+        ranking_note="Career matcher compared typed role evidence against profile skills and goals.",
+        merged_payload=merged,
+        tool_call_log=tool_call_log,
+        runtime=runtime,
+    )
 
 
 async def _llm_career_payload(
@@ -105,40 +88,33 @@ async def _llm_career_payload(
     handoff_context: list[dict[str, str]],
     state: PathfinderState,
 ) -> tuple[DecisionPayload, list[dict[str, Any]]]:
-    llm = get_text_llm()
-    json_contract = (
-        "Return ONLY valid JSON matching this schema keys: decision_type, answer_outline, "
-        "recommended_items, blocked_or_uncertain_items, assumptions, next_best_action, source_refs."
-    )
-    system_prompt = f"{CAREER_MATCHER_PROMPT}\n\n{json_contract}"
-    user_prompt = (
-        f"User query:\n{query}\n\n"
-        f"Session summary:\n{json.dumps(summary, ensure_ascii=True)}\n\n"
-        f"Profile snapshot:\n{json.dumps(profile, ensure_ascii=True)}\n\n"
-        f"Handoff notes:\n{json.dumps(handoff_context, ensure_ascii=True)}\n\n"
-        f"Evidence groups:\n{json.dumps(evidence_groups, ensure_ascii=True)}"
-    )
-    content, tool_call_log = await run_advisor_tool_loop(
-        llm=llm,
-        system_prompt=system_prompt,
-        user_query=user_prompt,
+    parsed, tool_call_log = await run_structured_advisor_loop(
+        query=query,
+        summary=summary,
+        profile=profile,
+        evidence_groups=evidence_groups,
+        handoff_context=handoff_context,
         state=state,
-        max_rounds=4,
+        system_prompt=CAREER_MATCHER_PROMPT,
     )
-    try:
-        parsed = parse_json_object(content) or {}
-        return (parsed if isinstance(parsed, dict) else {}), tool_call_log
-    except Exception as exc:
-        log.warning("Career matcher parse failed: %s", exc)
-        return {}, tool_call_log
+    if not parsed:
+        log.warning("Career matcher parse failed or returned empty payload")
+    return parsed, tool_call_log
 
 
 def _heuristic_career_payload(
     summary: dict[str, Any],
     profile: dict[str, Any],
     evidence_groups: dict[str, Any],
+    student_strategy: dict[str, Any] | None = None,
+    student_operating_model: dict[str, Any] | None = None,
+    recommendation_outcome_profile: dict[str, Any] | None = None,
 ) -> DecisionPayload:
-    goals = [goal.lower() for goal in summary.get("goals", {}).get("value", [])]
+    student_strategy = student_strategy or {}
+    student_operating_model = student_operating_model or {}
+    recommendation_outcome_profile = recommendation_outcome_profile or {}
+    goal_values = _career_goals(summary, profile)
+    goals = [goal.lower() for goal in goal_values]
     skills = {skill.get("name", "").lower() for skill in profile.get("skills", []) if skill.get("name")}
     courses = {course.get("code", "").upper() for course in profile.get("courses", []) if course.get("code")}
 
@@ -189,8 +165,8 @@ def _heuristic_career_payload(
             "kind": "needs_verification",
         })
 
-    if not recommended and goals:
-        goal_label = summary.get("goals", {}).get("value", [])[0]
+    if not recommended and goal_values:
+        goal_label = goal_values[0]
         recommended.append({
             "label": goal_label,
             "reason": "Use the student's stated goal as the primary lens for role targeting and skill-gap planning.",
@@ -207,14 +183,46 @@ def _heuristic_career_payload(
     return {
         "decision_type": "career_matching",
         "answer_outline": [
-            "Here are the strongest career directions and next actions based on your profile and the verified evidence.",
+            _career_outline_for_strategy(student_strategy),
+            _career_outline_for_operating_model(student_operating_model),
         ],
         "recommended_items": _dedupe_sequence(recommended)[:6],
         "blocked_or_uncertain_items": _dedupe_sequence(uncertain)[:5],
         "assumptions": assumptions,
-        "next_best_action": "Strengthen the highest-impact missing skill or project area before targeting the most ambitious roles.",
+        "next_best_action": _career_next_step_for_strategy(
+            student_strategy,
+            student_operating_model,
+            recommendation_outcome_profile,
+        ),
         "source_refs": _dedupe_source_refs(source_refs)[:8],
+        "student_strategy": dict(student_strategy),
     }
+
+
+def _career_goals(summary: dict[str, Any], profile: dict[str, Any]) -> list[str]:
+    goals = [str(goal).strip() for goal in (summary.get("goals", {}) or {}).get("value", []) if str(goal).strip()]
+    if goals:
+        return _dedupe_sequence(goals)
+
+    goals = [str(item.get("name", "")).strip() for item in (profile.get("goals", []) or []) if str(item.get("name", "")).strip()]
+    if goals:
+        return _dedupe_sequence(goals)
+
+    temporal_profile = (profile or {}).get("temporal_profile", {}) or {}
+    goals = [
+        str(item.get("value", "")).strip()
+        for item in (temporal_profile.get("evolving_facts", []) or [])
+        if str(item.get("fact_type", "")).lower() == "goal" and str(item.get("value", "")).strip()
+    ]
+    if goals:
+        return _dedupe_sequence(goals)
+
+    goals = [
+        str(item.get("value", "")).strip()
+        for item in (temporal_profile.get("active_candidates", []) or [])
+        if str(item.get("fact_type", "")).lower() == "goal" and str(item.get("value", "")).strip()
+    ]
+    return _dedupe_sequence(goals)
 
 
 def _merge_payloads(base: DecisionPayload, llm_payload: DecisionPayload) -> DecisionPayload:
@@ -222,11 +230,11 @@ def _merge_payloads(base: DecisionPayload, llm_payload: DecisionPayload) -> Deci
         return base
 
     merged = dict(base)
-    for key in ("decision_type", "next_best_action"):
+    for key in ("decision_type", "next_best_action", "student_strategy"):
         if llm_payload.get(key):
             merged[key] = llm_payload[key]
 
-    for key in ("answer_outline", "recommended_items", "blocked_or_uncertain_items", "assumptions", "source_refs"):
+    for key in ("answer_outline", "recommended_items", "blocked_or_uncertain_items", "assumptions", "source_refs", "recommendation_paths"):
         merged[key] = _dedupe_sequence(list(base.get(key, [])) + list(llm_payload.get(key, [])))
 
     return merged
@@ -254,3 +262,101 @@ def _dedupe_sequence(values: list[Any]) -> list[Any]:
         seen.add(key)
         deduped.append(value)
     return deduped
+
+
+def _career_outline_for_strategy(student_strategy: dict[str, Any]) -> str:
+    primary = str((student_strategy or {}).get("primary_priority", "balanced_progress"))
+    if primary == "internship_readiness":
+        return "Here are the strongest career directions and next actions based on your profile, with extra weight on internship readiness and practical hiring signals."
+    if primary == "grad_school_preparation":
+        return "Here are the strongest career directions and next actions based on your profile, while keeping graduate-school preparation in view."
+    if primary == "gpa_protection":
+        return "Here are the strongest career directions and next actions based on your profile, while keeping GPA risk and academic load in mind."
+    return "Here are the strongest career directions and next actions based on your profile and the verified evidence."
+
+
+def _career_outline_for_operating_model(student_operating_model: dict[str, Any]) -> str:
+    risk = str((student_operating_model or {}).get("risk_tolerance", ""))
+    planning_style = str((student_operating_model or {}).get("planning_style", ""))
+    certainty = str((student_operating_model or {}).get("certainty_preference", ""))
+    grad_school = str((student_operating_model or {}).get("grad_school_seriousness", ""))
+    if grad_school == "high":
+        return "The guidance keeps academically stronger or research-adjacent paths more visible because your recent signals suggest graduate-school preparation matters."
+    if certainty == "high":
+        return "The guidance leans toward clearer, better-supported career paths because your recent signals suggest you prefer higher-certainty decisions."
+    if risk == "conservative":
+        return "The guidance leans slightly toward more reachable role paths because your recent signals suggest you prefer lower-risk tradeoffs."
+    if planning_style == "exploratory":
+        return "The guidance keeps a broader role set visible because your recent signals suggest you may still be exploring fit."
+    return ""
+
+
+def _career_next_step_for_strategy(
+    student_strategy: dict[str, Any],
+    student_operating_model: dict[str, Any] | None = None,
+    recommendation_outcome_profile: dict[str, Any] | None = None,
+) -> str:
+    primary = str((student_strategy or {}).get("primary_priority", "balanced_progress"))
+    student_operating_model = student_operating_model or {}
+    recommendation_outcome_profile = recommendation_outcome_profile or {}
+    load = str(student_operating_model.get("workload_preference", ""))
+    certainty = str(student_operating_model.get("certainty_preference", ""))
+    follow_through_style = str(recommendation_outcome_profile.get("follow_through_style", ""))
+    if follow_through_style == "prefers_small_commits":
+        return "Choose one compact career step first, like tightening one project or one missing skill, before opening a wider application plan."
+    if primary == "internship_readiness":
+        if load == "lighter":
+            return "Strengthen the highest-impact missing skill or project area in a way that still leaves room for classes and steady application momentum."
+        return "Strengthen the highest-impact missing skill or project area, then target roles where your current profile already looks interviewable."
+    if primary == "grad_school_preparation":
+        return "Choose the next step that improves both career readiness and longer-term academic depth, such as a stronger project, research-aligned work, or advanced technical skill."
+    if primary == "gpa_protection":
+        return "Prioritize the highest-impact missing skill or project area without taking on so much at once that it hurts academic performance."
+    if certainty == "high":
+        return "Strengthen the clearest high-signal skill or project gap first, then target the most evidence-backed roles before stretching wider."
+    if follow_through_style == "high_follow_through":
+        return "Strengthen the top skill or project gap, then immediately target the most aligned roles so momentum does not get lost."
+    return "Strengthen the highest-impact missing skill or project area before targeting the most ambitious roles."
+
+
+def _build_career_paths(
+    recommended_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    student_strategy: dict[str, Any],
+    student_operating_model: dict[str, Any] | None = None,
+    recommendation_outcome_profile: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    primary = str((student_strategy or {}).get("primary_priority", "balanced_progress"))
+    risk = str((student_operating_model or {}).get("risk_tolerance", ""))
+    certainty = str((student_operating_model or {}).get("certainty_preference", ""))
+    grad_school = str((student_operating_model or {}).get("grad_school_seriousness", ""))
+    follow_through_style = str((recommendation_outcome_profile or {}).get("follow_through_style", ""))
+    labels = [str(item.get("label", "")).strip() for item in recommended_items if isinstance(item, dict) and str(item.get("label", "")).strip()]
+    blockers = [str(item.get("label", "")).strip() for item in blocked_items if isinstance(item, dict) and str(item.get("label", "")).strip()]
+    if not labels:
+        return []
+    conservative_reason = "Target the most reachable roles first while closing the biggest skill gaps gradually."
+    balanced_reason = "Mix realistic targets with one stronger stretch direction so momentum stays high."
+    aggressive_reason = "Aim earlier at the most ambitious direction, accepting that more preparation may still be needed."
+    if primary == "internship_readiness":
+        conservative_reason = "Start with the roles where your current profile is closest to interview-ready."
+        aggressive_reason = "Start reaching toward stronger internships sooner, while accepting more missing-skill work up front."
+    elif primary == "grad_school_preparation":
+        aggressive_reason = "Favor the path that builds stronger depth and credibility even if it is slower to monetize immediately."
+    if risk == "conservative":
+        conservative_reason = "Start with the most reachable roles first because your current signals suggest safer tradeoffs are a better fit."
+    if certainty == "high":
+        conservative_reason = "Start with the clearest, most evidence-backed roles first because your current signals suggest higher-certainty choices are a better fit."
+    if grad_school == "high":
+        aggressive_reason = "Keep academically stronger or research-adjacent paths visible because your current signals suggest graduate-school preparation matters."
+    if follow_through_style == "prefers_small_commits":
+        conservative_reason = "Start with the smallest high-payoff role direction first because your recent follow-through signals suggest narrower commitments stick better."
+    paths = [
+        {"label": "Conservative", "reason": conservative_reason, "courses": labels[:2]},
+        {"label": "Balanced", "reason": balanced_reason, "courses": labels[:3]},
+        {"label": "Aggressive", "reason": aggressive_reason, "courses": labels[:4]},
+    ]
+    if blockers:
+        for path in paths:
+            path["watchouts"] = blockers[:2]
+    return paths

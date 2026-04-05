@@ -5,6 +5,7 @@ import {
   MessageSquare, User, Settings, Plus, Trash2,
   PanelLeftClose, PanelLeftOpen, GraduationCap,
   Pin, PinOff, Pencil, Check, X, Search, ShieldAlert,
+  History,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/components/shared/Toast';
@@ -75,6 +76,7 @@ export default function Sidebar({ open, onToggle }) {
     { path: '/chat', label: 'Chat', icon: MessageSquare },
     { path: '/profile', label: 'My Profile', icon: User },
     { path: '/profile/conflicts', label: 'Conflicts', icon: ShieldAlert },
+    { path: '/replays', label: 'Replays', icon: History },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
 

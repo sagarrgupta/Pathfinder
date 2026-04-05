@@ -38,7 +38,7 @@ function loadPersistedState() {
         sessions: saved.sessions || [],
         activeSessionId: saved.activeSessionId || null,
         messagesBySession: saved.messagesBySession || {},
-        settings: saved.settings || { topic_guard_enabled: true },
+        settings: saved.settings || { topic_guard_enabled: true, advisor_mode: 'adaptive' },
         theme: saved.theme || 'system',
       };
     }
@@ -93,7 +93,7 @@ const initialState = {
   profileLoading: false,
 
   // Settings
-  settings: persisted?.settings || { topic_guard_enabled: true },
+  settings: persisted?.settings || { topic_guard_enabled: true, advisor_mode: 'adaptive' },
 
   // Theme
   theme: persisted?.theme || 'system',

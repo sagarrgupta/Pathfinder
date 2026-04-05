@@ -154,6 +154,7 @@ export default function ChatPage() {
         files: pendingFiles,
         isGlobalUpload,
         replaceFilenames: pendingReplaceNames,
+        advisorMode: state.settings.advisor_mode || 'adaptive',
       },
       {
         onProgress: (data) => {
@@ -179,6 +180,21 @@ export default function ChatPage() {
                   confidence: data.confidence,
                   citations: data.citations,
                   method: data.method,
+                  qualityPath: data.quality_path,
+                  replayId: data.replay_id,
+                  dependencyStatus: data.dependency_status,
+                  stopReason: data.stop_reason,
+                  studentStrategy: data.student_strategy,
+                  studentOperatingModel: data.student_operating_model,
+                  recommendationOutcomeProfile: data.recommendation_outcome_profile,
+                  decisionContinuity: data.decision_continuity,
+                  sessionMemory: data.session_memory,
+                  retrievalSummary: data.retrieval_summary,
+                  retrievalTrace: data.retrieval_trace,
+                  retrievalDiagnostics: data.retrieval_diagnostics,
+                  runtimeSnapshot: data.runtime_snapshot,
+                  traceSummary: data.trace_summary,
+                  advisorMode: state.settings.advisor_mode || 'adaptive',
                 },
               },
             },
@@ -380,6 +396,8 @@ export default function ChatPage() {
         onFilesChange={handleFilesChange}
         isGlobalUpload={isGlobalUpload}
         onGlobalUploadChange={setIsGlobalUpload}
+        advisorMode={state.settings.advisor_mode || 'adaptive'}
+        onAdvisorModeChange={(value) => dispatch({ type: 'SET_SETTINGS', payload: { advisor_mode: value } })}
       />
     </div>
   );

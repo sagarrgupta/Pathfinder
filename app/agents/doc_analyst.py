@@ -22,18 +22,20 @@ from app.adapters.neo4j.graph_store import (
     store_extracted_entities,
 )
 from app.adapters.neo4j.vector_store import store_chunks
-from app.adapters.pdf.extractor import (
-    extract_text_from_pdf,
-    extract_text_from_image,
-    extract_text_from_docx,
-    get_file_type,
-)
+from app.adapters.pdf.extractor import get_file_type
 from app.config.settings import settings
 from app.core.prompts import (
     DOC_ANALYST_ENTITY_EXTRACTION_SYSTEM_PROMPT,
     DOC_ANALYST_ENTITY_EXTRACTION_USER_PROMPT,
 )
 from app.core.state import PathfinderState
+from app.services.execution_registry import execute_document_ingestion
+from app.services.runtime_recovery import (
+    recovery_for_document_embedding_failure,
+    recovery_for_document_extraction_failure,
+    recovery_for_empty_document_extraction,
+    recovery_for_entity_extraction_failure,
+)
 from app.utils.json_extract import parse_json_object
 from app.utils.ids import generate_document_id, generate_chunk_id
 
@@ -54,6 +56,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
     step_progress = list(state.get("step_progress", []))
     all_entities: list[dict[str, Any]] = []
     total_chunks = 0
+    recovery_events = list(state.get("recovery_events", []))
 
     if not files:
         step_progress.append("No files to process")
@@ -76,13 +79,18 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
 
         # Step 1: Extract text (adaptive — route by file type)
         file_type = get_file_type(filename)
-        if file_type == "pdf":
-            pages = await extract_text_from_pdf(content, filename)
-        elif file_type == "image":
-            step_progress.append(f"Analyzing image with vision model...")
-            pages = await extract_text_from_image(content, filename)
-        elif file_type == "docx":
-            pages = await extract_text_from_docx(content, filename)
+        if file_type in {"pdf", "image", "docx"}:
+            try:
+                if file_type == "image":
+                    step_progress.append(f"Analyzing image with vision model...")
+                pages = await execute_document_ingestion(file_type, content, filename)
+            except Exception as exc:
+                log.warning("Document extraction failed for %s: %s", filename, exc)
+                step_progress.append(f"Could not fully extract text from {filename}; skipping this file")
+                recovery_events.append(
+                    recovery_for_document_extraction_failure(filename, file_type, str(exc)).as_dict()
+                )
+                continue
         else:
             step_progress.append(f"Unsupported file type for {filename}, skipping")
             continue
@@ -91,6 +99,9 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
 
         if not full_text.strip():
             step_progress.append(f"Could not extract text from {filename}")
+            recovery_events.append(
+                recovery_for_empty_document_extraction(filename, file_type).as_dict()
+            )
             continue
 
         # Step 2: Store document node
@@ -107,21 +118,28 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         chunk_texts = [c for c in text_chunks if c.strip()]
 
         if chunk_texts:
-            chunk_embeddings = embeddings_model.embed_documents(chunk_texts)
+            try:
+                chunk_embeddings = embeddings_model.embed_documents(chunk_texts)
 
-            chunks_to_store = []
-            for i, (text, embedding) in enumerate(zip(chunk_texts, chunk_embeddings)):
-                chunks_to_store.append({
-                    "id": generate_chunk_id(doc_id, i),
-                    "text": text,
-                    "embedding": embedding,
-                    "chunk_index": i,
-                    "page_number": _page_for_chunk(text, pages),
-                })
+                chunks_to_store = []
+                for i, (text, embedding) in enumerate(zip(chunk_texts, chunk_embeddings)):
+                    chunks_to_store.append({
+                        "id": generate_chunk_id(doc_id, i),
+                        "text": text,
+                        "embedding": embedding,
+                        "chunk_index": i,
+                        "page_number": _page_for_chunk(text, pages),
+                    })
 
-            stored = await store_chunks(chunks_to_store, doc_id)
-            total_chunks += stored
-            step_progress.append(f"Stored {stored} text chunks from {filename}")
+                stored = await store_chunks(chunks_to_store, doc_id)
+                total_chunks += stored
+                step_progress.append(f"Stored {stored} text chunks from {filename}")
+            except Exception as exc:
+                log.warning("Chunk embedding/storage failed for %s: %s", filename, exc)
+                step_progress.append(f"Stored document metadata for {filename}, but chunk retrieval failed")
+                recovery_events.append(
+                    recovery_for_document_embedding_failure(filename, str(exc)).as_dict()
+                )
 
         # Step 4: Entity extraction
         step_progress.append(f"Extracting knowledge from {filename}...")
@@ -156,6 +174,9 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         except Exception as exc:
             log.warning("Entity extraction failed for %s: %s", filename, exc)
             step_progress.append(f"Entity extraction partially failed for {filename}")
+            recovery_events.append(
+                recovery_for_entity_extraction_failure(filename, str(exc)).as_dict()
+            )
 
     step_progress.append(f"Document processing complete: {total_chunks} chunks, {len(all_entities)} entities")
     log.info("Doc analyst: %d chunks, %d entities", total_chunks, len(all_entities))
@@ -164,6 +185,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         **state,
         "files": [],  # Clear binary file data — no longer needed after processing
         "extracted_entities": all_entities,
+        "recovery_events": recovery_events,
         "step_progress": step_progress,
         "next_node": _determine_next(state),
     }

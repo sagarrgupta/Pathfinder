@@ -25,6 +25,15 @@ const THEME_OPTIONS = [
   { value: 'system', label: 'System', icon: SunMoon },
 ];
 
+const ADVISOR_MODE_OPTIONS = [
+  { value: 'adaptive', label: 'Adaptive' },
+  { value: 'semester_planning', label: 'Semester Planning' },
+  { value: 'degree_audit', label: 'Degree Audit' },
+  { value: 'resume_review', label: 'Resume Review' },
+  { value: 'internship_targeting', label: 'Internship Targeting' },
+  { value: 'graduate_school_planning', label: 'Graduate School Planning' },
+];
+
 export default function SettingsPage() {
   const { state, dispatch, refreshProfile, refreshProfiles } = useApp();
   const toast = useToast();
@@ -32,6 +41,16 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [showResetModal, setShowResetModal] = useState(false);
   const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
+  const modelEntries = Object.entries(state.settings.models || {});
+  const dependencyPairs = health
+    ? [
+        ['Neo4j', health.neo4j],
+        ['LM Studio', health.lm_studio],
+        ['Ollama', health.ollama],
+      ]
+    : [];
+  const connectedCount = dependencyPairs.filter(([, status]) => status === 'connected').length;
+  const runtimeReadiness = health ? Math.round((connectedCount / Math.max(dependencyPairs.length, 1)) * 100) : 0;
 
   useEffect(() => {
     loadData();
@@ -60,6 +79,18 @@ export default function SettingsPage() {
     } catch {
       dispatch({ type: 'SET_SETTINGS', payload: { topic_guard_enabled: !newValue } });
       toast.error('Failed to update setting');
+    }
+  };
+
+  const handleAdvisorMode = async (newValue) => {
+    const previous = state.settings.advisor_mode || 'adaptive';
+    dispatch({ type: 'SET_SETTINGS', payload: { advisor_mode: newValue } });
+    try {
+      await updateSettings({ advisor_mode: newValue });
+      toast.success('Advisor mode updated');
+    } catch {
+      dispatch({ type: 'SET_SETTINGS', payload: { advisor_mode: previous } });
+      toast.error('Failed to update advisor mode');
     }
   };
 
@@ -144,6 +175,25 @@ export default function SettingsPage() {
               )} />
             </button>
           </div>
+          <div className="flex items-center justify-between mt-4 pt-4 border-t border-border/50">
+            <div>
+              <p className="text-sm font-medium">Default Advisor Mode</p>
+              <p className="text-xs text-muted-foreground">
+                Choose whether Pathfinder should stay adaptive or start from a focused advising workflow.
+              </p>
+            </div>
+            <select
+              value={state.settings.advisor_mode || 'adaptive'}
+              onChange={(e) => handleAdvisorMode(e.target.value)}
+              className="h-10 rounded-lg border border-border bg-background px-3 text-sm"
+            >
+              {ADVISOR_MODE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* Models */}
@@ -152,7 +202,7 @@ export default function SettingsPage() {
             <Monitor className="h-4 w-4 text-primary" /> Models
           </h2>
           <div className="space-y-0">
-            {Object.entries(state.settings.models || {}).map(([key, value]) => (
+            {modelEntries.map(([key, value]) => (
               <div key={key} className="flex justify-between items-center py-3 border-b last:border-0 border-border/50">
                 <span className="text-sm text-muted-foreground">{formatModelKey(key)}</span>
                 <code className="text-sm font-mono bg-muted px-2.5 py-1 rounded-md">{value}</code>
@@ -161,6 +211,45 @@ export default function SettingsPage() {
           </div>
         </div>
 
+        {(health || modelEntries.length > 0) && (
+          <div className="rounded-xl border bg-card p-5">
+            <h2 className="font-semibold flex items-center gap-2 mb-4">
+              <Zap className="h-4 w-4 text-primary" /> Runtime Readiness
+            </h2>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Readiness</p>
+                <p className="text-xl font-bold">{runtimeReadiness}%</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Active Retrieval</p>
+                <p className="text-sm font-medium">{state.settings.models?.retrieval || 'Unknown'}</p>
+              </div>
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Active Text Model</p>
+                <p className="text-sm font-medium break-words">{state.settings.models?.text_llm || 'Unknown'}</p>
+              </div>
+            </div>
+            {dependencyPairs.length > 0 && (
+              <div className="space-y-2">
+                {dependencyPairs.map(([name, status]) => (
+                  <div key={name} className="flex items-center justify-between text-sm rounded-lg border bg-muted/20 px-3 py-2">
+                    <span className="font-medium">{name}</span>
+                    <span className={cn(
+                      'px-2 py-0.5 rounded-full text-xs font-medium',
+                      status === 'connected'
+                        ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                        : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                    )}>
+                      {status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* System Health */}
         {health && (
           <div className="rounded-xl border bg-card p-5">
@@ -168,11 +257,7 @@ export default function SettingsPage() {
               <Server className="h-4 w-4 text-primary" /> System Health
             </h2>
             <div className="space-y-0">
-              {[
-                ['Neo4j', health.neo4j],
-                ['LM Studio', health.lm_studio],
-                ['Ollama', health.ollama],
-              ].map(([name, status]) => (
+              {dependencyPairs.map(([name, status]) => (
                 <div key={name} className="flex items-center justify-between py-3 border-b last:border-0 border-border/50">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">{name}</span>

@@ -30,6 +30,7 @@ from app.adapters.neo4j.graph_store import (
     reset_all_data,
     run_cypher,
     store_memory_item,
+    update_saved_recommendation_outcome,
     update_entity,
     update_student,
 )
@@ -37,8 +38,7 @@ from app.agents.profile_manager import process_free_text
 from app.config.settings import settings
 from app.core.graph import get_compiled_graph
 from app.core.memory import reset_checkpointer_storage
-from app.core.quality import build_task_graph, infer_quality_path, summarize_trace
-from app.core.state import PathfinderState
+from app.services.runtime_session import build_chat_runtime_session, get_dependency_status
 from app.services.conflict_autoresolve import (
     auto_resolve_profile_conflicts,
     list_profile_conflicts,
@@ -46,6 +46,16 @@ from app.services.conflict_autoresolve import (
 )
 from app.services.consolidation import maybe_consolidate_memory
 from app.services.background_jobs import get_background_status
+from app.services.execution_registry import get_active_retrieval_strategy, get_active_text_model
+from app.services.replay_store import (
+    build_replay_artifact,
+    get_replay_artifact,
+    list_replay_artifacts,
+    save_replay_artifact,
+)
+from app.services.replay_eval import evaluate_recent_replays, evaluate_replay_by_id
+from app.services.decision_memory import persist_decision_record
+from app.services.eval_analytics import build_eval_analytics, list_benchmark_sets
 from app.schemas.models import (
     ChatResponse,
     DocumentUploadResponse,
@@ -58,9 +68,15 @@ from app.schemas.models import (
     ProfileResponse,
     ProfileTextInput,
     ProfileUpdate,
+    ReplayArtifactInfo,
+    EvalAnalyticsResponse,
+    EvalBenchmarkInfo,
+    ReplayEvaluationBatch,
+    ReplayEvaluationInfo,
     SessionInfo,
     SavedRecommendationCreate,
     SavedRecommendationInfo,
+    SavedRecommendationOutcomeUpdate,
     SettingsResponse,
     SettingsUpdate,
 )
@@ -72,6 +88,7 @@ router = APIRouter()
 
 # ── Runtime state ────────────────────────────────────────────────
 _topic_guard_enabled: bool = settings.TOPIC_GUARD_ENABLED
+_advisor_mode: str = "adaptive"
 
 
 # ── Chat (SSE Streaming) ────────────────────────────────────────
@@ -85,6 +102,7 @@ async def chat(
     files: list[UploadFile] = File(default=[]),
     is_global_upload: bool = Form(False),
     replace_filenames: str = Form(""),
+    advisor_mode: str = Form("adaptive"),
 ):
     """Main chat endpoint with SSE streaming."""
     resolved_student_id = await _resolve_student_id(student_id)
@@ -119,63 +137,17 @@ async def chat(
     async def event_stream():
         try:
             graph = await get_compiled_graph()
-            dependency_status = await _dependency_status()
-
-            # Reset ALL computed state fields to prevent stale data from
-            # previous turns leaking via the checkpointer.
-            initial_state: dict[str, Any] = {
-                "messages": [("human", query)],
-                "query": query,
-                "files": file_data,
-                "session_id": session_id,
-                "student_id": resolved_student_id,
-                "is_global_upload": is_global_upload,
-                "topic_guard_enabled": _topic_guard_enabled,
-                "step_progress": [],
-                "citations": [],
-                # ── Reset stale orchestrator/agent fields ──
-                "plan": [],
-                "next_node": "",
-                "intent": "",
-                "missing_info": [],
-                "session_summary": {},
-                "workflow": "",
-                "target_entity": {},
-                "source_policy": {},
-                "task_graph": [],
-                "working_memory": {},
-                "handoff_notes": [],
-                "compacted_session": {},
-                "source_audit": [],
-                "dependency_status": dependency_status,
-                "blocked_reasons": [],
-                "stop_reason": "",
-                "trace_summary": {},
-                "short_memory_policy": {},
-                "draft_answer": "",
-                "final_answer": "",
-                "is_blocked": False,
-                "block_reason": "",
-                "confidence_score": 0.0,
-                "is_grounded": True,
-                "profile_updates": [],
-                "extracted_entities": [],
-                "retrieved_documents": [],
-                "web_results": [],
-                "graph_results": [],
-                "profile_data": {},
-                "semantic_memory": {},
-                "memory_pack": {},
-                "latest_ingestion_result": {},
-                "conflicts": [],
-                "evidence_records": [],
-                "decision_payload": {},
-            }
-
-            config = {
-                "configurable": {"thread_id": f"{resolved_student_id}:{session_id}"},
-                "recursion_limit": 15,  # Safeguard: max 15 node executions per turn
-            }
+            runtime_session = await build_chat_runtime_session(
+                query=query,
+                session_id=session_id,
+                student_id=resolved_student_id,
+                files=file_data,
+                is_global_upload=is_global_upload,
+                topic_guard_enabled=_topic_guard_enabled,
+                advisor_mode=advisor_mode or _advisor_mode,
+            )
+            initial_state = runtime_session.build_initial_state()
+            config = runtime_session.build_graph_config()
 
             # Stream graph execution
             last_progress_count = 0
@@ -195,9 +167,6 @@ async def chat(
 
             # Emit final answer
             final_answer = final_state.get("final_answer", "I couldn't generate a response.")
-            confidence = final_state.get("confidence_score", 0.5)
-            citations = final_state.get("citations", [])
-            trace_summary = final_state.get("trace_summary") or summarize_trace(final_state)
 
             # Stream tokens (simulate word-by-word for UX)
             words = final_answer.split(" ")
@@ -205,7 +174,30 @@ async def chat(
                 yield f"event: token\ndata: {json.dumps({'content': word + ' '})}\n\n"
 
             # Done event
-            yield f"event: done\ndata: {json.dumps({'session_id': session_id, 'student_id': resolved_student_id, 'confidence': confidence, 'citations': citations, 'method': _determine_method(final_state), 'quality_path': infer_quality_path(final_state), 'trace_summary': trace_summary, 'blocked_reasons': final_state.get('blocked_reasons', []), 'dependency_status': final_state.get('dependency_status', dependency_status), 'stop_reason': final_state.get('stop_reason', '')})}\n\n"
+            done_payload = runtime_session.build_done_payload(final_state)
+            try:
+                await persist_decision_record(
+                    query=query,
+                    final_state=final_state,
+                    done_payload=done_payload,
+                    student_id=resolved_student_id,
+                    session_id=session_id,
+                )
+            except Exception as exc:
+                log.warning("Failed to persist decision record for session %s: %s", session_id, exc)
+            try:
+                artifact = build_replay_artifact(
+                    query=query,
+                    done_payload=done_payload,
+                    final_state=final_state,
+                    student_id=resolved_student_id,
+                    session_id=session_id,
+                )
+                saved_artifact = save_replay_artifact(artifact)
+                done_payload["replay_id"] = saved_artifact.get("id", "")
+            except Exception as exc:
+                log.warning("Failed to persist replay artifact for session %s: %s", session_id, exc)
+            yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
 
         except Exception as exc:
             log.error("Chat error: %s", exc, exc_info=True)
@@ -274,7 +266,6 @@ async def upload_document(
     replace: str = Form("false"),
 ):
     """Upload a document to the student profile or session."""
-    import os
     resolved_student_id = await _resolve_student_id(student_id)
 
     content = await file.read()
@@ -283,6 +274,8 @@ async def upload_document(
 
     if not file.filename:
         raise HTTPException(400, "Filename is required")
+
+    import os
 
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in settings.ALLOWED_FILE_TYPES:
@@ -296,7 +289,7 @@ async def upload_document(
             await delete_document_cascade(existing["id"], resolved_student_id)
             log.info("Replaced existing document: %s", file.filename)
 
-    # Process through doc_analyst directly
+    # Process through the registered document ingestion pipeline
     from app.agents.doc_analyst import doc_analyst as process_doc
 
     state: dict[str, Any] = {
@@ -339,6 +332,9 @@ async def get_profile(student_id: Optional[str] = Query(default=None)):
         "memory_items": len(profile.get("memory_items", [])),
         "evidence": len(profile.get("evidence", [])),
         "conflicts": len([item for item in profile.get("candidate_facts", []) if item.get("status") == "conflicted"]),
+        "confirmed": int(profile.get("fact_summary", {}).get("confirmed_candidate_facts", 0) or 0),
+        "reinforced": int(profile.get("fact_summary", {}).get("reinforced_candidate_facts", 0) or 0),
+        "inferred": int(profile.get("fact_summary", {}).get("inferred_candidate_facts", 0) or 0),
     }
     return ProfileResponse(
         personal=profile.get("personal", {}),
@@ -350,6 +346,11 @@ async def get_profile(student_id: Optional[str] = Query(default=None)):
         interests=profile.get("interests", []),
         experience=profile.get("experience", []),
         projects=profile.get("projects", []),
+        profile_facts=profile.get("profile_facts", []),
+        candidate_fact_ledger=profile.get("candidate_fact_ledger", []),
+        completeness_breakdown=profile.get("completeness_breakdown", {}),
+        fact_summary=profile.get("fact_summary", {}),
+        temporal_profile=profile.get("temporal_profile", {}),
         all_entities=profile.get("all_entities", {}),
         completeness=float(profile.get("completeness", 0.0) or 0.0),
         confidence=confidence,
@@ -483,6 +484,62 @@ async def list_sessions(student_id: Optional[str] = Query(default=None)):
     return {"student_id": resolved_student_id, "sessions": []}
 
 
+@router.get("/replays", response_model=list[ReplayArtifactInfo])
+async def get_replays(limit: int = Query(default=25, ge=1, le=100)):
+    """List recent replay artifacts for debugging and evaluation."""
+    return [ReplayArtifactInfo(**item) for item in list_replay_artifacts(limit=limit)]
+
+
+@router.get("/replays/{replay_id}")
+async def get_replay(replay_id: str):
+    """Fetch a full replay artifact by ID."""
+    artifact = get_replay_artifact(replay_id)
+    if artifact is None:
+        raise HTTPException(404, "Replay artifact not found")
+    return artifact
+
+
+@router.get("/replays/{replay_id}/evaluate", response_model=ReplayEvaluationInfo)
+async def evaluate_replay(replay_id: str):
+    """Evaluate one replay artifact with lightweight regression checks."""
+    evaluation = evaluate_replay_by_id(replay_id)
+    if evaluation is None:
+        raise HTTPException(404, "Replay artifact not found")
+    return ReplayEvaluationInfo(**evaluation)
+
+
+@router.get("/replays/evaluate/recent", response_model=ReplayEvaluationBatch)
+async def evaluate_recent_replay_batch(
+    limit: int = Query(default=25, ge=1, le=100),
+    student_id: Optional[str] = Query(default=None),
+):
+    """Evaluate a batch of recent replay artifacts."""
+    resolved_student_id = None
+    if student_id:
+        resolved_student_id = await _resolve_student_id(student_id)
+    evaluation = evaluate_recent_replays(limit=limit, student_id=resolved_student_id)
+    return ReplayEvaluationBatch(**evaluation)
+
+
+@router.get("/eval/benchmarks", response_model=list[EvalBenchmarkInfo])
+async def get_eval_benchmarks():
+    """List benchmark datasets available for continuous evaluation."""
+    return [EvalBenchmarkInfo(**item) for item in list_benchmark_sets()]
+
+
+@router.get("/eval/analytics", response_model=EvalAnalyticsResponse)
+async def get_eval_analytics(
+    limit: int = Query(default=50, ge=1, le=200),
+    student_id: Optional[str] = Query(default=None),
+):
+    """Return grouped replay analytics, benchmark coverage, and trend summary."""
+    resolved_student_id = None
+    if student_id:
+        resolved_student_id = await _resolve_student_id(student_id)
+    analytics = build_eval_analytics(limit=limit, student_id=resolved_student_id)
+    return EvalAnalyticsResponse(**analytics)
+
+
 @router.get("/recommendations", response_model=list[SavedRecommendationInfo])
 async def get_saved_recommendations(student_id: Optional[str] = Query(default=None)):
     """List saved plans and recommendations for the active profile."""
@@ -502,6 +559,9 @@ async def get_saved_recommendations(student_id: Optional[str] = Query(default=No
             status=item.get("metadata", {}).get("status", "active"),
             next_review_at=item.get("metadata", {}).get("next_review_at"),
             follow_up_prompt=item.get("metadata", {}).get("follow_up_prompt"),
+            outcome_status=item.get("metadata", {}).get("outcome_status", item.get("metadata", {}).get("status", "active")),
+            outcome_notes=item.get("metadata", {}).get("outcome_notes"),
+            outcome_updated_at=item.get("metadata", {}).get("outcome_updated_at"),
             metadata=item.get("metadata", {}),
         )
         for item in items
@@ -543,6 +603,44 @@ async def save_recommendation(body: SavedRecommendationCreate):
         status=stored.get("metadata", {}).get("status", "active"),
         next_review_at=stored.get("metadata", {}).get("next_review_at"),
         follow_up_prompt=stored.get("metadata", {}).get("follow_up_prompt"),
+        outcome_status=stored.get("metadata", {}).get("outcome_status", stored.get("metadata", {}).get("status", "active")),
+        outcome_notes=stored.get("metadata", {}).get("outcome_notes"),
+        outcome_updated_at=stored.get("metadata", {}).get("outcome_updated_at"),
+        metadata=stored.get("metadata", {}),
+    )
+
+
+@router.put("/recommendations/{recommendation_id}/outcome", response_model=SavedRecommendationInfo)
+async def update_recommendation_outcome(recommendation_id: str, body: SavedRecommendationOutcomeUpdate):
+    """Update outcome/feedback for a saved recommendation."""
+    resolved_student_id = await _resolve_student_id(body.student_id)
+    stored = await update_saved_recommendation_outcome(
+        resolved_student_id,
+        recommendation_id,
+        outcome_status=body.outcome_status,
+        outcome_notes=body.outcome_notes,
+        next_review_at=body.next_review_at,
+        follow_up_prompt=body.follow_up_prompt,
+        metadata_patch=body.metadata,
+    )
+    if not stored:
+        raise HTTPException(404, "Saved recommendation not found")
+    return SavedRecommendationInfo(
+        id=stored.get("id", ""),
+        student_id=stored.get("student_id", resolved_student_id),
+        title=stored.get("metadata", {}).get("title") or stored.get("summary", "Saved recommendation"),
+        summary=stored.get("summary", ""),
+        recommendation_type=str(stored.get("memory_type", "saved_plan")).replace("saved_", ""),
+        actions=stored.get("metadata", {}).get("actions", []),
+        source_session_id=stored.get("metadata", {}).get("source_session_id"),
+        source_query=stored.get("metadata", {}).get("source_query"),
+        created_at=stored.get("created_at"),
+        status=stored.get("metadata", {}).get("status", "active"),
+        next_review_at=stored.get("metadata", {}).get("next_review_at"),
+        follow_up_prompt=stored.get("metadata", {}).get("follow_up_prompt"),
+        outcome_status=stored.get("metadata", {}).get("outcome_status", stored.get("metadata", {}).get("status", "active")),
+        outcome_notes=stored.get("metadata", {}).get("outcome_notes"),
+        outcome_updated_at=stored.get("metadata", {}).get("outcome_updated_at"),
         metadata=stored.get("metadata", {}),
     )
 
@@ -579,10 +677,12 @@ async def get_settings():
     """Get current application settings."""
     return SettingsResponse(
         topic_guard_enabled=_topic_guard_enabled,
+        advisor_mode=_advisor_mode,
         models={
-            "text_llm": settings.LLM_MODEL,
+            "text_llm": get_active_text_model(),
             "vision_llm": settings.VISION_MODEL,
             "embeddings": settings.EMBEDDING_MODEL,
+            "retrieval": get_active_retrieval_strategy(),
         },
     )
 
@@ -590,10 +690,12 @@ async def get_settings():
 @router.put("/settings")
 async def update_settings(update: SettingsUpdate):
     """Update application settings."""
-    global _topic_guard_enabled
+    global _topic_guard_enabled, _advisor_mode
     if update.topic_guard_enabled is not None:
         _topic_guard_enabled = update.topic_guard_enabled
-    return {"updated": True, "topic_guard_enabled": _topic_guard_enabled}
+    if update.advisor_mode is not None:
+        _advisor_mode = str(update.advisor_mode or "adaptive").strip().lower() or "adaptive"
+    return {"updated": True, "topic_guard_enabled": _topic_guard_enabled, "advisor_mode": _advisor_mode}
 
 
 # ── Health ───────────────────────────────────────────────────────
@@ -602,7 +704,7 @@ async def update_settings(update: SettingsUpdate):
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
     """Check system health: Neo4j, LM Studio, Ollama."""
-    statuses = await _dependency_status()
+    statuses = await get_dependency_status()
     neo4j_status = statuses.get("neo4j", "unknown")
     lm_studio_status = statuses.get("llm", "unknown")
     ollama_status = statuses.get("embeddings", "unknown")
@@ -626,64 +728,6 @@ async def background_status():
 
 
 # ── Helpers ──────────────────────────────────────────────────────
-
-
-def _determine_method(state: dict[str, Any]) -> str:
-    """Determine which retrieval methods were used."""
-    methods = []
-    if state.get("retrieved_documents"):
-        methods.append("rag")
-    if state.get("profile_data", {}).get("courses"):
-        methods.append("graph")
-    if state.get("web_results"):
-        methods.append("web")
-    return "+".join(methods) if methods else "direct"
-
-
-async def _dependency_status() -> dict[str, str]:
-    """Check live dependency health for the current turn."""
-    neo4j_status = "unknown"
-    llm_status = "unknown"
-    embeddings_status = "unknown"
-    web_search_status = "unknown"
-
-    try:
-        from app.adapters.neo4j.graph_store import get_driver
-        driver = await get_driver()
-        async with driver.session() as session:
-            await session.run("RETURN 1")
-        neo4j_status = "connected"
-    except Exception:
-        neo4j_status = "disconnected"
-
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.LLM_BASE_URL.replace('/v1', '')}/v1/models")
-            llm_status = "connected" if resp.status_code == 200 else "error"
-    except Exception:
-        llm_status = "disconnected"
-
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.OLLAMA_URL}/api/tags")
-            embeddings_status = "connected" if resp.status_code == 200 else "error"
-    except Exception:
-        embeddings_status = "disconnected"
-
-    web_search_status = "configured" if any([
-        settings.TAVILY_API_KEY,
-        settings.GOOGLE_CSE_API_KEY,
-        settings.BRAVE_API_KEY,
-    ]) else "fallback_only"
-
-    return {
-        "neo4j": neo4j_status,
-        "llm": llm_status,
-        "embeddings": embeddings_status,
-        "web_search": web_search_status,
-    }
 
 
 async def _resolve_student_id(student_id: str | None, create_if_missing: bool = True) -> str:

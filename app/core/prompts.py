@@ -442,7 +442,13 @@ Return ONLY valid JSON with this shape:
      "salience": 0.0,
      "time_scope": "short_term|long_term",
      "route": "resolved_core|candidate_structured|generic_long_term|short_term_only",
-     "metadata": {}}
+     "metadata": {
+       "source_span": "short supporting excerpt",
+       "normalized_value": "normalized form if obvious",
+       "stability": "stable|evolving|temporary",
+       "evidence_kind": "direct_statement|document_fact|inference",
+       "is_direct_statement": true
+     }}
   ],
   "generic_memories": [
     {"memory_type": "preference|constraint|behavior|context|generic",
@@ -461,6 +467,9 @@ Rules:
 - Prefer "resolved_core" only for strong, direct facts from the user/evidence.
 - Use "short_term_only" for temporary or low-value details.
 - Keep candidate_facts and generic_memories short and concrete.
+- Prefer open-world student facts over a tiny fixed keyword list. If the student shares a useful long-term preference, goal, experience, project, or constraint, extract it even if it is not phrased with obvious keywords.
+- Use metadata.stability to distinguish stable long-term facts from temporary session-only facts.
+- Use metadata.evidence_kind="direct_statement" when the user explicitly states the fact.
 - Confidence and salience must be between 0.0 and 1.0.
 """
 
