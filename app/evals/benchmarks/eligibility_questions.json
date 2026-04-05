@@ -1,0 +1,12 @@
+{
+  "id": "eligibility_questions",
+  "title": "Eligibility Questions",
+  "description": "Benchmarks for prerequisite checks, policy interpretation, and classification-sensitive eligibility guidance.",
+  "workflow": "eligibility_check",
+  "scenario_count": 5,
+  "examples": [
+    "Am I eligible to take this course next term?",
+    "Can I apply for this program with my current background?",
+    "Does my current standing satisfy the requirement?"
+  ]
+}
