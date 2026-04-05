@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+import httpx
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, AIMessage
 
@@ -155,6 +156,51 @@ def _write_debug(text: str) -> None:
         pass  # Never let debug logging break the app
 
 
+def _lmstudio_http_base() -> str:
+    base = settings.LLM_BASE_URL.rstrip("/")
+    if base.endswith("/v1"):
+        return base[:-3]
+    return base
+
+
+def _configured_text_model() -> str:
+    return str(settings.LLM_MODEL or "").strip() or "openai/gpt-oss-20b"
+
+
+def _model_key(llm: Optional["LoggingChatOpenAI"]) -> str:
+    if llm is None:
+        return ""
+    return str(getattr(llm, "model_name", "") or getattr(llm, "model", "") or "").strip()
+
+
+def get_active_lmstudio_text_model() -> str:
+    """Return the currently usable LM Studio text model key.
+
+    LM Studio's OpenAI-compatible `/v1/models` endpoint typically exposes the
+    loaded/available model list. When reachable, prefer the configured model if
+    it is present; otherwise use the first returned model. Fall back to the
+    configured model when LM Studio is unavailable.
+    """
+    configured = _configured_text_model()
+    try:
+        response = httpx.get(f"{_lmstudio_http_base()}/v1/models", timeout=5.0)
+        response.raise_for_status()
+        payload = response.json() if response.content else {}
+        models = payload.get("data", []) if isinstance(payload, dict) else []
+        ids = [
+            str(item.get("id", "")).strip()
+            for item in models
+            if isinstance(item, dict) and str(item.get("id", "")).strip()
+        ]
+        if not ids:
+            return configured
+        if configured in ids:
+            return configured
+        return ids[0]
+    except Exception:
+        return configured
+
+
 def _shorten_message_content(content: Any, *, limit: int) -> Any:
     if isinstance(content, str):
         return _trunc(content, limit)
@@ -185,10 +231,11 @@ def _trim_messages_for_retry(input_val: Any) -> Any:
 def get_text_llm() -> LoggingChatOpenAI:
     """Return the singleton text LLM (gpt-oss-20b)."""
     global _text_llm
-    if _text_llm is None:
+    resolved_model = get_active_lmstudio_text_model()
+    if _text_llm is None or _model_key(_text_llm) != resolved_model:
         _text_llm = LoggingChatOpenAI(
             llm_label="text",
-            model=settings.LLM_MODEL,
+            model=resolved_model,
             base_url=settings.LLM_BASE_URL,
             api_key=settings.LLM_API_KEY,
             temperature=settings.LLM_TEMPERATURE,
@@ -221,10 +268,11 @@ def get_vision_llm() -> LoggingChatOpenAI:
 def get_json_llm() -> LoggingChatOpenAI:
     """Return a text LLM configured for strict JSON-object outputs."""
     global _json_llm
-    if _json_llm is None:
+    resolved_model = get_active_lmstudio_text_model()
+    if _json_llm is None or _model_key(_json_llm) != resolved_model:
         _json_llm = LoggingChatOpenAI(
             llm_label="json",
-            model=settings.LLM_MODEL,
+            model=resolved_model,
             base_url=settings.LLM_BASE_URL,
             api_key=settings.LLM_API_KEY,
             temperature=0.0,

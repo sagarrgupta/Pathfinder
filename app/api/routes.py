@@ -102,7 +102,7 @@ async def chat(
     files: list[UploadFile] = File(default=[]),
     is_global_upload: bool = Form(False),
     replace_filenames: str = Form(""),
-    advisor_mode: str = Form("adaptive"),
+    advisor_mode: Optional[str] = Form(None),
 ):
     """Main chat endpoint with SSE streaming."""
     resolved_student_id = await _resolve_student_id(student_id)
@@ -144,7 +144,7 @@ async def chat(
                 files=file_data,
                 is_global_upload=is_global_upload,
                 topic_guard_enabled=_topic_guard_enabled,
-                advisor_mode=advisor_mode or _advisor_mode,
+                advisor_mode=(advisor_mode if advisor_mode is not None else _advisor_mode),
             )
             initial_state = runtime_session.build_initial_state()
             config = runtime_session.build_graph_config()

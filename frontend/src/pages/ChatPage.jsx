@@ -194,7 +194,7 @@ export default function ChatPage() {
                   retrievalDiagnostics: data.retrieval_diagnostics,
                   runtimeSnapshot: data.runtime_snapshot,
                   traceSummary: data.trace_summary,
-                  advisorMode: state.settings.advisor_mode || 'adaptive',
+                  advisorMode: data.runtime_snapshot?.advisor_mode || state.settings.advisor_mode || 'adaptive',
                 },
               },
             },

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from app.adapters.llm.lmstudio import get_active_lmstudio_text_model
 from app.config.settings import settings
 
 
@@ -26,7 +27,7 @@ class ExecutionRegistry:
 def get_execution_registry() -> ExecutionRegistry:
     """Return the current execution capability registry."""
     return ExecutionRegistry(
-        text_model=settings.LLM_MODEL,
+        text_model=get_active_lmstudio_text_model(),
         vision_model=settings.VISION_MODEL,
         retrieval_strategy="memory_pack",
         web_providers=tuple(name for name, _ in _web_provider_entries()),
