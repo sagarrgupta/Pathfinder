@@ -143,6 +143,10 @@ export async function selfResolveProfileConflicts(studentId) {
   return response.json();
 }
 
+export async function autoResolveProfileConflicts(studentId) {
+  return selfResolveProfileConflicts(studentId);
+}
+
 export async function updateProfile(field, value, studentId) {
   const response = await fetch(`${API_BASE}/profile`, {
     method: 'PUT',
@@ -190,6 +194,12 @@ export async function getProfileGraph(studentId) {
 export async function resetAllData(studentId) {
   const response = await fetch(withStudentId(`${API_BASE}/profile/reset`, studentId), { method: 'DELETE' });
   if (!response.ok) throw new Error(`Failed to reset data: ${response.status}`);
+  return response.json();
+}
+
+export async function deleteAllDataEverywhere() {
+  const response = await fetch(`${API_BASE}/settings/delete-all-data`, { method: 'DELETE' });
+  if (!response.ok) throw new Error(`Failed to delete all data: ${response.status}`);
   return response.json();
 }
 
@@ -306,16 +316,6 @@ export async function getEvalAnalytics(limit = 50, studentId = null) {
 export async function getRecommendations(studentId = null) {
   const response = await fetch(withStudentId(`${API_BASE}/recommendations`, studentId));
   if (!response.ok) throw new Error(`Failed to load recommendations: ${response.status}`);
-  return response.json();
-}
-
-export async function saveRecommendation(payload) {
-  const response = await fetch(`${API_BASE}/recommendations`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) throw new Error(`Failed to save recommendation: ${response.status}`);
   return response.json();
 }
 
