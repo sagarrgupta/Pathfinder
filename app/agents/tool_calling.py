@@ -10,10 +10,10 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.adapters.neo4j.graph_store import update_student
-from app.adapters.web_search.fallback_chain import search
 from app.adapters.web_search.url_fetcher import fetch_url_content
 from app.config.settings import settings
 from app.core.state import PathfinderState
+from app.services.execution_registry import execute_web_search
 
 log = logging.getLogger("pathfinder.agents.tool_calling")
 
@@ -182,7 +182,7 @@ async def _execute_advisor_tool(*, name: str, args: dict[str, Any], state: Pathf
             max_results = int(args.get("max_results", 5) or 5)
             if not query:
                 return {"error": "query is required"}
-            results = await search(query, max_results=max(1, min(max_results, 10)))
+            results = await execute_web_search(query, max_results=max(1, min(max_results, 10)))
             return {"results": results[:10]}
 
         if name == "fetch_url":

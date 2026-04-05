@@ -477,7 +477,6 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
         "citations": citations,
         "working_memory": working_memory,
         "task_graph": task_graph,
-        "source_audit": working_memory.get("source_audit", []),
         "tool_call_log": tool_call_log,
         "step_progress": step_progress,
         "next_node": next_node,

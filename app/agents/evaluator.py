@@ -45,6 +45,7 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     documents = state.get("retrieved_documents", [])
     web_results = state.get("web_results", [])
     evidence_records = state.get("evidence_records", [])
+    evidence_pack = state.get("evidence_pack", {})
     tool_call_log = state.get("tool_call_log", [])
     decision_payload = state.get("decision_payload", {})
     working_memory = init_working_memory(state.get("working_memory", {}))
@@ -71,10 +72,13 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     llm = get_json_llm()
 
     # Compile sources
+    source_documents = list(evidence_pack.get("document_records", []) or documents)
+    source_web_results = list(evidence_pack.get("web_records", []) or web_results)
+    source_evidence_records = list(evidence_pack.get("evidence_records", []) or evidence_records)
     sources = []
-    for d in documents[:5]:
+    for d in source_documents[:5]:
         sources.append(f"[Document: {d.get('filename', 'unknown')}] {d.get('text', '')[:1000]}")
-    for w in web_results[:8]:
+    for w in source_web_results[:8]:
         title = w.get("title", "")
         url = w.get("url", "")
         content = w.get("content", "")
@@ -119,7 +123,7 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
 
     # ── Handle low-confidence / ungrounded answers ──
     final_draft = draft
-    validated_payload = _validate_decision_payload(decision_payload, evidence_records)
+    validated_payload = _validate_decision_payload(decision_payload, source_evidence_records)
     if validated_payload:
         original_recommendations = len(decision_payload.get("recommended_items", []))
         kept_recommendations = len(validated_payload.get("recommended_items", []))

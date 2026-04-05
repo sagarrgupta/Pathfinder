@@ -17,6 +17,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     student_id: Optional[str] = None
     topic_guard_enabled: Optional[bool] = None
+    advisor_mode: Optional[str] = None
 
 
 class ProfileTextInput(BaseModel):
@@ -59,6 +60,7 @@ class ConflictChoiceRequest(BaseModel):
 class SettingsUpdate(BaseModel):
     """Update application settings."""
     topic_guard_enabled: Optional[bool] = None
+    advisor_mode: Optional[str] = None
 
 
 class SavedRecommendationCreate(BaseModel):
@@ -70,6 +72,16 @@ class SavedRecommendationCreate(BaseModel):
     actions: list[str] = Field(default_factory=list)
     source_session_id: Optional[str] = None
     source_query: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SavedRecommendationOutcomeUpdate(BaseModel):
+    """Update outcome/feedback for a saved recommendation."""
+    student_id: Optional[str] = None
+    outcome_status: str
+    outcome_notes: Optional[str] = None
+    next_review_at: Optional[str] = None
+    follow_up_prompt: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -119,6 +131,11 @@ class ProfileResponse(BaseModel):
     interests: list[dict[str, Any]] = Field(default_factory=list)
     experience: list[dict[str, Any]] = Field(default_factory=list)
     projects: list[dict[str, Any]] = Field(default_factory=list)
+    profile_facts: list[dict[str, Any]] = Field(default_factory=list)
+    candidate_fact_ledger: list[dict[str, Any]] = Field(default_factory=list)
+    completeness_breakdown: dict[str, Any] = Field(default_factory=dict)
+    fact_summary: dict[str, Any] = Field(default_factory=dict)
+    temporal_profile: dict[str, Any] = Field(default_factory=dict)
     # Dynamic: all entity types from the KG keyed by Neo4j label
     all_entities: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     completeness: float = 0.0
@@ -168,6 +185,9 @@ class SavedRecommendationInfo(BaseModel):
     status: str = "active"
     next_review_at: Optional[str] = None
     follow_up_prompt: Optional[str] = None
+    outcome_status: str = "active"
+    outcome_notes: Optional[str] = None
+    outcome_updated_at: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -183,4 +203,56 @@ class HealthResponse(BaseModel):
 class SettingsResponse(BaseModel):
     """Current settings."""
     topic_guard_enabled: bool = True
+    advisor_mode: str = "adaptive"
     models: dict[str, str] = Field(default_factory=dict)
+
+
+class ReplayArtifactInfo(BaseModel):
+    """Compact replay artifact summary."""
+    id: str
+    created_at: Optional[str] = None
+    student_id: str
+    session_id: str
+    query: str
+    workflow: str = ""
+    method: str = ""
+    quality_path: str = ""
+    confidence: float = 0.0
+
+
+class ReplayEvaluationInfo(BaseModel):
+    """Lightweight replay evaluation result."""
+    replay_id: str
+    query: str = ""
+    workflow: str = ""
+    method: str = ""
+    score: float = 0.0
+    status: str = "warn"
+    checks: dict[str, bool] = Field(default_factory=dict)
+    issues: list[str] = Field(default_factory=list)
+    metrics: dict[str, int] = Field(default_factory=dict)
+    score_components: dict[str, float] = Field(default_factory=dict)
+
+
+class ReplayEvaluationBatch(BaseModel):
+    """Summary and results for replay regression checks."""
+    summary: dict[str, Any] = Field(default_factory=dict)
+    evaluations: list[ReplayEvaluationInfo] = Field(default_factory=list)
+
+
+class EvalBenchmarkInfo(BaseModel):
+    """Benchmark-set metadata for continuous evaluation."""
+    id: str
+    title: str
+    description: str = ""
+    workflow: str = ""
+    scenario_count: int = 0
+    examples: list[str] = Field(default_factory=list)
+
+
+class EvalAnalyticsResponse(BaseModel):
+    """Grouped replay analytics and benchmark coverage."""
+    summary: dict[str, Any] = Field(default_factory=dict)
+    benchmarks: list[EvalBenchmarkInfo] = Field(default_factory=list)
+    comparisons: dict[str, Any] = Field(default_factory=dict)
+    trend: dict[str, Any] = Field(default_factory=dict)

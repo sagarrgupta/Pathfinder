@@ -19,7 +19,7 @@ function withStudentId(path, studentId) {
  * @param {Object} callbacks - { onProgress, onToken, onDone, onError }
  * @returns {AbortController} - call .abort() to cancel
  */
-export function chatSSE({ query, sessionId, studentId, files = [], isGlobalUpload = false, replaceFilenames = [] }, callbacks) {
+export function chatSSE({ query, sessionId, studentId, files = [], isGlobalUpload = false, replaceFilenames = [], advisorMode = 'adaptive' }, callbacks) {
   const controller = new AbortController();
 
   const formData = new FormData();
@@ -27,6 +27,7 @@ export function chatSSE({ query, sessionId, studentId, files = [], isGlobalUploa
   if (sessionId) formData.append('session_id', sessionId);
   if (studentId) formData.append('student_id', studentId);
   formData.append('is_global_upload', isGlobalUpload.toString());
+  formData.append('advisor_mode', advisorMode);
   if (replaceFilenames.length > 0) {
     formData.append('replace_filenames', replaceFilenames.join(','));
   }
@@ -249,5 +250,73 @@ export async function updateSettings(updates) {
 export async function getHealth() {
   const response = await fetch(`${API_BASE}/health`);
   if (!response.ok) throw new Error(`Health check failed: ${response.status}`);
+  return response.json();
+}
+
+// ── Replay Artifacts ────────────────────────────────────────────
+
+export async function getReplays(limit = 25) {
+  const response = await fetch(`${API_BASE}/replays?limit=${encodeURIComponent(limit)}`);
+  if (!response.ok) throw new Error(`Failed to load replays: ${response.status}`);
+  return response.json();
+}
+
+export async function getReplay(replayId) {
+  const response = await fetch(`${API_BASE}/replays/${encodeURIComponent(replayId)}`);
+  if (!response.ok) throw new Error(`Failed to load replay: ${response.status}`);
+  return response.json();
+}
+
+export async function evaluateReplay(replayId) {
+  const response = await fetch(`${API_BASE}/replays/${encodeURIComponent(replayId)}/evaluate`);
+  if (!response.ok) throw new Error(`Failed to evaluate replay: ${response.status}`);
+  return response.json();
+}
+
+export async function evaluateRecentReplays(limit = 25, studentId = null) {
+  const base = `${API_BASE}/replays/evaluate/recent?limit=${encodeURIComponent(limit)}`;
+  const response = await fetch(withStudentId(base, studentId));
+  if (!response.ok) throw new Error(`Failed to evaluate recent replays: ${response.status}`);
+  return response.json();
+}
+
+export async function getEvalBenchmarks() {
+  const response = await fetch(`${API_BASE}/eval/benchmarks`);
+  if (!response.ok) throw new Error(`Failed to load benchmark sets: ${response.status}`);
+  return response.json();
+}
+
+export async function getEvalAnalytics(limit = 50, studentId = null) {
+  const base = `${API_BASE}/eval/analytics?limit=${encodeURIComponent(limit)}`;
+  const response = await fetch(withStudentId(base, studentId));
+  if (!response.ok) throw new Error(`Failed to load eval analytics: ${response.status}`);
+  return response.json();
+}
+
+// ── Saved Recommendations ──────────────────────────────────────
+
+export async function getRecommendations(studentId = null) {
+  const response = await fetch(withStudentId(`${API_BASE}/recommendations`, studentId));
+  if (!response.ok) throw new Error(`Failed to load recommendations: ${response.status}`);
+  return response.json();
+}
+
+export async function saveRecommendation(payload) {
+  const response = await fetch(`${API_BASE}/recommendations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(`Failed to save recommendation: ${response.status}`);
+  return response.json();
+}
+
+export async function updateRecommendationOutcome(recommendationId, payload) {
+  const response = await fetch(`${API_BASE}/recommendations/${encodeURIComponent(recommendationId)}/outcome`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(`Failed to update recommendation outcome: ${response.status}`);
   return response.json();
 }

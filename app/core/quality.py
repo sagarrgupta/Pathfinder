@@ -100,6 +100,8 @@ class DecisionPayload(TypedDict, total=False):
     source_refs: list[AnswerSupportRef]
     ranking_rationale: list[str]
     blocked_reasons: list[str]
+    student_strategy: dict[str, Any]
+    recommendation_paths: list[dict[str, Any]]
 
 
 class EvidenceGroups(TypedDict, total=False):
@@ -118,6 +120,32 @@ class EvidenceGroups(TypedDict, total=False):
     policies: list[EvidenceRecord]
     student_facts: list[EvidenceRecord]
     other: list[EvidenceRecord]
+
+
+class EvidencePack(TypedDict, total=False):
+    """Normalized evidence envelope shared across retrieval and reasoning stages."""
+
+    query: str
+    workflow: str
+    student_strategy: dict[str, Any]
+    student_operating_model: dict[str, Any]
+    recommendation_outcome_profile: dict[str, Any]
+    decision_continuity: dict[str, Any]
+    profile_facts: list[dict[str, Any]]
+    profile_records: dict[str, Any]
+    document_records: list[dict[str, Any]]
+    web_records: list[dict[str, Any]]
+    semantic_memory: dict[str, Any]
+    memory_pack: dict[str, Any]
+    saved_recommendations: list[dict[str, Any]]
+    decision_records: list[dict[str, Any]]
+    evidence_records: list[EvidenceRecord]
+    evidence_groups: EvidenceGroups
+    missing_information: list[str]
+    source_audit: list[SourceAuditEntry]
+    retrieval_summary: dict[str, Any]
+    retrieval_trace: list[dict[str, Any]]
+    retrieval_diagnostics: dict[str, Any]
 
 
 class TargetEntity(TypedDict, total=False):
@@ -177,6 +205,28 @@ class CompactedSessionState(TypedDict, total=False):
     recent_decisions: list[str]
     unresolved_blockers: list[str]
     verified_findings: list[str]
+
+
+class SessionMemoryState(TypedDict, total=False):
+    """Dedicated short/session-lived memory separate from durable advising state."""
+
+    transcript_digest: dict[str, Any]
+    carry_forward_context: dict[str, Any]
+    lifecycle: dict[str, Any]
+
+
+class StudentOperatingModel(TypedDict, total=False):
+    """Lightweight behavioral model inferred from profile, goals, and recent phrasing."""
+
+    risk_tolerance: str
+    workload_preference: str
+    internship_urgency: str
+    academic_caution: str
+    grad_school_seriousness: str
+    certainty_preference: str
+    planning_style: str
+    confidence: float
+    signals: list[str]
 
 
 class TaskNode(TypedDict, total=False):
@@ -391,10 +441,16 @@ def init_working_memory(existing: dict[str, Any] | None = None) -> WorkingMemory
 def compact_session_state(
     session_summary: dict[str, Any] | None,
     working_memory: dict[str, Any] | None,
+    messages: list[Any] | None = None,
+    short_memory_policy: dict[str, Any] | None = None,
 ) -> CompactedSessionState:
     """Condense current summary and memory into long-term advising state."""
     summary = session_summary or {}
     memory = init_working_memory(working_memory)
+    conversation_digest = _build_conversation_digest(
+        messages or [],
+        max_recent_turns=int((short_memory_policy or {}).get("max_recent_turns", 12) or 12),
+    )
     stable_facts = {
         "institution": ((summary.get("institution", {}) or {}).get("value", "")),
         "program": ((summary.get("program", {}) or {}).get("value", "")),
@@ -422,6 +478,416 @@ def compact_session_state(
             for item in memory.get("facts_confirmed", [])
             if isinstance(item, dict) and item.get("source_title")
         ][:10],
+        "conversation_digest": conversation_digest,
+    }
+
+
+def build_session_memory_state(
+    session_summary: dict[str, Any] | None,
+    compacted_session: dict[str, Any] | None,
+    short_memory_policy: dict[str, Any] | None = None,
+) -> SessionMemoryState:
+    """Build explicit session-scoped memory from transcript and current turn context."""
+    summary = session_summary or {}
+    compacted = compacted_session or {}
+    digest = dict(compacted.get("conversation_digest", {}) or {})
+    carry_forward_context = {
+        "institution": str(((summary.get("institution", {}) or {}).get("value", "")) or ""),
+        "program": str(((summary.get("program", {}) or {}).get("value", "")) or ""),
+        "standing": str(((summary.get("standing", {}) or {}).get("value", "")) or ""),
+        "goals": list((summary.get("goals", {}) or {}).get("value", []) or [])[:4],
+        "recent_decisions": list(compacted.get("recent_decisions", []) or [])[:5],
+        "unresolved_blockers": list(compacted.get("unresolved_blockers", []) or [])[:5],
+        "recent_corrections": list(compacted.get("corrections", []) or [])[:4],
+    }
+    lifecycle = {
+        "policy_version": str((short_memory_policy or {}).get("policy_version", "")),
+        "ttl_seconds": int((short_memory_policy or {}).get("ttl_seconds", 0) or 0),
+        "max_recent_turns": int((short_memory_policy or {}).get("max_recent_turns", 0) or 0),
+        "eviction_strategy": str((short_memory_policy or {}).get("eviction_strategy", "")),
+        "compaction_trigger_turns": int((short_memory_policy or {}).get("compaction_trigger_turns", 0) or 0),
+    }
+    return {
+        "transcript_digest": digest,
+        "carry_forward_context": carry_forward_context,
+        "lifecycle": lifecycle,
+    }
+
+
+def _build_conversation_digest(messages: list[Any], max_recent_turns: int = 12) -> dict[str, Any]:
+    """Build a bounded digest of recent conversation turns for long-session continuity."""
+    turns: list[dict[str, str]] = []
+    for msg in messages:
+        role = ""
+        content = ""
+        if isinstance(msg, tuple) and len(msg) == 2:
+            role, content = str(msg[0]), str(msg[1])
+        elif hasattr(msg, "content"):
+            role = str(getattr(msg, "type", "") or getattr(msg, "role", ""))
+            content = str(getattr(msg, "content", "") or "")
+        if role not in {"human", "user", "assistant", "ai"}:
+            continue
+        normalized_role = "user" if role in {"human", "user"} else "assistant"
+        snippet = " ".join(content.split())
+        if not snippet:
+            continue
+        turns.append(
+            {
+                "role": normalized_role,
+                "content": snippet[:220] + ("..." if len(snippet) > 220 else ""),
+            }
+        )
+
+    total_turns = len(turns)
+    kept_turns = turns[-max_recent_turns:] if max_recent_turns > 0 else []
+    omitted_turns = max(0, total_turns - len(kept_turns))
+    return {
+        "total_turns_seen": total_turns,
+        "kept_turns": len(kept_turns),
+        "omitted_turns": omitted_turns,
+        "recent_turns": kept_turns,
+    }
+
+
+def build_evidence_pack(
+    *,
+    query: str,
+    workflow: str,
+    student_strategy: dict[str, Any] | None,
+    student_operating_model: dict[str, Any] | None,
+    recommendation_outcome_profile: dict[str, Any] | None,
+    decision_continuity: dict[str, Any] | None,
+    profile: dict[str, Any] | None,
+    documents: list[dict[str, Any]] | None,
+    web_results: list[dict[str, Any]] | None,
+    semantic_memory: dict[str, Any] | None,
+    memory_pack: dict[str, Any] | None,
+    evidence_records: list[EvidenceRecord] | None,
+    working_memory: dict[str, Any] | None,
+    missing_information: list[str] | None = None,
+) -> EvidencePack:
+    """Normalize mixed retrieval outputs into one shared evidence envelope."""
+    normalized_profile = dict(profile or {})
+    normalized_documents = list(documents or [])
+    normalized_web = list(web_results or [])
+    normalized_semantic = dict(semantic_memory or {})
+    normalized_memory_pack = dict(memory_pack or {})
+    normalized_saved_recommendations = list(normalized_memory_pack.get("saved_recommendations", []) or [])
+    normalized_decision_records = list(normalized_memory_pack.get("decision_records", []) or [])
+    normalized_records = list(evidence_records or [])
+    normalized_working_memory = init_working_memory(working_memory)
+    evidence_groups = group_evidence_records(normalized_records, normalized_profile)
+    retrieval_summary = {
+        "strategy": str(normalized_memory_pack.get("strategy", "")),
+        "profile_fact_count": len(normalized_profile.get("profile_facts", []) or []),
+        "document_count": len(normalized_documents),
+        "web_count": len(normalized_web),
+        "candidate_fact_count": len(normalized_semantic.get("candidate_facts", []) or []),
+        "memory_item_count": len(normalized_semantic.get("memory_items", []) or []),
+        "evidence_record_count": len(normalized_records),
+        "has_primary_official": any(
+            record.get("trust_tier") == "primary_official" for record in normalized_records
+        ),
+    }
+    return {
+        "query": query,
+        "workflow": workflow,
+        "student_strategy": dict(student_strategy or {}),
+        "student_operating_model": dict(student_operating_model or {}),
+        "recommendation_outcome_profile": dict(recommendation_outcome_profile or {}),
+        "decision_continuity": dict(decision_continuity or {}),
+        "profile_facts": list(normalized_profile.get("profile_facts", []) or []),
+        "profile_records": normalized_profile,
+        "document_records": normalized_documents,
+        "web_records": normalized_web,
+        "semantic_memory": normalized_semantic,
+        "memory_pack": normalized_memory_pack,
+        "saved_recommendations": normalized_saved_recommendations,
+        "decision_records": normalized_decision_records,
+        "evidence_records": normalized_records,
+        "evidence_groups": evidence_groups,
+        "missing_information": list(missing_information or []),
+        "source_audit": list(normalized_working_memory.get("source_audit", [])),
+        "retrieval_summary": retrieval_summary,
+        "retrieval_trace": list(normalized_memory_pack.get("retrieval_trace", []) or []),
+        "retrieval_diagnostics": dict(normalized_memory_pack.get("retrieval_diagnostics", {}) or {}),
+    }
+
+
+def derive_student_strategy(
+    summary: dict[str, Any] | None,
+    profile: dict[str, Any] | None,
+    query: str,
+) -> dict[str, Any]:
+    """Infer the student's current optimization strategy from profile and query."""
+    summary = summary or {}
+    profile = profile or {}
+    query_lower = (query or "").casefold()
+    goals = [str(goal).casefold() for goal in ((summary.get("goals", {}) or {}).get("value", []) or [])]
+    preferences = summary.get("preferences", {}) or {}
+    preference_values = preferences.get("value", {}) if isinstance(preferences, dict) else {}
+    load_light = any(token in query_lower for token in ("lighter", "light workload", "less workload", "manageable", "not overload"))
+    internship = any(token in query_lower for token in ("internship", "job", "industry", "career")) or any(
+        any(token in goal for token in ("internship", "industry", "job", "career")) for goal in goals
+    )
+    grad_school = any(token in query_lower for token in ("grad school", "phd", "research", "ms cs", "admissions")) or any(
+        any(token in goal for token in ("phd", "research", "graduate", "grad school", "masters")) for goal in goals
+    )
+    gpa_focus = any(token in query_lower for token in ("gpa", "grades", "raise my gpa", "protect my gpa"))
+    speed_focus = any(token in query_lower for token in ("graduate fast", "finish fast", "graduate early", "finish quickly"))
+    remote_preference = any(
+        token in str(preference_values).casefold() for token in ("remote", "hybrid", "onsite")
+    )
+    priorities: list[str] = []
+    if internship:
+        priorities.append("internship_readiness")
+    if grad_school:
+        priorities.append("grad_school_preparation")
+    if gpa_focus:
+        priorities.append("gpa_protection")
+    if load_light:
+        priorities.append("workload_balance")
+    if speed_focus:
+        priorities.append("graduation_speed")
+    if not priorities:
+        priorities.append("balanced_progress")
+    primary = priorities[0]
+    return {
+        "primary_priority": primary,
+        "priorities": priorities,
+        "prefers_lower_load": load_light,
+        "career_oriented": internship,
+        "grad_school_oriented": grad_school,
+        "gpa_sensitive": gpa_focus,
+        "remote_preference_known": remote_preference,
+    }
+
+
+def derive_student_operating_model(
+    summary: dict[str, Any] | None,
+    profile: dict[str, Any] | None,
+    query: str,
+) -> StudentOperatingModel:
+    """Infer a lightweight behavioral model for how this student tends to make tradeoffs."""
+    summary = summary or {}
+    profile = profile or {}
+    query_lower = (query or "").casefold()
+    temporal_profile = (profile.get("temporal_profile", {}) or {})
+    preferences = (summary.get("preferences", {}) or {}).get("value", {}) or {}
+    preference_text = str(preferences).casefold()
+    evolving_values = [
+        str(item.get("value", "")).casefold()
+        for item in (temporal_profile.get("evolving_facts", []) or [])
+        if str(item.get("value", "")).strip()
+    ]
+    temporary_values = [
+        str(item.get("value", "")).casefold()
+        for item in (temporal_profile.get("temporary_facts", []) or [])
+        if str(item.get("value", "")).strip()
+    ]
+    goals = [str(goal).casefold() for goal in ((summary.get("goals", {}) or {}).get("value", []) or [])]
+    combined_text = " ".join([query_lower, preference_text, *evolving_values[:8], *temporary_values[:8], *goals[:6]])
+
+    prefers_light = any(token in combined_text for token in ("lighter", "manageable", "not overload", "balance", "workload"))
+    urgent_career = any(token in combined_text for token in ("internship", "job soon", "asap", "urgent", "industry first"))
+    cautious = any(token in combined_text for token in ("safe", "safer", "careful", "protect gpa", "avoid risk"))
+    aggressive = any(token in combined_text for token in ("ambitious", "fastest", "aggressive", "stretch", "top school"))
+    exploration = any(token in combined_text for token in ("explore", "open to", "not sure", "considering"))
+    grad_school_focus = any(token in combined_text for token in ("phd", "research", "graduate school", "grad school", "masters", "ms cs"))
+    certainty_seeking = any(token in combined_text for token in ("safe", "best option", "most realistic", "certain", "sure", "definite"))
+
+    risk_tolerance = "balanced"
+    if cautious and not aggressive:
+        risk_tolerance = "conservative"
+    elif aggressive and not cautious:
+        risk_tolerance = "ambitious"
+
+    workload_preference = "balanced"
+    if prefers_light:
+        workload_preference = "lighter"
+    elif aggressive and "heavy" in combined_text:
+        workload_preference = "heavier_if_valuable"
+
+    internship_urgency = "moderate"
+    if urgent_career:
+        internship_urgency = "high"
+    elif any(token in combined_text for token in ("later", "eventually", "after graduation")):
+        internship_urgency = "low"
+
+    academic_caution = "moderate"
+    if cautious or any(token in combined_text for token in ("gpa", "grades", "academic risk")):
+        academic_caution = "high"
+    elif aggressive and not prefers_light:
+        academic_caution = "low"
+
+    grad_school_seriousness = "moderate"
+    if grad_school_focus and any(token in combined_text for token in ("phd", "research", "publication", "lab", "thesis")):
+        grad_school_seriousness = "high"
+    elif not grad_school_focus:
+        grad_school_seriousness = "low"
+
+    certainty_preference = "balanced"
+    if certainty_seeking and not exploration:
+        certainty_preference = "high"
+    elif exploration and not certainty_seeking:
+        certainty_preference = "low"
+
+    planning_style = "structured"
+    if exploration:
+        planning_style = "exploratory"
+    elif urgent_career or cautious:
+        planning_style = "decisive"
+
+    signals: list[str] = []
+    if prefers_light:
+        signals.append("prefers_manageable_workload")
+    if urgent_career:
+        signals.append("career_urgency_detected")
+    if cautious:
+        signals.append("risk_averse_language_detected")
+    if aggressive:
+        signals.append("ambitious_language_detected")
+    if exploration:
+        signals.append("exploratory_language_detected")
+    if grad_school_focus:
+        signals.append("grad_school_focus_detected")
+    if certainty_seeking:
+        signals.append("certainty_seeking_detected")
+
+    return {
+        "risk_tolerance": risk_tolerance,
+        "workload_preference": workload_preference,
+        "internship_urgency": internship_urgency,
+        "academic_caution": academic_caution,
+        "grad_school_seriousness": grad_school_seriousness,
+        "certainty_preference": certainty_preference,
+        "planning_style": planning_style,
+        "confidence": round(min(0.9, 0.35 + 0.1 * len(signals)), 2),
+        "signals": signals,
+    }
+
+
+def derive_recommendation_outcome_profile(
+    saved_recommendations: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Summarize how the student tends to respond to saved recommendations over time."""
+    items = [item for item in (saved_recommendations or []) if isinstance(item, dict)]
+    counts = {
+        "active": 0,
+        "accepted": 0,
+        "postponed": 0,
+        "ignored": 0,
+        "completed": 0,
+    }
+    preferred_types: dict[str, float] = {}
+    recent_outcomes: list[str] = []
+    for item in items:
+        metadata = item.get("metadata", {}) or {}
+        outcome_status = str(metadata.get("outcome_status") or metadata.get("status") or "active").strip().lower()
+        recommendation_type = str(item.get("memory_type", "saved_plan")).replace("saved_", "").strip().lower() or "plan"
+        if outcome_status not in counts:
+            counts[outcome_status] = 0
+        counts[outcome_status] += 1
+        recent_outcomes.append(outcome_status)
+        weight = 0.0
+        if outcome_status == "completed":
+            weight = 1.0
+        elif outcome_status == "accepted":
+            weight = 0.7
+        elif outcome_status == "postponed":
+            weight = 0.15
+        elif outcome_status == "ignored":
+            weight = -0.35
+        if weight:
+            preferred_types[recommendation_type] = preferred_types.get(recommendation_type, 0.0) + weight
+
+    completed = counts.get("completed", 0)
+    accepted = counts.get("accepted", 0)
+    postponed = counts.get("postponed", 0)
+    ignored = counts.get("ignored", 0)
+    total = max(1, len(items))
+    follow_through_ratio = round((completed + accepted) / total, 2)
+    deferral_ratio = round(postponed / total, 2)
+    avoidance_ratio = round(ignored / total, 2)
+
+    follow_through_style = "mixed"
+    if follow_through_ratio >= 0.65:
+        follow_through_style = "high_follow_through"
+    elif deferral_ratio >= 0.35:
+        follow_through_style = "prefers_small_commits"
+    elif avoidance_ratio >= 0.3:
+        follow_through_style = "selective_commitment"
+
+    top_types = [
+        recommendation_type
+        for recommendation_type, _score in sorted(preferred_types.items(), key=lambda item: item[1], reverse=True)
+        if _score > 0
+    ][:3]
+
+    signals: list[str] = []
+    if follow_through_style == "high_follow_through":
+        signals.append("student_usually_follows_through")
+    if follow_through_style == "prefers_small_commits":
+        signals.append("student_often_defers_large_plans")
+    if follow_through_style == "selective_commitment":
+        signals.append("student_ignores_low-fit_recommendations")
+    if top_types:
+        signals.append("preferred_recommendation_types:" + ",".join(top_types))
+
+    return {
+        "counts": counts,
+        "follow_through_style": follow_through_style,
+        "follow_through_ratio": follow_through_ratio,
+        "deferral_ratio": deferral_ratio,
+        "avoidance_ratio": avoidance_ratio,
+        "preferred_recommendation_types": top_types,
+        "recent_outcomes": recent_outcomes[:6],
+        "signals": signals,
+    }
+
+
+def derive_decision_continuity(
+    query: str,
+    decision_records: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Determine whether the current query appears to continue an earlier saved decision."""
+    records = [item for item in (decision_records or []) if isinstance(item, dict)]
+    query_terms = {
+        token.casefold()
+        for token in re.findall(r"[a-z0-9]{3,}", str(query or ""))
+    }
+    ranked: list[tuple[float, dict[str, Any]]] = []
+    for item in records:
+        metadata = item.get("metadata", {}) or {}
+        text = " ".join(
+            [
+                str(metadata.get("title", "")),
+                str(item.get("summary", "")),
+                " ".join(str(label) for label in (metadata.get("recommendation_labels", []) or [])[:5]),
+                str(metadata.get("next_best_action", "")),
+            ]
+        )
+        text_terms = {
+            token.casefold()
+            for token in re.findall(r"[a-z0-9]{3,}", text)
+        }
+        overlap = len(query_terms & text_terms)
+        score = overlap + float(item.get("retrieval_score", item.get("match_score", 0.0)) or 0.0)
+        ranked.append((score, item))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    related = [item for score, item in ranked if score > 0.8][:3]
+    latest = related[0] if related else {}
+    latest_metadata = latest.get("metadata", {}) or {}
+    return {
+        "is_continuation": bool(related),
+        "related_count": len(related),
+        "latest_title": str(latest_metadata.get("title", "") or latest.get("summary", "")) if latest else "",
+        "latest_decision_type": str(latest_metadata.get("decision_type", "") or ""),
+        "related_titles": [
+            str((item.get("metadata", {}) or {}).get("title", "") or item.get("summary", "")).strip()
+            for item in related
+            if str((item.get("metadata", {}) or {}).get("title", "") or item.get("summary", "")).strip()
+        ][:3],
     }
 
 
@@ -608,7 +1074,7 @@ def summarize_trace(state: dict[str, Any]) -> dict[str, Any]:
 
     session_summary = state.get("session_summary", {}) or {}
     memory_sources_used: list[str] = []
-    if session_summary:
+    if session_summary or state.get("session_memory"):
         memory_sources_used.append("short")
     if state.get("compacted_session") or state.get("memory_pack"):
         memory_sources_used.append("long")

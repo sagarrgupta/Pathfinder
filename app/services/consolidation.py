@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from app.adapters.neo4j.graph_store import get_student, run_cypher
 from app.services.conflict_semantics import are_semantic_duplicates, normalize_fact_value, split_conflict_groups
@@ -10,6 +11,43 @@ from app.services.conflict_semantics import are_semantic_duplicates, normalize_f
 log = logging.getLogger("pathfinder.consolidation")
 
 _STRICT_CONFLICT_TYPES = {"preference", "constraint"}
+
+
+def _parse_datetimeish(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _freshness_score(item: dict[str, object]) -> float:
+    updated = _parse_datetimeish(item.get("updated_at") or item.get("created_at"))
+    if updated is None:
+        return 0.0
+    age_days = max(0.0, (datetime.now(timezone.utc) - updated).total_seconds() / 86400.0)
+    if age_days <= 14:
+        return 0.35
+    if age_days <= 45:
+        return 0.2
+    if age_days <= 120:
+        return 0.08
+    return -0.08
+
+
+def _rank_candidate(item: dict[str, object]) -> tuple[float, float, float, str]:
+    confidence = float(item.get("confidence", 0.0) or 0.0)
+    direct_support = 0.08 if int(item.get("direct_statement_count") or 0) > 0 else 0.0
+    freshness = _freshness_score(item)
+    timestamp = str(item.get("updated_at") or item.get("created_at") or "")
+    score = confidence + direct_support + freshness
+    return (score, confidence, freshness, timestamp)
 
 
 async def _fetch_candidate_facts(student_id: str) -> list[dict[str, object]]:
@@ -44,7 +82,18 @@ async def maybe_consolidate_memory(student_id: str, reason: str) -> dict[str, in
     promoted = await run_cypher(
         """
         MATCH (s:Student {id: $sid})-[:HAS_CANDIDATE_FACT]->(c:CandidateFact)
-        WHERE c.status = 'candidate' AND coalesce(c.confidence, 0) >= 0.85 AND coalesce(c.salience, 0) >= 0.75
+        WHERE c.status = 'candidate'
+          AND (
+            coalesce(c.promotion_score, 0) >= 0.78
+            OR (
+              coalesce(c.support_count, 1) >= 2
+              AND (
+                coalesce(c.direct_statement_count, 0) > 0
+                OR coalesce(c.document_support_count, 0) > 0
+              )
+              AND coalesce(c.confidence, 0) >= 0.7
+            )
+          )
         SET c.status = 'resolved', c.last_reinforced_at = datetime()
         RETURN count(c) AS promoted
         """,
@@ -84,7 +133,7 @@ async def maybe_consolidate_memory(student_id: str, reason: str) -> dict[str, in
                 active_items,
                 key=lambda item: (
                     len(normalize_fact_value(fact_type, str(item.get("value")))),
-                    float(item.get("confidence", 0.0) or 0.0),
+                    *_rank_candidate(item),
                 ),
                 reverse=True,
             )
@@ -102,13 +151,13 @@ async def maybe_consolidate_memory(student_id: str, reason: str) -> dict[str, in
                     supersede_ids.add(item_id)
                     continue
                 kept_values.append(normalized)
-                confidence = float(item.get("confidence", 0.0) or 0.0)
+                confidence = float(item.get("confidence", 0.0) or 0.0) + _freshness_score(item)
                 (restore_resolved_ids if confidence >= 0.65 else restore_candidate_ids).add(item_id)
             continue
         if fact_type not in _STRICT_CONFLICT_TYPES:
             for item in active_items:
                 item_id = str(item["id"])
-                confidence = float(item.get("confidence", 0.0) or 0.0)
+                confidence = float(item.get("confidence", 0.0) or 0.0) + _freshness_score(item)
                 (restore_resolved_ids if confidence >= 0.65 else restore_candidate_ids).add(item_id)
             continue
 
@@ -117,7 +166,7 @@ async def maybe_consolidate_memory(student_id: str, reason: str) -> dict[str, in
             conflict_ids.update(str(item["id"]) for item in group if item.get("id"))
         for item in compatible_items:
             item_id = str(item["id"])
-            confidence = float(item.get("confidence", 0.0) or 0.0)
+            confidence = float(item.get("confidence", 0.0) or 0.0) + _freshness_score(item)
             (restore_resolved_ids if confidence >= 0.65 else restore_candidate_ids).add(item_id)
 
     restore_resolved_ids -= supersede_ids
@@ -171,7 +220,7 @@ async def list_profile_conflicts(student_id: str) -> list[dict[str, object]]:
     for fact_type, items in grouped.items():
         groups, _ = split_conflict_groups(fact_type, items)
         for group in groups:
-            ranked = sorted(group, key=lambda item: float(item.get("confidence", 0.0) or 0.0), reverse=True)
+            ranked = sorted(group, key=_rank_candidate, reverse=True)
             top = ranked[0]
             conflicts.append({
                 "id": str(top.get("id") or ""),
@@ -180,6 +229,7 @@ async def list_profile_conflicts(student_id: str) -> list[dict[str, object]]:
                 "other_options": [str(item.get("value") or "") for item in ranked[1:3] if str(item.get("value") or "").strip()],
                 "question": f"Which {fact_type} should Pathfinder trust going forward?",
                 "confidence": float(top.get("confidence", 0.0) or 0.0),
+                "updated_at": str(top.get("updated_at") or top.get("created_at") or ""),
             })
     return conflicts
 
@@ -210,14 +260,7 @@ async def auto_resolve_profile_conflicts(student_id: str, limit: int = 20) -> di
     for fact_type, items in grouped.items():
         groups, _ = split_conflict_groups(fact_type, items)
         for group in groups[:limit]:
-            ranked = sorted(
-                group,
-                key=lambda item: (
-                    float(item.get("confidence", 0.0) or 0.0),
-                    str(item.get("updated_at") or item.get("created_at") or ""),
-                ),
-                reverse=True,
-            )
+            ranked = sorted(group, key=_rank_candidate, reverse=True)
             if not ranked:
                 continue
             winner = ranked[0]

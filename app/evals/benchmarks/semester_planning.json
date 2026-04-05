@@ -1,0 +1,12 @@
+{
+  "id": "semester_planning",
+  "title": "Semester Planning",
+  "description": "Benchmarks for next-semester course planning, load balancing, and prerequisite-aware sequencing.",
+  "workflow": "academic_planning",
+  "scenario_count": 5,
+  "examples": [
+    "What should I take next semester if I want to graduate faster?",
+    "Can you suggest a balanced schedule that protects my GPA?",
+    "Which courses best support an ML internship path next term?"
+  ]
+}

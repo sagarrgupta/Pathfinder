@@ -34,6 +34,7 @@ async def responder(state: PathfinderState) -> PathfinderState:
     block_reason = state.get("block_reason", "")
     stop_reason = str(state.get("stop_reason", "") or "")
     decision_payload = state.get("decision_payload", {})
+    evidence_pack = state.get("evidence_pack", {})
 
     step_progress = list(state.get("step_progress", []))
 
@@ -69,7 +70,7 @@ async def responder(state: PathfinderState) -> PathfinderState:
     if intent == "document" and not draft:
         profile = state.get("profile_data", {})
         entities = state.get("extracted_entities", [])
-        docs = state.get("retrieved_documents", [])
+        docs = list(evidence_pack.get("document_records", []) or state.get("retrieved_documents", []))
 
         summary_parts = ["## ✅ Document Processed Successfully\n"]
         summary_parts.append(f"I've processed your uploaded document and stored **{len(docs)}** relevant text chunks.\n")
@@ -194,9 +195,9 @@ async def responder(state: PathfinderState) -> PathfinderState:
         llm = get_text_llm()
         query = state.get("query", "")
         if not profile:
-            profile = state.get("profile_data", {})
-        documents = state.get("retrieved_documents", [])
-        web_results = state.get("web_results", [])
+            profile = evidence_pack.get("profile_records", {}) or state.get("profile_data", {})
+        documents = list(evidence_pack.get("document_records", []) or state.get("retrieved_documents", []))
+        web_results = list(evidence_pack.get("web_records", []) or state.get("web_results", []))
 
         context_parts = []
         if not personal:
@@ -278,14 +279,16 @@ async def responder(state: PathfinderState) -> PathfinderState:
 
 def _determine_method(state: PathfinderState) -> str:
     """Determine which retrieval methods were used."""
+    evidence_pack = state.get("evidence_pack", {})
+    retrieval_summary = evidence_pack.get("retrieval_summary", {}) if isinstance(evidence_pack, dict) else {}
     methods = []
-    if state.get("retrieved_documents"):
+    if retrieval_summary.get("document_count") or state.get("retrieved_documents"):
         methods.append("rag")
-    if state.get("graph_results") or state.get("profile_data", {}).get("courses"):
+    if retrieval_summary.get("profile_fact_count") or state.get("profile_data", {}).get("courses"):
         methods.append("graph")
-    if state.get("web_results"):
+    if retrieval_summary.get("web_count") or state.get("web_results"):
         methods.append("web")
-    if state.get("evidence_records"):
+    if retrieval_summary.get("evidence_record_count") or state.get("evidence_records"):
         methods.append("facts")
     if state.get("decision_payload"):
         methods.append("planner")
@@ -337,6 +340,21 @@ def _render_decision_payload(payload: dict[str, Any], confidence: float) -> str:
         for assumption in assumptions[:3]:
             lines.append(f"- {assumption}")
 
+    ranking_rationale = payload.get("ranking_rationale", [])
+    source_refs = payload.get("source_refs", [])
+    if ranking_rationale or source_refs:
+        lines.append("\n**Why this recommendation**")
+        for reason in ranking_rationale[:3]:
+            lines.append(f"- {reason}")
+        if source_refs:
+            ref_titles = [
+                str(ref.get("title", "")).strip()
+                for ref in source_refs[:3]
+                if isinstance(ref, dict) and str(ref.get("title", "")).strip()
+            ]
+            if ref_titles:
+                lines.append(f"- Backed by: {', '.join(ref_titles)}")
+
     requirements = payload.get("verified_requirements", [])
     if requirements:
         lines.append("\n**Verified Program Rules**")
@@ -360,6 +378,23 @@ def _render_decision_payload(payload: dict[str, Any], confidence: float) -> str:
             if term and any(course_labels):
                 lines.append(f"- **{term}**: {', '.join([c for c in course_labels if c])}")
         lines.append("- This is catalog-based unless marked as confirmed open; verify live sections before registering.")
+
+    recommendation_paths = payload.get("recommendation_paths", [])
+    if recommendation_paths:
+        lines.append("\n**Decision Paths**")
+        for path in recommendation_paths[:3]:
+            if not isinstance(path, dict):
+                continue
+            label = str(path.get("label", "")).strip()
+            reason = str(path.get("reason", "")).strip()
+            courses = [str(item).strip() for item in path.get("courses", [])[:4] if str(item).strip()]
+            watchouts = [str(item).strip() for item in path.get("watchouts", [])[:2] if str(item).strip()]
+            if label:
+                lines.append(f"- **{label}**: {reason}")
+                if courses:
+                    lines.append(f"  Courses: {', '.join(courses)}")
+                if watchouts:
+                    lines.append(f"  Watch for: {', '.join(watchouts)}")
 
     next_best_action = payload.get("next_best_action", "")
     if next_best_action:

@@ -14,21 +14,18 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.adapters.llm.lmstudio import get_json_llm
+from app.agents.advisor_runtime import (
+    finalize_structured_advisor,
+    prepare_structured_advisor,
+)
 from app.core.prompts import COURSE_PLANNER_PROMPT
 from app.core.quality import (
     DecisionPayload,
-    add_handoff_note,
-    add_working_memory_item,
     academic_source_relevance,
     build_support_ref,
-    complete_task,
     course_code_matches_level,
-    group_evidence_records,
     infer_target_level,
     infer_target_program,
-    init_working_memory,
-    recent_handoff_context,
-    start_task,
 )
 from app.core.state import PathfinderState
 from app.utils.json_extract import parse_json_object
@@ -38,22 +35,16 @@ log = logging.getLogger("pathfinder.agents.course_planner")
 
 async def course_planner(state: PathfinderState) -> PathfinderState:
     """Generate a structured course-planning decision payload."""
-    query = state.get("query", "")
-    summary = state.get("session_summary", {})
-    evidence_records = state.get("evidence_records", [])
-    evidence_groups = group_evidence_records(evidence_records, state.get("profile_data", {}))
+    runtime = prepare_structured_advisor(
+        state,
+        node_name="course_planner",
+        progress_message="Building a ranked course plan...",
+    )
+    query = runtime["query"]
+    summary = runtime["summary"]
+    evidence_groups = runtime["evidence_groups"]
     target_program = infer_target_program(state.get("profile_data", {}), summary, query)
     target_level = infer_target_level(state.get("profile_data", {}), summary, query)
-    working_memory = init_working_memory(state.get("working_memory", {}))
-    task_graph = state.get("task_graph", [])
-    blocked_reasons = list(state.get("blocked_reasons", []))
-    task_graph = start_task(task_graph, "compare_to_student_state")
-    task_graph = start_task(task_graph, "check_blockers")
-    task_graph = start_task(task_graph, "rank_options")
-    handoff_context = recent_handoff_context(working_memory, to_node="course_planner")
-
-    step_progress = list(state.get("step_progress", []))
-    step_progress.append("Building a ranked course plan...")
 
     merged_summary = _merge_planner_summary(
         summary,
@@ -62,69 +53,48 @@ async def course_planner(state: PathfinderState) -> PathfinderState:
         state.get("semantic_memory", {}),
         state.get("query", ""),
     )
+    student_strategy = state.get("student_strategy", {})
+    student_operating_model = state.get("student_operating_model", {})
+    recommendation_outcome_profile = state.get("recommendation_outcome_profile", {})
     decision_payload = _heuristic_course_payload(
         merged_summary,
         evidence_groups,
         target_program,
         target_level,
         query,
+        student_strategy,
+        student_operating_model,
+        recommendation_outcome_profile,
     )
-    llm_payload = await _llm_course_payload(query, summary, evidence_groups, handoff_context)
+    llm_payload = await _llm_course_payload(query, summary, evidence_groups, runtime["handoff_context"])
 
     merged = _merge_payloads(decision_payload, llm_payload)
+    merged["student_strategy"] = dict(student_strategy or {})
+    merged["recommendation_paths"] = _build_recommendation_paths(
+        merged.get("recommended_items", []),
+        merged.get("blocked_or_uncertain_items", []),
+        student_strategy,
+        student_operating_model,
+        recommendation_outcome_profile,
+    )
     merged = _enforce_recommendation_support(merged)
     draft = _render_course_draft(merged)
-
-    if merged.get("blocked_or_uncertain_items"):
-        for item in merged.get("blocked_or_uncertain_items", []):
-            if item.get("kind") in {"blocked", "needs_verification"}:
-                blocked_reasons.append(item.get("reason", ""))
-                working_memory = add_working_memory_item(working_memory, "planner_blockers", item.get("reason", ""))
-
-    if merged.get("assumptions"):
-        for assumption in merged.get("assumptions", []):
-            working_memory = add_working_memory_item(working_memory, "active_assumptions", assumption)
-
-    if merged.get("recommended_items"):
-        working_memory = add_working_memory_item(
-            working_memory,
-            "ranking_rationale",
-            "Course planner ranked recommendations from typed evidence groups.",
-        )
-
-    task_graph = complete_task(task_graph, "compare_to_student_state")
-    if blocked_reasons:
-        task_graph = complete_task(task_graph, "check_blockers")
-    if merged.get("recommended_items"):
-        task_graph = complete_task(task_graph, "rank_options")
-    working_memory = add_handoff_note(
-        working_memory,
-        from_node="course_planner",
-        to_node="evaluator",
-        contract="decision_payload",
-        summary=(
-            f"recommended={len(merged.get('recommended_items', []))}; "
-            f"blocked={len(merged.get('blocked_or_uncertain_items', []))}"
-        ),
-    )
-
-    step_progress.append("Course plan prepared")
     log.info(
         "Course planner produced %d recommendations",
         len(merged.get("recommended_items", [])),
     )
-
-    return {
-        **state,
-        "decision_payload": merged,
-        "draft_answer": draft,
-        "working_memory": working_memory,
-        "task_graph": task_graph,
-        "blocked_reasons": [reason for reason in blocked_reasons if reason],
-        "stop_reason": state.get("stop_reason", "") or _planner_stop_reason(merged, blocked_reasons),
-        "step_progress": step_progress,
-        "next_node": "evaluator",
-    }
+    return finalize_structured_advisor(
+        state,
+        node_name="course_planner",
+        completion_message="Course plan prepared",
+        ranking_note="Course planner ranked recommendations from typed evidence groups.",
+        merged_payload=merged,
+        tool_call_log=list(state.get("tool_call_log", [])),
+        runtime=runtime,
+        draft_answer=draft,
+        stop_reason=_planner_stop_reason(merged, runtime["blocked_reasons"]),
+        complete_rank_options_without_recommendations=False,
+    )
 
 
 async def _llm_course_payload(
@@ -163,7 +133,13 @@ def _heuristic_course_payload(
     target_program: str = "",
     target_level: str = "unknown",
     query: str = "",
+    student_strategy: dict[str, Any] | None = None,
+    student_operating_model: dict[str, Any] | None = None,
+    recommendation_outcome_profile: dict[str, Any] | None = None,
 ) -> DecisionPayload:
+    student_strategy = student_strategy or {}
+    student_operating_model = student_operating_model or {}
+    recommendation_outcome_profile = recommendation_outcome_profile or {}
     """Build a baseline decision payload deterministically."""
     target_program = target_program or str(summary.get("program", {}).get("value", ""))
     if target_level == "unknown":
@@ -341,6 +317,7 @@ def _heuristic_course_payload(
             "source_refs": _dedupe_source_refs(support_refs)[:8],
             "verified_requirements": _render_verified_requirements(program_model),
             "semester_plan_options": [],
+            "student_strategy": dict(student_strategy),
             "blocked_reasons": ["hard_blocked:missing_primary_program_requirements"],
         }
 
@@ -362,6 +339,7 @@ def _heuristic_course_payload(
             "source_refs": _dedupe_source_refs(support_refs)[:8],
             "verified_requirements": _render_verified_requirements(program_model),
             "semester_plan_options": sample_plan,
+            "student_strategy": dict(student_strategy),
             "blocked_reasons": ["safe_partial_plan:catalog_without_live_schedule"],
         }
 
@@ -369,15 +347,21 @@ def _heuristic_course_payload(
     return {
         "decision_type": "course_planning",
         "answer_outline": [
-            "Here are the strongest catalog-based next-semester options based on your program, goals, and the verified sources.",
+            _course_outline_for_strategy(student_strategy),
+            _course_outline_for_operating_model(student_operating_model),
         ],
         "recommended_items": recommended_items,
         "blocked_or_uncertain_items": uncertain[:4],
         "assumptions": assumptions,
-        "next_best_action": "Check the registrar schedule for live section availability for the top-ranked courses.",
+        "next_best_action": _next_step_for_strategy(
+            student_strategy,
+            student_operating_model,
+            recommendation_outcome_profile,
+        ),
         "source_refs": _dedupe_source_refs(support_refs)[:8],
         "verified_requirements": _render_verified_requirements(program_model),
         "semester_plan_options": sample_plan,
+        "student_strategy": dict(student_strategy),
         "blocked_reasons": ["safe_partial_plan:catalog_without_live_schedule"] if not live_codes else [],
     }
 
@@ -388,7 +372,7 @@ def _merge_payloads(base: DecisionPayload, llm_payload: DecisionPayload) -> Deci
         return base
 
     merged = dict(base)
-    for key in ("decision_type", "next_best_action"):
+    for key in ("decision_type", "next_best_action", "student_strategy"):
         if llm_payload.get(key):
             merged[key] = llm_payload[key]
 
@@ -401,6 +385,7 @@ def _merge_payloads(base: DecisionPayload, llm_payload: DecisionPayload) -> Deci
         "verified_requirements",
         "semester_plan_options",
         "blocked_reasons",
+        "recommendation_paths",
     ):
         values = list(base.get(key, [])) + list(llm_payload.get(key, []))
         merged[key] = _dedupe_sequence(values)
@@ -464,6 +449,136 @@ def _render_course_draft(payload: DecisionPayload) -> str:
         lines.append(f"\n**Next step:** {payload['next_best_action']}")
 
     return "\n".join(lines).strip()
+
+
+def _course_outline_for_strategy(student_strategy: dict[str, Any]) -> str:
+    primary = str((student_strategy or {}).get("primary_priority", "balanced_progress"))
+    if primary == "internship_readiness":
+        return "Here are the strongest next-semester options based on your program, with extra weight on internship readiness and applied skill growth."
+    if primary == "gpa_protection":
+        return "Here are the strongest next-semester options based on your program, with extra weight on protecting GPA and avoiding unnecessary overload."
+    if primary == "graduation_speed":
+        return "Here are the strongest next-semester options based on your program, with extra weight on keeping graduation progress efficient."
+    if primary == "grad_school_preparation":
+        return "Here are the strongest next-semester options based on your program, with extra weight on graduate-school preparation and academic depth."
+    if primary == "workload_balance":
+        return "Here are the strongest next-semester options based on your program, with extra weight on maintaining a manageable workload."
+    return "Here are the strongest catalog-based next-semester options based on your program, goals, and the verified sources."
+
+
+def _course_outline_for_operating_model(student_operating_model: dict[str, Any]) -> str:
+    risk = str((student_operating_model or {}).get("risk_tolerance", ""))
+    load = str((student_operating_model or {}).get("workload_preference", ""))
+    certainty = str((student_operating_model or {}).get("certainty_preference", ""))
+    grad_school = str((student_operating_model or {}).get("grad_school_seriousness", ""))
+    if risk == "conservative" and load == "lighter":
+        return "The recommendations also lean toward steadier, lower-volatility choices because your recent signals suggest you prefer safer tradeoffs and manageable load."
+    if grad_school == "high":
+        return "The recommendations keep academic depth visible because your recent signals suggest graduate-school preparation is a serious consideration."
+    if certainty == "high":
+        return "The recommendations lean toward clearer, better-supported choices because your recent signals suggest you prefer higher-certainty decisions."
+    if risk == "ambitious":
+        return "A stretch path stays visible because your recent signals suggest you may tolerate more upside-seeking tradeoffs."
+    if load == "lighter":
+        return "The recommendations keep term shape in mind because your recent signals suggest workload sustainability matters."
+    return ""
+
+
+def _next_step_for_strategy(
+    student_strategy: dict[str, Any],
+    student_operating_model: dict[str, Any] | None = None,
+    recommendation_outcome_profile: dict[str, Any] | None = None,
+) -> str:
+    primary = str((student_strategy or {}).get("primary_priority", "balanced_progress"))
+    student_operating_model = student_operating_model or {}
+    recommendation_outcome_profile = recommendation_outcome_profile or {}
+    risk = str(student_operating_model.get("risk_tolerance", ""))
+    load = str(student_operating_model.get("workload_preference", ""))
+    certainty = str(student_operating_model.get("certainty_preference", ""))
+    follow_through_style = str(recommendation_outcome_profile.get("follow_through_style", ""))
+    if follow_through_style == "prefers_small_commits":
+        return "Pick one small course-planning action first, like verifying the registrar schedule for the top option, before committing to the full semester plan."
+    if primary == "internship_readiness":
+        if load == "lighter":
+            return "Check the registrar schedule, then prioritize the most resume-relevant courses without crowding out project time."
+        return "Check the registrar schedule, then prioritize the courses that strengthen resume-ready skills and project depth."
+    if primary == "gpa_protection":
+        return "Check the registrar schedule, then keep the strongest options while avoiding a term that is too theory-heavy all at once."
+    if primary == "graduation_speed":
+        if risk == "conservative":
+            return "Check the registrar schedule and lock in the fastest requirement-clearing options that still keep the term stable."
+        return "Check the registrar schedule and lock in the options that clear the most important requirements earliest."
+    if primary == "grad_school_preparation":
+        return "Check the registrar schedule and favor the options that add stronger academic depth, research alignment, or advanced technical preparation."
+    if primary == "workload_balance":
+        return "Check the registrar schedule and choose the most important options while keeping the term load sustainable."
+    if certainty == "high":
+        return "Check the registrar schedule and verify the clearest well-supported options first before considering stretch choices."
+    if follow_through_style == "high_follow_through":
+        return "Check the registrar schedule, then commit to the top verified course option and lock in the next supporting step right away."
+    return "Check the registrar schedule for live section availability for the top-ranked courses."
+
+
+def _build_recommendation_paths(
+    recommended_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    student_strategy: dict[str, Any],
+    student_operating_model: dict[str, Any] | None = None,
+    recommendation_outcome_profile: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    primary = str((student_strategy or {}).get("primary_priority", "balanced_progress"))
+    student_operating_model = student_operating_model or {}
+    recommendation_outcome_profile = recommendation_outcome_profile or {}
+    risk = str(student_operating_model.get("risk_tolerance", ""))
+    load = str(student_operating_model.get("workload_preference", ""))
+    certainty = str(student_operating_model.get("certainty_preference", ""))
+    grad_school = str(student_operating_model.get("grad_school_seriousness", ""))
+    follow_through_style = str(recommendation_outcome_profile.get("follow_through_style", ""))
+    top_items = [item for item in recommended_items if isinstance(item, dict)]
+    top_labels = [str(item.get("label", "")).strip() for item in top_items if str(item.get("label", "")).strip()]
+    blocked_labels = [
+        str(item.get("label", "")).strip()
+        for item in blocked_items
+        if isinstance(item, dict) and str(item.get("label", "")).strip()
+    ]
+    if not top_labels:
+        return []
+    conservative_reason = "Lighter risk path that keeps progress moving while leaving room for verification and workload control."
+    balanced_reason = "Middle path that balances requirement progress with the student's current goals."
+    aggressive_reason = "Higher-upside path that pushes faster toward the main priority, but may need more capacity or verification."
+    if primary == "internship_readiness":
+        conservative_reason = "Choose the most practical and manageable courses first so you can still build projects and prepare for internship applications."
+        aggressive_reason = "Lean harder into the most career-aligned courses, even if the term becomes more demanding."
+    elif primary == "gpa_protection":
+        conservative_reason = "Favor the safest high-value courses first to reduce grade risk."
+        aggressive_reason = "Take on more important requirements sooner, but with a higher chance of GPA pressure."
+    elif primary == "graduation_speed":
+        balanced_reason = "Keep requirement progress strong without overloading the semester."
+        aggressive_reason = "Push more requirements forward now to shorten the path to graduation."
+    elif primary == "grad_school_preparation":
+        aggressive_reason = "Favor deeper or more advanced courses now to strengthen later graduate applications."
+    if risk == "conservative":
+        conservative_reason = "Favor the most stable, well-supported path first because your current signals suggest lower-risk tradeoffs."
+    if load == "lighter":
+        balanced_reason = "Keep meaningful progress while preserving a term shape that still feels sustainable."
+    if certainty == "high":
+        conservative_reason = "Favor the clearest, best-supported path first because your current signals suggest higher-certainty decisions are a better fit."
+    if grad_school == "high":
+        aggressive_reason = "Keep a deeper academic path visible because your current signals suggest long-term graduate-school preparation matters."
+    if follow_through_style == "prefers_small_commits":
+        conservative_reason = "Favor the smallest high-value path first because your recent follow-through signals suggest smaller commitments are more sustainable."
+    conservative_courses = top_labels[:2]
+    balanced_courses = top_labels[:3]
+    aggressive_courses = top_labels[:4]
+    paths = [
+        {"label": "Conservative", "reason": conservative_reason, "courses": conservative_courses},
+        {"label": "Balanced", "reason": balanced_reason, "courses": balanced_courses},
+        {"label": "Aggressive", "reason": aggressive_reason, "courses": aggressive_courses},
+    ]
+    if blocked_labels:
+        for path in paths:
+            path["watchouts"] = blocked_labels[:2]
+    return paths
 
 
 def _is_required_core(record: dict[str, Any]) -> bool:
@@ -789,6 +904,20 @@ def _merge_planner_summary(
     goals = list((session_summary.get("goals", {}) or {}).get("value", []) or [])
     if not goals:
         goals = [g.get("name", "") for g in (profile_data or {}).get("goals", []) if g.get("name")]
+    if not goals:
+        temporal_profile = (profile_data or {}).get("temporal_profile", {}) or {}
+        goals = [
+            str(item.get("value", "")).strip()
+            for item in (temporal_profile.get("evolving_facts", []) or [])
+            if str(item.get("fact_type", "")).lower() == "goal" and str(item.get("value", "")).strip()
+        ]
+    if not goals:
+        temporal_profile = (profile_data or {}).get("temporal_profile", {}) or {}
+        goals = [
+            str(item.get("value", "")).strip()
+            for item in (temporal_profile.get("active_candidates", []) or [])
+            if str(item.get("fact_type", "")).lower() == "goal" and str(item.get("value", "")).strip()
+        ]
 
     if semantic_memory.get("candidate_facts"):
         merged["memory_sources_used"] = ["short", "long"]
