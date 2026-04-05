@@ -187,7 +187,11 @@ def get_json_llm() -> LoggingChatOpenAI:
     if _json_llm is None:
         model_kwargs = {}
         if settings.LLM_JSON_RESPONSE_FORMAT:
-            model_kwargs["response_format"] = {"type": "json_object"}
+            # LM Studio's OpenAI-compatible API on this project accepts
+            # "json_schema" or "text", not the older "json_object" mode.
+            # We keep transport in text mode and rely on prompt guidance plus
+            # parse_json_object(...) to recover structured payloads.
+            model_kwargs["response_format"] = {"type": "text"}
         _json_llm = LoggingChatOpenAI(
             llm_label="json",
             model=settings.LLM_MODEL,
