@@ -161,3 +161,30 @@ async def auto_resolve_profile_conflicts(student_id: str) -> dict[str, Any]:
             for item in remaining
         ],
     }
+
+
+async def resolve_conflict_choice(
+    *,
+    student_id: str,
+    conflict_id: str,
+    fact_type: str,
+    action: str,
+    selected_value: str | None = None,
+) -> dict[str, Any]:
+    """Apply a user-selected conflict resolution and refresh conflict state."""
+    result = await apply_conflict_choice(
+        student_id=student_id,
+        conflict_id=conflict_id,
+        fact_type=fact_type,
+        action=action,
+        selected_value=selected_value,
+    )
+    await maybe_consolidate_memory(student_id, "profile_conflict_choice")
+    remaining = await list_profile_conflicts(student_id)
+    return {
+        "applied": bool(result),
+        "student_id": student_id,
+        "conflict_id": conflict_id,
+        "remaining_conflicts": len(remaining),
+        "remaining": remaining,
+    }

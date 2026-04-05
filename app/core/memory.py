@@ -30,3 +30,35 @@ async def get_checkpointer() -> AsyncSqliteSaver:
         _checkpointer = AsyncSqliteSaver(conn)
         await _checkpointer.setup()
     return _checkpointer
+
+
+async def reset_checkpointer_storage() -> None:
+    """Close and delete the SQLite checkpointer store.
+
+    Used by the destructive "delete all data" route so persisted LangGraph
+    conversation state is removed alongside graph/profile data.
+    """
+    global _checkpointer
+
+    if _checkpointer is not None:
+        try:
+            await _checkpointer.conn.close()
+        except Exception:
+            pass
+        _checkpointer = None
+
+    try:
+        if settings.SQLITE_DB_PATH and os.path.exists(settings.SQLITE_DB_PATH):
+            os.remove(settings.SQLITE_DB_PATH)
+    except FileNotFoundError:
+        pass
+
+    # Reset the compiled graph so the next request rebuilds it with a fresh
+    # checkpointer connection.
+    try:
+        from app.core import graph as graph_module
+
+        if hasattr(graph_module, "_compiled_graph"):
+            graph_module._compiled_graph = None
+    except Exception:
+        pass
