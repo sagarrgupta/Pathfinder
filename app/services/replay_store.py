@@ -31,7 +31,8 @@ def build_replay_artifact(
 ) -> dict[str, Any]:
     """Build a compact replay artifact from a completed chat turn."""
     evidence_pack = final_state.get("evidence_pack", {}) or {}
-    decision_payload = final_state.get("decision_payload", {}) or {}
+    raw_decision_payload = final_state.get("decision_payload", {}) or {}
+    decision_payload = raw_decision_payload if isinstance(raw_decision_payload, dict) else {}
     artifact_id = generate_replay_id()
     return {
         "id": artifact_id,

@@ -175,15 +175,15 @@ def workflow_needs_web_research(workflow: str, source_policy: dict[str, Any]) ->
     """Operational policy for whether a workflow should include web research."""
     if workflow == "student_state_update":
         return False
-    if workflow in {
-        "academic_planning",
-        "program_understanding",
-        "eligibility_check",
-        "comparison_guidance",
-        "career_alignment",
-        "document_guidance",
-    }:
+    mode = str(source_policy.get("web_research_mode", "") or "").strip().lower()
+    if mode == "off":
+        return False
+    if mode in {"targeted", "broad"}:
         return True
+    if workflow in {"program_understanding", "comparison_guidance", "career_alignment", "document_guidance"}:
+        return True
+    if workflow in {"academic_planning", "eligibility_check"}:
+        return bool(source_policy.get("requires_live_data")) or bool(source_policy.get("targeted_web_questions"))
     return bool(source_policy.get("requires_live_data")) or bool(source_policy.get("primary_source_types"))
 
 
@@ -231,8 +231,21 @@ def apply_runtime_plan_policies(
             RuntimePolicyDecision(
                 policy="web_research_scope",
                 outcome="removed",
-                reason="Web research was removed because the workflow does not require it.",
-                metadata={"workflow": workflow},
+                reason="Web research was removed because the workflow does not require external validation for this turn.",
+                metadata={"workflow": workflow, "web_research_mode": source_policy.get("web_research_mode", "")},
+            )
+        )
+    elif "web_researcher" in cleaned and str(source_policy.get("web_research_mode", "") or "").strip().lower() == "targeted":
+        decisions.append(
+            RuntimePolicyDecision(
+                policy="web_research_scope",
+                outcome="targeted",
+                reason="Web research will focus on unresolved requirement gaps instead of broad discovery.",
+                metadata={
+                    "workflow": workflow,
+                    "targeted_question_count": len(source_policy.get("targeted_web_questions", []) or []),
+                    "max_web_passes": int(source_policy.get("max_web_passes", 1) or 1),
+                },
             )
         )
 

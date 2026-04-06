@@ -16,7 +16,8 @@ def build_decision_record(
     session_id: str,
 ) -> dict[str, Any] | None:
     """Build a structured decision record from a completed turn."""
-    decision_payload = dict(final_state.get("decision_payload", {}) or {})
+    raw_payload = final_state.get("decision_payload", {}) or {}
+    decision_payload = dict(raw_payload) if isinstance(raw_payload, dict) else {}
     final_answer = str(final_state.get("final_answer", "") or "").strip()
     workflow = str(final_state.get("workflow", "") or "")
     if not decision_payload and not final_answer:

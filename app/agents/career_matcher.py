@@ -57,7 +57,7 @@ async def career_matcher(state: PathfinderState) -> PathfinderState:
         state,
     )
     merged = _merge_payloads(baseline, llm_payload)
-    merged["student_strategy"] = dict(student_strategy or {})
+    merged["student_strategy"] = dict(student_strategy) if isinstance(student_strategy, dict) else {}
     merged["recommendation_paths"] = _build_career_paths(
         merged.get("recommended_items", []),
         merged.get("blocked_or_uncertain_items", []),

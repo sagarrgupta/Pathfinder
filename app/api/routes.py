@@ -86,6 +86,19 @@ log = logging.getLogger("pathfinder.api")
 
 router = APIRouter()
 
+
+def _metadata_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
 # ── Runtime state ────────────────────────────────────────────────
 _topic_guard_enabled: bool = settings.TOPIC_GUARD_ENABLED
 _advisor_mode: str = "adaptive"
@@ -108,6 +121,7 @@ async def chat(
     resolved_student_id = await _resolve_student_id(student_id)
     if not session_id:
         session_id = generate_session_id()
+    files = list(files) if isinstance(files, list) else []
 
     # Parse replace filenames (comma-separated list of filenames to replace)
     replace_set = set(
@@ -144,7 +158,7 @@ async def chat(
                 files=file_data,
                 is_global_upload=is_global_upload,
                 topic_guard_enabled=_topic_guard_enabled,
-                advisor_mode=advisor_mode or _advisor_mode,
+                advisor_mode=(advisor_mode if str(advisor_mode or "").strip() else _advisor_mode),
             )
             initial_state = runtime_session.build_initial_state()
             config = runtime_session.build_graph_config()
@@ -302,12 +316,16 @@ async def upload_document(
     }
 
     result = await process_doc(state)
+    document_roles = result.get("document_roles", []) if isinstance(result.get("document_roles", []), list) else []
+    first_role = document_roles[0] if document_roles and isinstance(document_roles[0], dict) else {}
     await maybe_consolidate_memory(resolved_student_id, "document_upload")
 
     return DocumentUploadResponse(
         document_id=f"doc_uploaded",
         filename=file.filename,
         scope=scope,
+        document_role=first_role.get("role", "general_document"),
+        role_confidence=float(first_role.get("confidence", 0.0) or 0.0),
         entities_extracted=len(result.get("extracted_entities", [])),
         chunks_stored=0,
     )
@@ -549,20 +567,20 @@ async def get_saved_recommendations(student_id: Optional[str] = Query(default=No
         SavedRecommendationInfo(
             id=item.get("id", ""),
             student_id=item.get("student_id", resolved_student_id),
-            title=item.get("metadata", {}).get("title") or item.get("summary", "Saved recommendation"),
+            title=_metadata_dict(item.get("metadata")).get("title") or item.get("summary", "Saved recommendation"),
             summary=item.get("summary", ""),
             recommendation_type=str(item.get("memory_type", "saved_plan")).replace("saved_", ""),
-            actions=item.get("metadata", {}).get("actions", []),
-            source_session_id=item.get("metadata", {}).get("source_session_id"),
-            source_query=item.get("metadata", {}).get("source_query"),
+            actions=_metadata_dict(item.get("metadata")).get("actions", []),
+            source_session_id=_metadata_dict(item.get("metadata")).get("source_session_id"),
+            source_query=_metadata_dict(item.get("metadata")).get("source_query"),
             created_at=item.get("created_at"),
-            status=item.get("metadata", {}).get("status", "active"),
-            next_review_at=item.get("metadata", {}).get("next_review_at"),
-            follow_up_prompt=item.get("metadata", {}).get("follow_up_prompt"),
-            outcome_status=item.get("metadata", {}).get("outcome_status", item.get("metadata", {}).get("status", "active")),
-            outcome_notes=item.get("metadata", {}).get("outcome_notes"),
-            outcome_updated_at=item.get("metadata", {}).get("outcome_updated_at"),
-            metadata=item.get("metadata", {}),
+            status=_metadata_dict(item.get("metadata")).get("status", "active"),
+            next_review_at=_metadata_dict(item.get("metadata")).get("next_review_at"),
+            follow_up_prompt=_metadata_dict(item.get("metadata")).get("follow_up_prompt"),
+            outcome_status=_metadata_dict(item.get("metadata")).get("outcome_status", _metadata_dict(item.get("metadata")).get("status", "active")),
+            outcome_notes=_metadata_dict(item.get("metadata")).get("outcome_notes"),
+            outcome_updated_at=_metadata_dict(item.get("metadata")).get("outcome_updated_at"),
+            metadata=_metadata_dict(item.get("metadata")),
         )
         for item in items
     ]
@@ -600,13 +618,13 @@ async def save_recommendation(body: SavedRecommendationCreate):
         source_session_id=body.source_session_id,
         source_query=body.source_query,
         created_at=stored.get("created_at"),
-        status=stored.get("metadata", {}).get("status", "active"),
-        next_review_at=stored.get("metadata", {}).get("next_review_at"),
-        follow_up_prompt=stored.get("metadata", {}).get("follow_up_prompt"),
-        outcome_status=stored.get("metadata", {}).get("outcome_status", stored.get("metadata", {}).get("status", "active")),
-        outcome_notes=stored.get("metadata", {}).get("outcome_notes"),
-        outcome_updated_at=stored.get("metadata", {}).get("outcome_updated_at"),
-        metadata=stored.get("metadata", {}),
+        status=_metadata_dict(stored.get("metadata")).get("status", "active"),
+        next_review_at=_metadata_dict(stored.get("metadata")).get("next_review_at"),
+        follow_up_prompt=_metadata_dict(stored.get("metadata")).get("follow_up_prompt"),
+        outcome_status=_metadata_dict(stored.get("metadata")).get("outcome_status", _metadata_dict(stored.get("metadata")).get("status", "active")),
+        outcome_notes=_metadata_dict(stored.get("metadata")).get("outcome_notes"),
+        outcome_updated_at=_metadata_dict(stored.get("metadata")).get("outcome_updated_at"),
+        metadata=_metadata_dict(stored.get("metadata")),
     )
 
 
@@ -628,20 +646,20 @@ async def update_recommendation_outcome(recommendation_id: str, body: SavedRecom
     return SavedRecommendationInfo(
         id=stored.get("id", ""),
         student_id=stored.get("student_id", resolved_student_id),
-        title=stored.get("metadata", {}).get("title") or stored.get("summary", "Saved recommendation"),
+        title=_metadata_dict(stored.get("metadata")).get("title") or stored.get("summary", "Saved recommendation"),
         summary=stored.get("summary", ""),
         recommendation_type=str(stored.get("memory_type", "saved_plan")).replace("saved_", ""),
-        actions=stored.get("metadata", {}).get("actions", []),
-        source_session_id=stored.get("metadata", {}).get("source_session_id"),
-        source_query=stored.get("metadata", {}).get("source_query"),
+        actions=_metadata_dict(stored.get("metadata")).get("actions", []),
+        source_session_id=_metadata_dict(stored.get("metadata")).get("source_session_id"),
+        source_query=_metadata_dict(stored.get("metadata")).get("source_query"),
         created_at=stored.get("created_at"),
-        status=stored.get("metadata", {}).get("status", "active"),
-        next_review_at=stored.get("metadata", {}).get("next_review_at"),
-        follow_up_prompt=stored.get("metadata", {}).get("follow_up_prompt"),
-        outcome_status=stored.get("metadata", {}).get("outcome_status", stored.get("metadata", {}).get("status", "active")),
-        outcome_notes=stored.get("metadata", {}).get("outcome_notes"),
-        outcome_updated_at=stored.get("metadata", {}).get("outcome_updated_at"),
-        metadata=stored.get("metadata", {}),
+        status=_metadata_dict(stored.get("metadata")).get("status", "active"),
+        next_review_at=_metadata_dict(stored.get("metadata")).get("next_review_at"),
+        follow_up_prompt=_metadata_dict(stored.get("metadata")).get("follow_up_prompt"),
+        outcome_status=_metadata_dict(stored.get("metadata")).get("outcome_status", _metadata_dict(stored.get("metadata")).get("status", "active")),
+        outcome_notes=_metadata_dict(stored.get("metadata")).get("outcome_notes"),
+        outcome_updated_at=_metadata_dict(stored.get("metadata")).get("outcome_updated_at"),
+        metadata=_metadata_dict(stored.get("metadata")),
     )
 
 

@@ -47,7 +47,8 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
     evidence_records = state.get("evidence_records", [])
     evidence_pack = state.get("evidence_pack", {})
     tool_call_log = state.get("tool_call_log", [])
-    decision_payload = state.get("decision_payload", {})
+    raw_decision_payload = state.get("decision_payload", {})
+    decision_payload = raw_decision_payload if isinstance(raw_decision_payload, dict) else {}
     working_memory = init_working_memory(state.get("working_memory", {}))
     task_graph = state.get("task_graph", [])
     blocked_reasons = list(state.get("blocked_reasons", []))
@@ -380,7 +381,7 @@ def _validate_decision_payload(
     payload: DecisionPayload, evidence_records: list[dict[str, Any]]
 ) -> DecisionPayload:
     """Drop unsupported recommendations from a structured planner payload."""
-    if not payload:
+    if not isinstance(payload, dict) or not payload:
         return {}
 
     supported_urls = {record.get("source_url", "") for record in evidence_records if record.get("source_url")}
@@ -391,7 +392,11 @@ def _validate_decision_payload(
     }
 
     source_refs = payload.get("source_refs", [])
-    valid_refs = [ref for ref in source_refs if ref.get("url", "") in supported_urls or not ref.get("url")]
+    valid_refs = [
+        ref
+        for ref in source_refs
+        if isinstance(ref, dict) and (ref.get("url", "") in supported_urls or not ref.get("url"))
+    ]
     evidence_texts = [
         " ".join(
             str(part)
@@ -408,6 +413,8 @@ def _validate_decision_payload(
 
     validated_recommendations = []
     for item in payload.get("recommended_items", []):
+        if not isinstance(item, dict):
+            continue
         codes = set(item.get("support_codes", []))
         has_code_support = bool(codes & supported_codes)
         support_refs = item.get("support_refs", []) if isinstance(item.get("support_refs"), list) else []
@@ -425,7 +432,11 @@ def _validate_decision_payload(
 
     dropped = len(payload.get("recommended_items", [])) - len(validated_recommendations)
     if dropped > 0:
-        blocked = list(validated.get("blocked_or_uncertain_items", []))
+        blocked = [
+            item
+            for item in list(validated.get("blocked_or_uncertain_items", []))
+            if isinstance(item, dict)
+        ]
         blocked.append({
             "label": "Some recommendations were removed",
             "reason": f"{dropped} unsupported recommendation(s) were dropped during quality validation.",

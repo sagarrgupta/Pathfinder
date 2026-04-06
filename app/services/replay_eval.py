@@ -12,11 +12,15 @@ def evaluate_replay_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     answer = str(artifact.get("answer", "") or "").strip()
     citations = list(artifact.get("citations", []) or [])
     retrieval_trace = list(artifact.get("retrieval_trace", []) or [])
-    retrieval_diagnostics = dict(artifact.get("retrieval_diagnostics", {}) or {})
+    raw_retrieval_diagnostics = artifact.get("retrieval_diagnostics", {}) or {}
+    retrieval_diagnostics = dict(raw_retrieval_diagnostics) if isinstance(raw_retrieval_diagnostics, dict) else {}
     blocked_reasons = list(artifact.get("blocked_reasons", []) or [])
-    evidence_overview = dict(artifact.get("evidence_overview", {}) or {})
-    decision_payload = dict(artifact.get("decision_payload", {}) or {})
-    dependency_status = dict(artifact.get("dependency_status", {}) or {})
+    raw_evidence_overview = artifact.get("evidence_overview", {}) or {}
+    evidence_overview = dict(raw_evidence_overview) if isinstance(raw_evidence_overview, dict) else {}
+    raw_decision_payload = artifact.get("decision_payload", {}) or {}
+    decision_payload = dict(raw_decision_payload) if isinstance(raw_decision_payload, dict) else {}
+    raw_dependency_status = artifact.get("dependency_status", {}) or {}
+    dependency_status = dict(raw_dependency_status) if isinstance(raw_dependency_status, dict) else {}
 
     issues: list[str] = []
     checks: dict[str, bool] = {}
@@ -57,7 +61,8 @@ def evaluate_replay_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     if answer_present and confidence <= 0.0:
         issues.append("Answer exists but confidence is missing or zero.")
 
-    evidence_quality = dict(retrieval_diagnostics.get("evidence_quality", {}) or {})
+    raw_evidence_quality = retrieval_diagnostics.get("evidence_quality", {}) or {}
+    evidence_quality = dict(raw_evidence_quality) if isinstance(raw_evidence_quality, dict) else {}
     quality_score_value = float(evidence_quality.get("overall_quality", 0.0) or 0.0)
     strong_evidence_quality = quality_score_value >= 0.42 if evidence_quality else True
     checks["strong_evidence_quality"] = strong_evidence_quality

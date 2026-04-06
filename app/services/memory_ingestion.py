@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
 import re
 from typing import Any
@@ -134,7 +135,7 @@ def _facts_are_semantic_duplicates(existing: dict[str, Any], candidate: dict[str
 
 
 def _fact_preference_score(fact: dict[str, Any]) -> tuple[float, int, int]:
-    metadata = fact.get("metadata") or {}
+    metadata = _metadata_dict(fact.get("metadata"))
     source = str(metadata.get("source") or "").strip().lower()
     confidence = _safe_float(fact.get("confidence"), 0.5)
     cleaned_value = _clean_candidate_value(str(fact.get("fact_type") or ""), str(fact.get("value") or ""))
@@ -146,8 +147,8 @@ def _merge_candidate_fact(existing: dict[str, Any], candidate: dict[str, Any]) -
     preferred = candidate if _fact_preference_score(candidate) >= _fact_preference_score(existing) else existing
     other = existing if preferred is candidate else candidate
     merged_metadata = {
-        **(other.get("metadata") or {}),
-        **(preferred.get("metadata") or {}),
+        **_metadata_dict(other.get("metadata")),
+        **_metadata_dict(preferred.get("metadata")),
     }
     merged_metadata.setdefault("merged_values", [])
     merged_values = [value for value in merged_metadata["merged_values"] if isinstance(value, str) and value.strip()]
@@ -219,7 +220,7 @@ def _normalize_fact_metadata(
     time_scope: str,
     metadata: dict[str, Any] | None,
 ) -> tuple[str, str, str, dict[str, Any]]:
-    base = dict(metadata or {})
+    base = dict(metadata) if isinstance(metadata, dict) else {}
     normalized_value = str(base.get("normalized_value") or _semantic_fact_key(fact_type, value) or value).strip()
     evidence_kind = _evidence_kind(base)
     stability = _classify_fact_stability(fact_type, value, base, time_scope)
@@ -350,7 +351,7 @@ def _normalize_candidate_fact(fact: dict[str, Any], student_updates: dict[str, s
         value=value,
         route=route,
         time_scope=time_scope,
-        metadata=fact.get("metadata", {}) or {},
+        metadata=_metadata_dict(fact.get("metadata")),
     )
     normalized_facts: list[dict[str, Any]] = []
 
@@ -545,7 +546,8 @@ async def ingest_memory(
         status = "resolved" if route == "resolved_core" else "candidate"
         normalized_value = str(fact.get("normalized_value") or _semantic_fact_key(fact_type, value) or value).strip()
         stability = str(fact.get("stability") or "evolving").strip().lower()
-        evidence_kind = str(fact.get("evidence_kind") or _evidence_kind(fact.get("metadata", {}) or {})).strip().lower()
+        fact_metadata = _metadata_dict(fact.get("metadata"))
+        evidence_kind = str(fact.get("evidence_kind") or _evidence_kind(fact_metadata)).strip().lower()
 
         fact_key = (fact_type, _semantic_fact_key(fact_type, value))
         if fact_key in seen_fact_keys:
@@ -564,7 +566,7 @@ async def ingest_memory(
             normalized_value=normalized_value,
             stability=stability,
             evidence_kind=evidence_kind,
-            metadata=fact.get("metadata", {}),
+            metadata=fact_metadata,
             embedding=fact_embedding,
             source_type=source_type,
         )
@@ -596,7 +598,7 @@ async def ingest_memory(
             status="candidate",
             time_scope=memory.get("time_scope", "long_term"),
             tags=memory.get("tags", []),
-            metadata=memory.get("metadata", {}),
+            metadata=_metadata_dict(memory.get("metadata")),
             embedding=mem_embedding,
         )
         await link_memory_to_evidence("MemoryItem", stored_memory["id"], evidence["id"])
@@ -644,7 +646,7 @@ async def _promote_to_core(
         return []
     label, relationship = label_rel
     promoted: list[dict[str, Any]] = []
-    metadata = dict(stored_fact.get("metadata") or {})
+    metadata = _metadata_dict(stored_fact.get("metadata"))
     for expanded_value in _expand_core_values(fact_type, value):
         properties = {
             "name": expanded_value,
@@ -669,3 +671,16 @@ async def _promote_to_core(
             entity["_label"] = label
             promoted.append(entity)
     return promoted
+
+
+def _metadata_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}

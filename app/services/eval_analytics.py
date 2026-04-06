@@ -118,7 +118,8 @@ def build_eval_analytics(limit: int = 50, student_id: str | None = None) -> dict
         if artifact is None:
             continue
         evaluated = evaluate_replay_artifact(artifact)
-        runtime_snapshot = dict(artifact.get("runtime_snapshot", {}) or {})
+        raw_runtime_snapshot = artifact.get("runtime_snapshot", {}) or {}
+        runtime_snapshot = dict(raw_runtime_snapshot) if isinstance(raw_runtime_snapshot, dict) else {}
         evaluations.append(
             {
                 **evaluated,

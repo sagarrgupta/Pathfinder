@@ -21,6 +21,7 @@ from app.core.quality import (
     build_support_ref,
 )
 from app.core.state import PathfinderState
+from app.services.transcript_state import primary_transcript_state
 
 log = logging.getLogger("pathfinder.agents.eligibility_reasoner")
 
@@ -39,11 +40,13 @@ async def eligibility_reasoner(state: PathfinderState) -> PathfinderState:
     student_strategy = state.get("student_strategy", {})
     student_operating_model = state.get("student_operating_model", {})
     recommendation_outcome_profile = state.get("recommendation_outcome_profile", {})
+    transcript_state = primary_transcript_state(state.get("transcript_states", []), state.get("semantic_memory", {}))
 
     baseline = _heuristic_eligibility_payload(
         summary,
         profile,
         evidence_groups,
+        transcript_state,
         student_strategy,
         student_operating_model,
         recommendation_outcome_profile,
@@ -56,7 +59,7 @@ async def eligibility_reasoner(state: PathfinderState) -> PathfinderState:
         state,
     )
     merged = _merge_payloads(baseline, llm_payload)
-    merged["student_strategy"] = dict(student_strategy or {})
+    merged["student_strategy"] = dict(student_strategy) if isinstance(student_strategy, dict) else {}
     merged["recommendation_paths"] = _build_eligibility_paths(
         merged.get("recommended_items", []),
         merged.get("blocked_or_uncertain_items", []),
@@ -99,10 +102,12 @@ def _heuristic_eligibility_payload(
     summary: dict[str, Any],
     profile: dict[str, Any],
     evidence_groups: dict[str, Any],
+    transcript_state: dict[str, Any] | None = None,
     student_strategy: dict[str, Any] | None = None,
     student_operating_model: dict[str, Any] | None = None,
     recommendation_outcome_profile: dict[str, Any] | None = None,
 ) -> DecisionPayload:
+    transcript_state = transcript_state or {}
     student_strategy = student_strategy or {}
     student_operating_model = student_operating_model or {}
     recommendation_outcome_profile = recommendation_outcome_profile or {}
@@ -111,8 +116,32 @@ def _heuristic_eligibility_payload(
     uncertain = []
     source_refs = []
     completed = set(summary.get("completed_courses", {}).get("value", []))
+    completed.update(
+        str(course.get("code", "")).strip()
+        for course in (transcript_state.get("completed_courses", []) or [])
+        if str(course.get("code", "")).strip()
+    )
     goals = _eligibility_goals(summary, profile)
     temporary_constraints = _eligibility_temporary_constraints(profile)
+
+    for milestone in (transcript_state.get("milestones", []) or [])[:3]:
+        description = str(milestone.get("description", "") or "").strip()
+        status = str(milestone.get("status", "") or "").strip()
+        if description:
+            assumptions.append(f"Transcript milestone: {description}{f' ({status})' if status else ''}.")
+
+    for course in (transcript_state.get("planned_courses", []) or [])[:3]:
+        code = str(course.get("code", "") or "").strip()
+        title = str(course.get("title", "") or "").strip()
+        if not code:
+            continue
+        recommended.append({
+            "label": f"{code} {title}".strip(),
+            "reason": "This appears as a planned upcoming course in the transcript-backed student state, so eligibility should be evaluated against that near-term plan first.",
+            "status": "verified",
+            "support_codes": [code],
+            "assumption": "",
+        })
 
     for record in evidence_groups.get("constraints", []):
         source_refs.append(build_support_ref(record))

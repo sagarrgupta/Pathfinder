@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import hashlib
+import json
 import logging
 import re
 import time
@@ -19,6 +20,7 @@ from app.core.quality import (
     derive_recommendation_outcome_profile,
     derive_student_operating_model,
     infer_evidence_tiers,
+    infer_target_level,
 )
 from app.services.execution_registry import execute_web_search, get_active_retrieval_strategy
 from app.services.conflict_semantics import split_conflict_groups
@@ -185,7 +187,7 @@ async def _prepare_retrieval_context(
     profile, memory, documents, web_payload, saved_recommendations = await asyncio.gather(
         profile_task, memory_task, docs_task, web_task, plans_task
     )
-    web_payload = web_payload or {}
+    web_payload = web_payload if isinstance(web_payload, dict) else {}
     if sources["web"]:
         web_payload = await _retry_web_if_weak(
             query=query,
@@ -202,18 +204,24 @@ async def _prepare_retrieval_context(
         needs_web=needs_web,
         plan=plan,
         sources=sources,
-        profile=profile or {},
+        profile=profile if isinstance(profile, dict) else {},
         student_operating_model=derive_student_operating_model(
-            build_session_summary(profile or {}, [], query),
-            profile or {},
+            build_session_summary(profile if isinstance(profile, dict) else {}, [], query),
+            profile if isinstance(profile, dict) else {},
             query,
         ),
-        recommendation_outcome_profile=derive_recommendation_outcome_profile(saved_recommendations or []),
-        memory=memory or {},
-        documents=list(documents or []),
-        web_results=list(web_payload.get("results", []) or []),
-        saved_recommendations=list(saved_recommendations or []),
-        recovery_events=list(web_payload.get("recovery_events", []) or []),
+        recommendation_outcome_profile=derive_recommendation_outcome_profile(
+            saved_recommendations if isinstance(saved_recommendations, list) else []
+        ),
+        memory=memory if isinstance(memory, dict) else {},
+        documents=list(documents) if isinstance(documents, list) else [],
+        web_results=list(web_payload.get("results", []) or []) if isinstance(web_payload.get("results", []), list) else [],
+        saved_recommendations=list(saved_recommendations) if isinstance(saved_recommendations, list) else [],
+        recovery_events=(
+            list(web_payload.get("recovery_events", []) or [])
+            if isinstance(web_payload.get("recovery_events", []), list)
+            else []
+        ),
     )
 
 
@@ -306,8 +314,13 @@ async def _retry_web_if_weak(
     profile: dict[str, Any],
     initial_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    results = list((initial_payload or {}).get("results", []) or [])
-    recovery_events = list((initial_payload or {}).get("recovery_events", []) or [])
+    initial_payload = initial_payload if isinstance(initial_payload, dict) else {}
+    results = list((initial_payload.get("results", []) or [])) if isinstance(initial_payload.get("results", []), list) else []
+    recovery_events = (
+        list(initial_payload.get("recovery_events", []) or [])
+        if isinstance(initial_payload.get("recovery_events", []), list)
+        else []
+    )
     if not _should_retry_web(domain, results, profile):
         return {"results": results, "recovery_events": recovery_events}
     retry_query = _build_official_retry_query(query, domain, profile)
@@ -618,14 +631,23 @@ def _document_trust_bonus(document: dict[str, Any]) -> tuple[float, dict[str, An
     title = str(document.get("title", "") or "")
     text = " ".join([filename, title]).casefold()
     scope = str(document.get("scope", "") or "").casefold()
+    document_role = str(document.get("document_role", "") or document.get("type", "") or "").casefold()
     trust = 0.35
     kind = "general_document"
-    if any(token in text for token in ("transcript", "resume", "cv", "syllabus", "catalog", "program", "handbook")):
+    if document_role in {"transcript", "resume", "degree_plan", "syllabus", "handbook"}:
+        trust = 0.82 if document_role == "transcript" else 0.76
+        kind = f"{document_role}_document"
+    elif any(token in text for token in ("transcript", "resume", "cv", "syllabus", "catalog", "program", "handbook")):
         trust = 0.75
         kind = "structured_profile_document"
     if scope == "global":
         trust += 0.05
-    return trust, {"document_trust": round(trust, 4), "document_kind": kind}
+    return trust, {
+        "document_trust": round(trust, 4),
+        "document_kind": kind,
+        "document_role": document_role or "general_document",
+        "role_confidence": float(document.get("role_confidence", 0.0) or 0.0),
+    }
 
 
 def _build_official_retry_query(query: str, domain: str, profile: dict[str, Any]) -> str:
@@ -653,7 +675,7 @@ def _web_quality_meta(result: dict[str, Any], profile: dict[str, Any]) -> dict[s
     personal = profile.get("personal", {}) or {}
     program_text = str(personal.get("program", "") or "")
     institution_text = str(personal.get("university", "") or "")
-    level = "graduate" if any(token in program_text.casefold() for token in ("master", "graduate", "ms", "phd")) else "undergraduate"
+    level = infer_target_level(profile, build_session_summary(profile, [], "")) or "unknown"
     source_type, _time_scope = classify_web_source(
         str(result.get("url", "")),
         str(result.get("title", "")),
@@ -746,7 +768,7 @@ def _rerank_memory_items(
 ) -> dict[str, Any]:
     query_terms = _tokenize(query)
     profile_terms = _profile_signal_terms(profile)
-    reranked = dict(memory or {})
+    reranked = dict(memory) if isinstance(memory, dict) else {}
     for key, fields in {
         "candidate_facts": ("fact_type", "value"),
         "memory_items": ("memory_type", "summary"),
@@ -781,7 +803,7 @@ def _rerank_memory_items(
 
 
 def _saved_recommendation_status_weight(item: dict[str, Any]) -> float:
-    metadata = item.get("metadata", {}) or {}
+    metadata = _metadata_dict(item.get("metadata"))
     outcome_status = str(metadata.get("outcome_status") or metadata.get("status") or "active").strip().lower()
     if outcome_status == "accepted":
         return 0.35
@@ -805,7 +827,7 @@ def _rerank_saved_recommendations(
     profile_terms = _profile_signal_terms(profile)
     scored: list[dict[str, Any]] = []
     for item in saved_recommendations or []:
-        metadata = item.get("metadata", {}) or {}
+        metadata = _metadata_dict(item.get("metadata"))
         recommendation_type = str(item.get("memory_type", "saved_plan")).replace("saved_", "")
         text = " ".join(
             [
@@ -836,6 +858,19 @@ def _rerank_saved_recommendations(
     return scored
 
 
+def _metadata_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
 def _build_retrieval_trace(
     context: RetrievalContext,
     memory: dict[str, Any],
@@ -849,6 +884,7 @@ def _build_retrieval_trace(
             "source": "documents",
             "label": item.get("filename", item.get("title", "document")),
             "score": float(item.get("retrieval_score", item.get("score", 0.0)) or 0.0),
+            "document_role": item.get("document_role", item.get("type", "general_document")),
             "reason": item.get("retrieval_reason", {}),
         })
     for item in web_results[:4]:
@@ -866,9 +902,10 @@ def _build_retrieval_trace(
             "reason": item.get("retrieval_reason", {}),
         })
     for item in (saved_recommendations or [])[:3]:
+        metadata = _metadata_dict(item.get("metadata"))
         trace.append({
             "source": "saved_recommendations",
-            "label": (item.get("metadata", {}) or {}).get("title", item.get("summary", "saved_recommendation")),
+            "label": metadata.get("title", item.get("summary", "saved_recommendation")),
             "score": float(item.get("retrieval_score", 0.0) or 0.0),
             "reason": item.get("retrieval_reason", {}),
         })
@@ -887,14 +924,17 @@ def _build_retrieval_diagnostics(
     profile_terms = sorted(_profile_signal_terms(profile))
     return {
         "profile_signal_terms": profile_terms[:20],
-        "operating_model": dict(student_operating_model or {}),
-        "recommendation_outcome_profile": dict(recommendation_outcome_profile or {}),
-        "evidence_quality": dict(evidence_quality or {}),
+        "operating_model": dict(student_operating_model) if isinstance(student_operating_model, dict) else {},
+        "recommendation_outcome_profile": (
+            dict(recommendation_outcome_profile) if isinstance(recommendation_outcome_profile, dict) else {}
+        ),
+        "evidence_quality": dict(evidence_quality) if isinstance(evidence_quality, dict) else {},
         "candidate_fact_hits": len(memory.get("candidate_facts", []) or []),
         "memory_item_hits": len(memory.get("memory_items", []) or []),
         "document_hits": len(documents),
         "web_hits": len(web_results),
         "top_document": documents[0].get("filename", "") if documents else "",
+        "top_document_role": documents[0].get("document_role", documents[0].get("type", "")) if documents else "",
         "top_web_result": web_results[0].get("url", "") if web_results else "",
     }
 

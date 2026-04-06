@@ -111,6 +111,8 @@ class DocumentUploadResponse(BaseModel):
     document_id: str
     filename: str
     scope: str  # "global" or "session"
+    document_role: str = "general_document"
+    role_confidence: float = 0.0
     entities_extracted: int = 0
     chunks_stored: int = 0
 

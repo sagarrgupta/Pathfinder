@@ -21,6 +21,7 @@ from app.core.quality import (
     build_support_ref,
 )
 from app.core.state import PathfinderState
+from app.services.transcript_state import primary_transcript_state
 
 log = logging.getLogger("pathfinder.agents.program_advisor")
 
@@ -39,12 +40,14 @@ async def program_advisor(state: PathfinderState) -> PathfinderState:
     student_strategy = state.get("student_strategy", {})
     student_operating_model = state.get("student_operating_model", {})
     recommendation_outcome_profile = state.get("recommendation_outcome_profile", {})
+    transcript_state = primary_transcript_state(state.get("transcript_states", []), state.get("semantic_memory", {}))
 
     baseline = _heuristic_program_payload(
         query,
         summary,
         profile,
         evidence_groups,
+        transcript_state,
         student_strategy,
         student_operating_model,
         recommendation_outcome_profile,
@@ -57,7 +60,7 @@ async def program_advisor(state: PathfinderState) -> PathfinderState:
         state,
     )
     merged = _merge_payloads(baseline, llm_payload)
-    merged["student_strategy"] = dict(student_strategy or {})
+    merged["student_strategy"] = dict(student_strategy) if isinstance(student_strategy, dict) else {}
     merged["recommendation_paths"] = _build_program_paths(
         merged.get("recommended_items", []),
         merged.get("blocked_or_uncertain_items", []),
@@ -105,10 +108,12 @@ def _heuristic_program_payload(
     summary: dict[str, Any],
     profile: dict[str, Any],
     evidence_groups: dict[str, Any],
+    transcript_state: dict[str, Any] | None = None,
     student_strategy: dict[str, Any] | None = None,
     student_operating_model: dict[str, Any] | None = None,
     recommendation_outcome_profile: dict[str, Any] | None = None,
 ) -> DecisionPayload:
+    transcript_state = transcript_state or {}
     student_strategy = student_strategy or {}
     student_operating_model = student_operating_model or {}
     recommendation_outcome_profile = recommendation_outcome_profile or {}
@@ -129,6 +134,28 @@ def _heuristic_program_payload(
         or "top" in query_lower and "universit" in query_lower
     )
     asks_admission_chances = any(token in query_lower for token in ("chances", "chance", "odds", "probability"))
+
+    for milestone in (transcript_state.get("milestones", []) or [])[:3]:
+        description = str(milestone.get("description", "") or "").strip()
+        status = str(milestone.get("status", "") or "").strip()
+        if description:
+            assumptions.append(f"Transcript milestone: {description}{f' ({status})' if status else ''}.")
+
+    if transcript_state.get("planned_courses"):
+        next_term = str((transcript_state.get("summary", {}) or {}).get("upcoming_term", "") or "")
+        next_codes = [
+            str(course.get("code", "")).strip()
+            for course in (transcript_state.get("planned_courses", []) or [])[:4]
+            if str(course.get("code", "")).strip()
+        ]
+        if next_codes:
+            recommended.append({
+                "label": f"{next_term or 'Upcoming term'} plan anchor",
+                "reason": f"The transcript-backed student state already shows {', '.join(next_codes)} in the upcoming term, so program guidance should anchor on that actual near-term plan.",
+                "status": "verified",
+                "support_codes": next_codes,
+                "assumption": "",
+            })
 
     for record in evidence_groups.get("requirements", []):
         title = record.get("source_title", "")

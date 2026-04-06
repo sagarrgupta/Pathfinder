@@ -48,13 +48,20 @@ log = logging.getLogger("pathfinder.agents.fact_extractor")
 async def fact_extractor(state: PathfinderState) -> PathfinderState:
     """Build typed evidence records from available context."""
     profile = state.get("profile_data", {})
+    profile = profile if isinstance(profile, dict) else {}
     web_results = state.get("web_results", [])
+    web_results = list(web_results) if isinstance(web_results, list) else []
     documents = state.get("retrieved_documents", [])
+    documents = list(documents) if isinstance(documents, list) else []
     semantic_memory = state.get("semantic_memory", {})
+    semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
     memory_pack = state.get("memory_pack", {})
+    memory_pack = memory_pack if isinstance(memory_pack, dict) else {}
     query = state.get("query", "")
     session_summary = state.get("session_summary", {})
+    session_summary = session_summary if isinstance(session_summary, dict) else {}
     source_policy = state.get("source_policy", {})
+    source_policy = source_policy if isinstance(source_policy, dict) else {}
     query_focus = analyze_query_focus(query)
     program_text = infer_target_program(profile, session_summary, query)
     level = infer_target_level(profile, session_summary, query)
@@ -348,7 +355,9 @@ def _heuristic_records(
                 "time_scope": "timeless",
             })
 
-    for memory in memory_pack.get("semantic_memory", {}).get("memory_items", [])[:8]:
+    semantic_memory = memory_pack.get("semantic_memory", {})
+    semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
+    for memory in (semantic_memory.get("memory_items", []) or [])[:8]:
         summary = str(memory.get("summary", "")).strip()
         memory_type = str(memory.get("memory_type", "")).lower()
         if not summary:

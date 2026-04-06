@@ -33,7 +33,20 @@ def _sanitize(value: Any) -> Any:
     if isinstance(value, neo4j_time.Duration):
         return str(value)
     if isinstance(value, dict):
-        return {k: _sanitize(v) for k, v in value.items()}
+        sanitized = {k: _sanitize(v) for k, v in value.items()}
+        metadata_json = sanitized.get("metadata_json")
+        if isinstance(metadata_json, str) and metadata_json.strip():
+            try:
+                sanitized["metadata"] = json.loads(metadata_json)
+            except Exception:
+                if "metadata" not in sanitized:
+                    sanitized["metadata"] = {}
+        elif isinstance(sanitized.get("metadata"), str):
+            try:
+                sanitized["metadata"] = json.loads(str(sanitized["metadata"]))
+            except Exception:
+                pass
+        return sanitized
     if isinstance(value, list):
         return [_sanitize(v) for v in value]
     return value
@@ -321,6 +334,35 @@ def _metadata_json(metadata: dict[str, Any] | None) -> str:
         return json.dumps(metadata or {})
     except Exception:
         return "{}"
+
+
+def _property_safe_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Convert nested metadata into Neo4j property-safe scalars/arrays."""
+    safe: dict[str, Any] = {}
+    for key, value in (metadata or {}).items():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe[key] = value
+        elif isinstance(value, list) and all(isinstance(item, (str, int, float, bool)) or item is None for item in value):
+            safe[key] = value
+        else:
+            try:
+                safe[key] = json.dumps(value, ensure_ascii=True)
+            except Exception:
+                safe[key] = str(value)
+    return safe
+
+
+def _metadata_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
 
 
 def _utc_now() -> datetime:
@@ -721,6 +763,10 @@ async def store_document_node(
     student_id: str,
     session_id: str | None = None,
     doc_type: str = "other",
+    file_type: str = "unknown",
+    document_role: str = "general_document",
+    role_confidence: float = 0.0,
+    role_signals: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a Document node linked to the student."""
     driver = await get_driver()
@@ -734,6 +780,10 @@ async def store_document_node(
                 scope: $scope,
                 session_id: $session_id,
                 type: $doc_type,
+                file_type: $file_type,
+                document_role: $document_role,
+                role_confidence: $role_confidence,
+                role_signals: $role_signals,
                 uploaded_at: datetime()
             })
             RETURN d {.*} AS doc
@@ -744,6 +794,10 @@ async def store_document_node(
             scope=scope,
             session_id=session_id,
             doc_type=doc_type,
+            file_type=file_type,
+            document_role=document_role,
+            role_confidence=role_confidence,
+            role_signals=list(role_signals or []),
         )
         record = await result.single()
         return _sanitize(dict(record["doc"])) if record else {}
@@ -890,7 +944,7 @@ async def store_evidence(
             source_ref=source_ref,
             session_id=session_id,
             content=content,
-            metadata=metadata or {},
+            metadata=metadata_json,
             metadata_json=metadata_json,
             embedding=embedding,
         )
@@ -938,7 +992,7 @@ async def store_candidate_fact(
 
         support_kind = _fact_source_support_kind(source_type, source_ref)
         now_iso = _iso_utc(_utc_now())
-        base_metadata = dict(metadata or {})
+        base_metadata = dict(metadata) if isinstance(metadata, dict) else {}
         provenance_item = {
             "source_ref": source_ref,
             "source_type": source_type or "",
@@ -948,7 +1002,7 @@ async def store_candidate_fact(
         }
 
         if existing:
-            existing_metadata = dict(existing.get("metadata") or {})
+            existing_metadata = _metadata_dict(existing.get("metadata"))
             support_count = int(existing.get("support_count") or existing_metadata.get("support_count") or 1) + 1
             direct_statement_count = int(
                 existing.get("direct_statement_count") or existing_metadata.get("direct_statement_count") or 0
@@ -1020,7 +1074,7 @@ async def store_candidate_fact(
                 time_scope=time_scope,
                 stability=stability,
                 evidence_kind=evidence_kind,
-                metadata=merged_metadata,
+                metadata=metadata_json,
                 metadata_json=metadata_json,
                 embedding=embedding,
                 support_count=support_count,
@@ -1100,7 +1154,7 @@ async def store_candidate_fact(
             normalized_value=normalized,
             stability=stability,
             evidence_kind=evidence_kind,
-            metadata=initial_metadata,
+            metadata=metadata_json,
             metadata_json=metadata_json,
             embedding=embedding,
             support_count=support_count,
@@ -1187,7 +1241,7 @@ async def store_memory_item(
             status=status,
             time_scope=time_scope,
             tags=tags or [],
-            metadata=metadata or {},
+            metadata=metadata_json,
             metadata_json=metadata_json,
             embedding=embedding,
         )
@@ -1278,7 +1332,7 @@ async def update_saved_recommendation_outcome(
             return None
         existing_memory = _sanitize(dict(existing_record["memory"]))
         merged_metadata = {
-            **(existing_memory.get("metadata", {}) or {}),
+            **_metadata_dict(existing_memory.get("metadata")),
             **(metadata_patch or {}),
             "outcome_status": outcome_status,
             "outcome_notes": outcome_notes,
@@ -1300,7 +1354,7 @@ async def update_saved_recommendation_outcome(
             """,
             student_id=student_id,
             recommendation_id=recommendation_id,
-            metadata=merged_metadata,
+            metadata=_metadata_json(merged_metadata),
             metadata_json=_metadata_json(merged_metadata),
             now=_iso_utc(_utc_now()),
         )
@@ -1562,7 +1616,7 @@ async def get_full_profile(student_id: str) -> dict[str, Any]:
             "promotion_score": _safe_float(fact.get("promotion_score"), 0.0),
             "created_at": fact.get("created_at"),
             "updated_at": fact.get("updated_at"),
-            "metadata": fact.get("metadata", {}) or {},
+            "metadata": _metadata_dict(fact.get("metadata")),
         }
         ledger_item["confirmation_state"] = _candidate_confirmation_state(ledger_item)
         candidate_fact_ledger.append(ledger_item)
