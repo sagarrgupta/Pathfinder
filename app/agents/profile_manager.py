@@ -47,6 +47,7 @@ from app.core.state import PathfinderState
 from app.services.memory_ingestion import ingest_memory
 from app.services.retrieval import build_memory_pack
 from app.services.runtime_recovery import recovery_for_profile_ingestion_failure
+from app.services.transcript_state import primary_transcript_state
 
 log = logging.getLogger("pathfinder.agents.profile_manager")
 
@@ -167,9 +168,13 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
         documents_override=retrieved,
     )
     semantic_memory = memory_pack.get("semantic_memory", {})
-    conflicts = memory_pack.get("conflicts", [])
-    if not retrieved and memory_pack.get("documents"):
-        retrieved = list(memory_pack.get("documents", []))
+    semantic_memory = semantic_memory if isinstance(semantic_memory, dict) else {}
+    raw_conflicts = memory_pack.get("conflicts", [])
+    conflicts = list(raw_conflicts) if isinstance(raw_conflicts, list) else []
+    if not retrieved:
+        raw_documents = memory_pack.get("documents", [])
+        if isinstance(raw_documents, list) and raw_documents:
+            retrieved = list(raw_documents)
 
     step_progress.append(
         f"Found {len(retrieved)} relevant document chunks, "
@@ -195,14 +200,31 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
     )
     student_strategy = derive_student_strategy(session_summary, profile, query)
     student_operating_model = derive_student_operating_model(session_summary, profile, query)
-    recommendation_outcome_profile = derive_recommendation_outcome_profile(memory_pack.get("saved_recommendations", []))
-    decision_continuity = derive_decision_continuity(query, memory_pack.get("decision_records", []))
+    recommendation_outcome_profile = derive_recommendation_outcome_profile(
+        memory_pack.get("saved_recommendations", []) if isinstance(memory_pack.get("saved_recommendations", []), list) else []
+    )
+    decision_continuity = derive_decision_continuity(
+        query,
+        memory_pack.get("decision_records", []) if isinstance(memory_pack.get("decision_records", []), list) else [],
+    )
     source_policy = build_source_policy(
         query_focus,
         target_entity,
         workflow,
         state.get("source_policy", {}).get("preferred_domains", []),
     )
+    source_policy = _govern_source_policy_from_profile(source_policy, workflow, profile, semantic_memory)
+    transcript_state = primary_transcript_state(state.get("transcript_states", []), semantic_memory)
+    targeted_web_questions = _targeted_web_questions_from_state(
+        query=query,
+        workflow=workflow,
+        profile=profile,
+        semantic_memory=semantic_memory,
+        transcript_state=transcript_state,
+        source_policy=source_policy,
+    )
+    if targeted_web_questions:
+        source_policy["targeted_web_questions"] = targeted_web_questions
     next_node = _determine_next(state)
     working_memory = init_working_memory(state.get("working_memory", {}))
     evidence_pack = build_evidence_pack(
@@ -256,6 +278,7 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
         "recommendation_outcome_profile": recommendation_outcome_profile,
         "decision_continuity": decision_continuity,
         "source_policy": source_policy,
+        "targeted_web_questions": targeted_web_questions,
         "working_memory": working_memory,
         "task_graph": task_graph,
         "recovery_events": recovery_events,
@@ -274,6 +297,138 @@ async def profile_manager(state: PathfinderState) -> PathfinderState:
         "step_progress": step_progress,
         "next_node": next_node,
     }
+
+
+def _govern_source_policy_from_profile(
+    source_policy: dict[str, Any],
+    workflow: str,
+    profile: dict[str, Any],
+    semantic_memory: dict[str, Any],
+) -> dict[str, Any]:
+    governed = dict(source_policy) if isinstance(source_policy, dict) else {}
+    transcript_present = any(
+        str(doc.get("document_role", "") or doc.get("type", "")).strip().lower() == "transcript"
+        or "transcript" in str(doc.get("filename", "")).strip().lower()
+        for doc in (profile.get("documents", []) or [])
+    )
+    transcript_state_present = any(
+        str(item.get("source_type", "")).strip().lower() == "transcript_state"
+        for item in (semantic_memory.get("evidence", []) or [])
+    )
+    if workflow in {"academic_planning", "eligibility_check"} and (transcript_present or transcript_state_present):
+        primary = list(governed.get("primary_source_types", []) or [])
+        secondary = list(governed.get("secondary_source_types", []) or [])
+        governed["primary_source_types"] = ["profile_doc"] + [item for item in primary if item != "profile_doc"]
+        governed["secondary_source_types"] = [item for item in secondary if item != "profile_doc"]
+        governed["prefer_profile_documents"] = True
+        governed["preferred_document_roles"] = ["transcript", "degree_plan"]
+        governed["governing_state_sources"] = ["transcript_state", "profile_state", "official_requirements"]
+        governed["strict_primary_only"] = False
+        governed["web_research_mode"] = "targeted"
+        governed["max_web_passes"] = max(2, int(governed.get("max_web_passes", 1) or 1))
+        rationale = str(governed.get("rationale", "") or "").strip()
+        governed["rationale"] = (
+            f"{rationale} Transcript-backed academic state is available, so uploaded profile documents should govern progression reasoning while official web research validates unresolved gaps."
+        ).strip()
+    return governed
+
+
+def _targeted_web_questions_from_state(
+    *,
+    query: str,
+    workflow: str,
+    profile: dict[str, Any],
+    semantic_memory: dict[str, Any],
+    transcript_state: dict[str, Any] | None,
+    source_policy: dict[str, Any],
+) -> list[str]:
+    if workflow not in {"academic_planning", "eligibility_check", "program_understanding"}:
+        return []
+
+    transcript_state = transcript_state or {}
+    personal = profile.get("personal", {}) or {}
+    institution = str(
+        source_policy.get("target_institution", "")
+        or personal.get("university", "")
+        or personal.get("school", "")
+        or ""
+    ).strip()
+    program = str(
+        source_policy.get("target_program", "")
+        or personal.get("program", "")
+        or transcript_state.get("program", "")
+        or ""
+    ).strip()
+    level = str(source_policy.get("target_level", "") or "").strip()
+
+    questions: list[str] = []
+    requirement_focus = _requirement_focus_from_query(query, workflow)
+    requirement_phrase = _requirement_focus_phrase(requirement_focus)
+    if transcript_state:
+        questions.append(
+            f"What are the official {requirement_phrase} "
+            f"for {program or 'this program'} at {institution or 'the target university'}"
+            f"{f' ({level})' if level else ''}?"
+        )
+        for course in (transcript_state.get("planned_courses", []) or [])[:3]:
+            code = str(course.get("code", "") or course.get("name", "")).strip()
+            if code:
+                questions.append(
+                    f"What are the official prerequisites, restrictions, sequencing rules, and typical offering details for {code} "
+                    f"at {institution or 'the target university'}?"
+                )
+        milestones = [str(item.get("name", "")).strip() for item in (transcript_state.get("milestones", []) or [])[:2]]
+        milestones = [item for item in milestones if item]
+        if milestones:
+            questions.append(
+                f"What official rules, dependencies, or next-step requirements apply after {', '.join(milestones)} "
+                f"in {program or 'this program'} at {institution or 'the target university'}?"
+            )
+    else:
+        questions.append(
+            f"What are the official {requirement_phrase} for {program or 'the student program'} "
+            f"at {institution or 'the target university'}?"
+        )
+
+    if workflow == "academic_planning":
+        questions.append(
+            f"Based on official requirements, what requirement categories remain unresolved for this student question: {query.strip()}?"
+        )
+
+    evidence = semantic_memory.get("evidence", []) or []
+    if not any(str(item.get("source_type", "")).strip().lower() in {"degree_page", "schedule_page"} for item in evidence):
+        questions.append(
+            f"Find the most authoritative official catalog or degree-requirements pages for {program or 'the program'} "
+            f"at {institution or 'the target university'}."
+        )
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for question in questions:
+        cleaned = " ".join(question.split()).strip()
+        lowered = cleaned.lower()
+        if cleaned and lowered not in seen:
+            seen.add(lowered)
+            deduped.append(cleaned)
+    return deduped[:4]
+
+
+def _requirement_focus_from_query(query: str, workflow: str) -> str:
+    lowered = str(query or "").casefold()
+    if workflow == "eligibility_check":
+        return "eligibility and policy requirements"
+    if any(token in lowered for token in ("elective", "specialization", "concentration", "track", "breadth")):
+        return "program, elective, and category requirements"
+    if any(token in lowered for token in ("apply", "admission", "admit", "application")):
+        return "admissions and qualification requirements"
+    if any(token in lowered for token in ("graduate", "graduation", "finish", "complete degree", "units")):
+        return "completion and graduation requirements"
+    return "program progression requirements"
+
+
+def _requirement_focus_phrase(focus: str) -> str:
+    cleaned = " ".join(str(focus or "").split()).strip()
+    return cleaned or "program requirements"
 
 
 async def process_free_text(

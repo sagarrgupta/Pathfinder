@@ -7,6 +7,7 @@ payloads, and lightweight heuristics that multiple agents can share.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Literal, TypedDict
 from urllib.parse import urlparse
@@ -177,6 +178,12 @@ class SourcePolicy(TypedDict, total=False):
     target_level: str
     max_search_queries: int
     search_retries: int
+    prefer_profile_documents: bool
+    preferred_document_roles: list[str]
+    governing_state_sources: list[str]
+    web_research_mode: str
+    targeted_web_questions: list[str]
+    max_web_passes: int
 
 
 class SessionSummary(TypedDict, total=False):
@@ -422,7 +429,7 @@ def build_session_summary(
 
 def init_working_memory(existing: dict[str, Any] | None = None) -> WorkingMemory:
     """Return a normalized working memory object with all expected keys."""
-    current = dict(existing or {})
+    current = dict(existing) if isinstance(existing, dict) else {}
     return {
         "facts_confirmed": list(current.get("facts_confirmed", [])),
         "facts_secondary": list(current.get("facts_secondary", [])),
@@ -490,7 +497,8 @@ def build_session_memory_state(
     """Build explicit session-scoped memory from transcript and current turn context."""
     summary = session_summary or {}
     compacted = compacted_session or {}
-    digest = dict(compacted.get("conversation_digest", {}) or {})
+    raw_digest = compacted.get("conversation_digest", {}) if isinstance(compacted, dict) else {}
+    digest = dict(raw_digest) if isinstance(raw_digest, dict) else {}
     carry_forward_context = {
         "institution": str(((summary.get("institution", {}) or {}).get("value", "")) or ""),
         "program": str(((summary.get("program", {}) or {}).get("value", "")) or ""),
@@ -567,14 +575,16 @@ def build_evidence_pack(
     missing_information: list[str] | None = None,
 ) -> EvidencePack:
     """Normalize mixed retrieval outputs into one shared evidence envelope."""
-    normalized_profile = dict(profile or {})
-    normalized_documents = list(documents or [])
-    normalized_web = list(web_results or [])
-    normalized_semantic = dict(semantic_memory or {})
-    normalized_memory_pack = dict(memory_pack or {})
-    normalized_saved_recommendations = list(normalized_memory_pack.get("saved_recommendations", []) or [])
-    normalized_decision_records = list(normalized_memory_pack.get("decision_records", []) or [])
-    normalized_records = list(evidence_records or [])
+    normalized_profile = dict(profile) if isinstance(profile, dict) else {}
+    normalized_documents = list(documents) if isinstance(documents, list) else []
+    normalized_web = list(web_results) if isinstance(web_results, list) else []
+    normalized_semantic = dict(semantic_memory) if isinstance(semantic_memory, dict) else {}
+    normalized_memory_pack = dict(memory_pack) if isinstance(memory_pack, dict) else {}
+    raw_saved_recommendations = normalized_memory_pack.get("saved_recommendations", []) or []
+    normalized_saved_recommendations = list(raw_saved_recommendations) if isinstance(raw_saved_recommendations, list) else []
+    raw_decision_records = normalized_memory_pack.get("decision_records", []) or []
+    normalized_decision_records = list(raw_decision_records) if isinstance(raw_decision_records, list) else []
+    normalized_records = list(evidence_records) if isinstance(evidence_records, list) else []
     normalized_working_memory = init_working_memory(working_memory)
     evidence_groups = group_evidence_records(normalized_records, normalized_profile)
     retrieval_summary = {
@@ -592,10 +602,10 @@ def build_evidence_pack(
     return {
         "query": query,
         "workflow": workflow,
-        "student_strategy": dict(student_strategy or {}),
-        "student_operating_model": dict(student_operating_model or {}),
-        "recommendation_outcome_profile": dict(recommendation_outcome_profile or {}),
-        "decision_continuity": dict(decision_continuity or {}),
+        "student_strategy": dict(student_strategy) if isinstance(student_strategy, dict) else {},
+        "student_operating_model": dict(student_operating_model) if isinstance(student_operating_model, dict) else {},
+        "recommendation_outcome_profile": dict(recommendation_outcome_profile) if isinstance(recommendation_outcome_profile, dict) else {},
+        "decision_continuity": dict(decision_continuity) if isinstance(decision_continuity, dict) else {},
         "profile_facts": list(normalized_profile.get("profile_facts", []) or []),
         "profile_records": normalized_profile,
         "document_records": normalized_documents,
@@ -610,7 +620,11 @@ def build_evidence_pack(
         "source_audit": list(normalized_working_memory.get("source_audit", [])),
         "retrieval_summary": retrieval_summary,
         "retrieval_trace": list(normalized_memory_pack.get("retrieval_trace", []) or []),
-        "retrieval_diagnostics": dict(normalized_memory_pack.get("retrieval_diagnostics", {}) or {}),
+        "retrieval_diagnostics": (
+            dict(normalized_memory_pack.get("retrieval_diagnostics", {}))
+            if isinstance(normalized_memory_pack.get("retrieval_diagnostics", {}), dict)
+            else {}
+        ),
     }
 
 
@@ -782,7 +796,7 @@ def derive_recommendation_outcome_profile(
     preferred_types: dict[str, float] = {}
     recent_outcomes: list[str] = []
     for item in items:
-        metadata = item.get("metadata", {}) or {}
+        metadata = _metadata_dict(item.get("metadata"))
         outcome_status = str(metadata.get("outcome_status") or metadata.get("status") or "active").strip().lower()
         recommendation_type = str(item.get("memory_type", "saved_plan")).replace("saved_", "").strip().lower() or "plan"
         if outcome_status not in counts:
@@ -858,7 +872,7 @@ def derive_decision_continuity(
     }
     ranked: list[tuple[float, dict[str, Any]]] = []
     for item in records:
-        metadata = item.get("metadata", {}) or {}
+        metadata = _metadata_dict(item.get("metadata"))
         text = " ".join(
             [
                 str(metadata.get("title", "")),
@@ -877,16 +891,16 @@ def derive_decision_continuity(
     ranked.sort(key=lambda item: item[0], reverse=True)
     related = [item for score, item in ranked if score > 0.8][:3]
     latest = related[0] if related else {}
-    latest_metadata = latest.get("metadata", {}) or {}
+    latest_metadata = _metadata_dict(latest.get("metadata"))
     return {
         "is_continuation": bool(related),
         "related_count": len(related),
         "latest_title": str(latest_metadata.get("title", "") or latest.get("summary", "")) if latest else "",
         "latest_decision_type": str(latest_metadata.get("decision_type", "") or ""),
         "related_titles": [
-            str((item.get("metadata", {}) or {}).get("title", "") or item.get("summary", "")).strip()
+            str(_metadata_dict(item.get("metadata")).get("title", "") or item.get("summary", "")).strip()
             for item in related
-            if str((item.get("metadata", {}) or {}).get("title", "") or item.get("summary", "")).strip()
+            if str(_metadata_dict(item.get("metadata")).get("title", "") or item.get("summary", "")).strip()
         ][:3],
     }
 
@@ -897,6 +911,19 @@ def append_unique_text(items: list[str], value: str) -> list[str]:
     if cleaned and cleaned not in items:
         items.append(cleaned)
     return items
+
+
+def _metadata_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
 
 
 def add_working_memory_item(
@@ -1305,7 +1332,7 @@ def analyze_query_focus(query: str) -> QueryFocus:
         "primary": primary_focus,
         "wants_live_availability": any(
             word in lowered
-            for word in ("open now", "available", "enroll", "register", "this semester", "next semester", "offered", "open seats")
+            for word in ("open now", "available", "enroll", "register", "this semester", "offered", "open seats")
         ),
         "wants_requirements": any(
             word in lowered
@@ -1351,7 +1378,11 @@ def infer_student_workflow(
     has_files = bool(files)
     planning_markers = (
         "plan", "semester wise", "semester-wise", "roadmap", "course sequence",
-        "what should i take", "which courses", "graduate by", "finish by",
+        "what should i take", "which courses", "finish by", "next course", "next class",
+    )
+    near_term_markers = (
+        "next semester", "next term", "next quarter", "upcoming term", "upcoming semester",
+        "this term", "this semester", "this quarter", "coming term",
     )
 
     if has_files or target_kind in {"document", "webpage"} or query_focus.get("wants_summary"):
@@ -1367,13 +1398,15 @@ def infer_student_workflow(
         return "eligibility_check"
     if query_focus.get("wants_long_range_plan") or any(marker in lowered for marker in planning_markers):
         return "academic_planning"
+    if any(marker in lowered for marker in near_term_markers):
+        return "academic_planning"
     if query_focus.get("wants_jobs"):
         return "career_alignment"
     if query_focus.get("wants_comparison"):
         return "comparison_guidance"
     if query_focus.get("wants_eligibility"):
         return "eligibility_check"
-    if any(word in lowered for word in ("elective", "next semester", "what should i take", "course plan", "semester plan")):
+    if any(word in lowered for word in ("elective", "what should i take", "course plan", "semester plan", "term plan")):
         return "academic_planning"
     if any(word in lowered for word in ("requirement", "policy", "prerequisite", "admission", "breadth", "core", "program")):
         return "program_understanding"
@@ -1514,6 +1547,12 @@ def build_source_policy(
 
     is_application_targeting = bool(query_focus.get("wants_application_targeting"))
     wants_university_selection = bool(query_focus.get("wants_university_selection"))
+    prefer_profile_documents = False
+    preferred_document_roles: list[str] = []
+    governing_state_sources: list[str] = []
+    web_research_mode = "broad"
+    targeted_web_questions: list[str] = []
+    max_web_passes = 1
 
     if workflow == "career_alignment" or primary == "career":
         primary_source_types: list[SourceType] = ["job_page", "profile_doc"]
@@ -1523,6 +1562,10 @@ def build_source_policy(
         rationale = "Career questions should prefer direct job postings and the student's own profile."
         fetch_budget = 5
         strict_primary_only = False
+        prefer_profile_documents = True
+        preferred_document_roles = ["resume"]
+        governing_state_sources = ["profile_state", "job_requirements"]
+        web_research_mode = "broad"
     elif workflow == "document_guidance" or kind in {"webpage", "document"}:
         primary_source_types = ["general_web", "profile_doc"]
         secondary_source_types = ["degree_page", "admissions_page", "job_page"]
@@ -1531,14 +1574,32 @@ def build_source_policy(
         rationale = "URL and document questions should prioritize the provided page or file before search."
         fetch_budget = 4
         strict_primary_only = False
+        web_research_mode = "broad"
     elif workflow == "academic_planning" and requires_live_data:
         primary_source_types = ["schedule_page", "degree_page"]
-        secondary_source_types = ["certificate_page", "admissions_page", "general_web"]
+        secondary_source_types = ["profile_doc", "certificate_page", "admissions_page", "general_web"]
         prefer_pdfs = False
         tier_order = ["primary", "secondary"]
-        rationale = "Enrollment-style questions should prioritize live schedules first, then official program pages."
+        rationale = "Enrollment-style questions should prioritize live schedules first, then official program pages, while still considering transcript/degree documents."
         fetch_budget = 8
         strict_primary_only = True
+        preferred_document_roles = ["transcript", "degree_plan"]
+        governing_state_sources = ["live_schedule", "official_requirements", "transcript_state"]
+        web_research_mode = "targeted"
+        max_web_passes = 2
+    elif workflow == "academic_planning":
+        primary_source_types = ["profile_doc", "degree_page", "admissions_page"]
+        secondary_source_types = ["schedule_page", "certificate_page", "general_web"]
+        prefer_pdfs = True
+        tier_order = ["primary", "secondary"]
+        rationale = "Academic progression questions should prefer transcript and degree documents first, then use targeted official web research to validate unresolved requirement gaps."
+        fetch_budget = 6
+        strict_primary_only = False
+        prefer_profile_documents = True
+        preferred_document_roles = ["transcript", "degree_plan"]
+        governing_state_sources = ["transcript_state", "profile_state", "official_requirements"]
+        web_research_mode = "targeted"
+        max_web_passes = 2
     elif workflow == "comparison_guidance":
         primary_source_types = ["degree_page", "admissions_page", "profile_doc"]
         secondary_source_types = ["schedule_page", "certificate_page", "general_web"]
@@ -1547,14 +1608,20 @@ def build_source_policy(
         rationale = "Comparison questions should prioritize official program/admissions sources for each option and use secondary sources only as support."
         fetch_budget = 8 if (is_application_targeting or wants_university_selection) else 7
         strict_primary_only = False if (is_application_targeting or wants_university_selection) else True
+        web_research_mode = "broad"
     elif workflow == "eligibility_check":
-        primary_source_types = ["degree_page", "admissions_page", "profile_doc"]
+        primary_source_types = ["profile_doc", "degree_page", "admissions_page"]
         secondary_source_types = ["schedule_page", "certificate_page", "general_web"]
         prefer_pdfs = True
         tier_order = ["primary", "secondary"]
-        rationale = "Eligibility questions should prioritize official requirements, constraints, and admissions/program policy pages."
+        rationale = "Eligibility questions should prefer transcript/profile documents first, then use targeted official requirement checks to resolve blockers."
         fetch_budget = 7
-        strict_primary_only = True
+        strict_primary_only = False
+        prefer_profile_documents = True
+        preferred_document_roles = ["transcript", "degree_plan"]
+        governing_state_sources = ["transcript_state", "official_requirements", "profile_state"]
+        web_research_mode = "targeted"
+        max_web_passes = 2
     elif kind == "certificate":
         primary_source_types = ["certificate_page", "degree_page"]
         secondary_source_types = ["admissions_page", "general_web"]
@@ -1563,6 +1630,7 @@ def build_source_policy(
         rationale = "Certificate questions should prioritize official certificate and related program pages."
         fetch_budget = 6
         strict_primary_only = False
+        web_research_mode = "broad"
     else:
         primary_source_types = ["degree_page", "admissions_page", "profile_doc"]
         secondary_source_types = ["certificate_page", "schedule_page", "general_web"]
@@ -1571,6 +1639,7 @@ def build_source_policy(
         rationale = "Program and requirements questions should prioritize official program pages, admissions pages, and official PDFs."
         fetch_budget = 7
         strict_primary_only = True
+        web_research_mode = "broad"
 
     target_institution = str(target_entity.get("institution", "") or "")
     target_program = str(target_entity.get("program", "") or "")
@@ -1603,6 +1672,12 @@ def build_source_policy(
         "target_level": target_level,
         "max_search_queries": 6 if primary == "academic" else 5,
         "search_retries": 2 if primary in {"academic", "career", "comparison"} else 1,
+        "prefer_profile_documents": prefer_profile_documents,
+        "preferred_document_roles": preferred_document_roles,
+        "governing_state_sources": governing_state_sources,
+        "web_research_mode": web_research_mode,
+        "targeted_web_questions": targeted_web_questions,
+        "max_web_passes": max_web_passes,
     }
 
 
@@ -1753,10 +1828,10 @@ def infer_target_level(
         str(((profile or {}).get("personal", {}) or {}).get("program", "")),
         query or "",
     ]
-    combined = " ".join(texts).lower()
-    if any(word in combined for word in ("master", "masters", "ms ", "m.s", "graduate", "phd", "doctoral")):
+    graduate_score, undergraduate_score = _academic_level_scores(" ".join(texts).lower())
+    if graduate_score >= 2 and graduate_score > undergraduate_score:
         return "graduate"
-    if any(word in combined for word in ("bachelor", "bs ", "b.s", "undergraduate", "freshman", "sophomore")):
+    if undergraduate_score >= 2 and undergraduate_score > graduate_score:
         return "undergraduate"
     return "unknown"
 
@@ -1795,15 +1870,17 @@ def academic_source_relevance(
     if looks_like_course_catalog_source(title, url) and overlap:
         score += 0.6
 
+    graduate_score, undergraduate_score = _academic_level_scores(combined)
+
     if level == "graduate":
-        if _contains_any_term(combined, ("graduate", "master", "masters", "doctoral", "phd")) or "m.s" in combined or "ms " in combined:
+        if graduate_score >= 1:
             score += 0.8
-        if _contains_any_term(combined, ("undergraduate", "baccalaureate", "bachelor", "minor")) or "b.s" in combined or "bs " in combined:
+        if undergraduate_score >= 2 and graduate_score == 0:
             score -= 1.3
     elif level == "undergraduate":
-        if _contains_any_term(combined, ("undergraduate", "bachelor", "baccalaureate", "minor")):
+        if undergraduate_score >= 1:
             score += 0.7
-        if _contains_any_term(combined, ("graduate", "master", "masters", "doctoral", "phd")):
+        if graduate_score >= 2 and undergraduate_score == 0:
             score -= 1.0
 
     score += institution_alignment_score(title, content, url, institution_text)
@@ -1926,8 +2003,9 @@ def course_code_matches_level(
     title: str = "",
     content: str = "",
 ) -> bool:
-    """Conservatively filter course codes that are implausible for the target level."""
-    if level != "graduate":
+    """Conservatively filter only when there is strong evidence of a level mismatch."""
+    normalized_level = str(level or "").strip().lower()
+    if normalized_level not in {"graduate", "undergraduate"}:
         return True
 
     match = re.search(r"(\d{3})", code or "")
@@ -1936,14 +2014,52 @@ def course_code_matches_level(
 
     number = int(match.group(1))
     combined = f"{title} {content}".lower()
-    # Allow courses numbered 100+ — different universities use different
-    # numbering conventions. Only filter out very low numbers (< 100)
-    # that are almost certainly intro/remedial across all systems.
     if number >= 100:
         return True
-    if _contains_any_term(combined, ("graduate", "master", "masters", "doctoral", "phd")) or "m.s" in combined or "ms " in combined:
+    graduate_score, undergraduate_score = _academic_level_scores(combined)
+    if any(token in combined for token in ("prereq", "prerequisite", "foundation", "deficien", "admission", "requirement")):
         return True
-    return False
+    if normalized_level == "graduate":
+        if graduate_score >= 1:
+            return True
+        if undergraduate_score >= 2:
+            return False
+    elif normalized_level == "undergraduate":
+        if undergraduate_score >= 1:
+            return True
+        if graduate_score >= 2 and any(token in combined for token in ("graduate only", "doctoral", "masters", "phd")):
+            return False
+    return True
+
+
+def _academic_level_scores(text: str) -> tuple[int, int]:
+    lowered = str(text or "").lower()
+    graduate_score = 0
+    undergraduate_score = 0
+
+    graduate_terms = (
+        "graduate", "master", "masters", "doctoral", "doctorate", "phd", "ph.d",
+        "postgraduate", "post-grad", "graduate diploma", "m.s", "m.eng", "m.tech", "mba",
+    )
+    undergraduate_terms = (
+        "undergraduate", "bachelor", "bachelors", "baccalaureate", "associate",
+        "freshman", "sophomore", "junior", "senior", "year 1", "year 2", "year 3", "year 4",
+        "minor", "major", "b.s", "b.a", "b.tech",
+    )
+
+    for term in graduate_terms:
+        if term in lowered:
+            graduate_score += 1
+    for term in undergraduate_terms:
+        if term in lowered:
+            undergraduate_score += 1
+
+    if re.search(r"\bms\b", lowered):
+        graduate_score += 1
+    if re.search(r"\bbs\b", lowered):
+        undergraduate_score += 1
+
+    return graduate_score, undergraduate_score
 
 
 def _contains_any_term(text: str, terms: tuple[str, ...]) -> bool:
@@ -2030,7 +2146,7 @@ def _extract_preferences(text: str) -> dict[str, Any]:
 def _extract_blockers(text: str, standing: str, completed_courses: list[str]) -> list[str]:
     blockers = []
     if standing and "first" in standing and not completed_courses:
-        blockers.append("No completed graduate courses are recorded yet.")
+        blockers.append("No completed courses are recorded yet for the current academic stage.")
     if re.search(r"\bdeficienc(y|ies)\b", text, re.I):
         blockers.append("The student may have deficiency-removal requirements.")
     return blockers

@@ -242,7 +242,8 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
 
     # Final deterministic cleanup to reduce redundant hops.
     plan, policy_decisions = apply_runtime_plan_policies(plan, workflow, source_policy)
-    runtime_policy = dict(state.get("runtime_policy", {}) or {})
+    raw_runtime_policy = state.get("runtime_policy", {}) or {}
+    runtime_policy = dict(raw_runtime_policy) if isinstance(raw_runtime_policy, dict) else {}
     runtime_policy["decisions"] = list(runtime_policy.get("decisions", []) or []) + [
         decision.as_dict() for decision in policy_decisions
     ]

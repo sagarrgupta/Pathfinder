@@ -120,6 +120,7 @@ def finalize_structured_advisor(
     complete_rank_options_without_recommendations: bool = True,
 ) -> PathfinderState:
     """Apply common finalization logic for structured advisor nodes."""
+    merged_payload = _normalize_decision_payload(merged_payload)
     working_memory = runtime["working_memory"]
     task_graph = runtime["task_graph"]
     blocked_reasons = list(runtime["blocked_reasons"])
@@ -162,3 +163,101 @@ def finalize_structured_advisor(
         "step_progress": step_progress,
         "next_node": "evaluator",
     }
+
+
+def _normalize_decision_payload(payload: DecisionPayload) -> DecisionPayload:
+    normalized = dict(payload) if isinstance(payload, dict) else {}
+    normalized["answer_outline"] = _normalize_string_list(normalized.get("answer_outline", []))
+    normalized["assumptions"] = _normalize_string_list(normalized.get("assumptions", []))
+    normalized["blocked_reasons"] = _normalize_string_list(normalized.get("blocked_reasons", []))
+    normalized["recommended_items"] = _normalize_item_list(
+        normalized.get("recommended_items", []),
+        default_kind="recommended",
+    )
+    normalized["blocked_or_uncertain_items"] = _normalize_item_list(
+        normalized.get("blocked_or_uncertain_items", []),
+        default_kind="needs_verification",
+    )
+    normalized["source_refs"] = _normalize_source_refs(normalized.get("source_refs", []))
+    normalized["recommendation_paths"] = _normalize_item_list(
+        normalized.get("recommendation_paths", []),
+        default_kind="path",
+    )
+    if not isinstance(normalized.get("student_strategy", {}), dict):
+        normalized["student_strategy"] = {}
+    return normalized
+
+
+def _normalize_string_list(values: Any) -> list[str]:
+    result: list[str] = []
+    for value in values or []:
+        text = str(value or "").strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _normalize_item_list(values: Any, *, default_kind: str) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for value in values or []:
+        if isinstance(value, dict):
+            item = dict(value)
+            if default_kind == "recommended":
+                item.setdefault("label", str(item.get("label", "") or item.get("reason", "") or "Recommendation").strip())
+                item.setdefault("reason", str(item.get("reason", "") or item.get("label", "") or "").strip())
+                item.setdefault("status", str(item.get("status", "") or "recommended").strip())
+                item.setdefault("support_codes", item.get("support_codes", []) if isinstance(item.get("support_codes", []), list) else [])
+                item.setdefault("support_refs", item.get("support_refs", []) if isinstance(item.get("support_refs", []), list) else [])
+                item.setdefault("assumption", str(item.get("assumption", "") or "").strip())
+            elif default_kind == "needs_verification":
+                item.setdefault("label", str(item.get("label", "") or item.get("reason", "") or "Open question").strip())
+                item.setdefault("reason", str(item.get("reason", "") or item.get("label", "") or "").strip())
+                item.setdefault("kind", str(item.get("kind", "") or "needs_verification").strip())
+            else:
+                item.setdefault("label", str(item.get("label", "") or item.get("reason", "") or "Path").strip())
+                item.setdefault("reason", str(item.get("reason", "") or item.get("label", "") or "").strip())
+            normalized.append(item)
+            continue
+
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if default_kind == "recommended":
+            normalized.append({
+                "label": text,
+                "reason": text,
+                "status": "recommended",
+                "support_codes": [],
+                "support_refs": [],
+                "assumption": "",
+            })
+        elif default_kind == "needs_verification":
+            normalized.append({
+                "label": text,
+                "reason": text,
+                "kind": "needs_verification",
+            })
+        else:
+            normalized.append({
+                "label": text,
+                "reason": text,
+            })
+    return normalized
+
+
+def _normalize_source_refs(values: Any) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for value in values or []:
+        if isinstance(value, dict):
+            refs.append({
+                "title": str(value.get("title", "") or "").strip(),
+                "url": str(value.get("url", "") or "").strip(),
+                "excerpt": str(value.get("excerpt", "") or "").strip(),
+                "source_type": str(value.get("source_type", "") or "").strip(),
+                "entity_type": str(value.get("entity_type", "") or "").strip(),
+            })
+        else:
+            text = str(value or "").strip()
+            if text:
+                refs.append({"title": text, "url": "", "excerpt": "", "source_type": "", "entity_type": ""})
+    return refs

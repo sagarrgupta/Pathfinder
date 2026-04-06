@@ -28,6 +28,7 @@ from app.core.quality import (
     infer_target_program,
 )
 from app.core.state import PathfinderState
+from app.services.transcript_state import primary_transcript_state
 from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.course_planner")
@@ -51,6 +52,7 @@ async def course_planner(state: PathfinderState) -> PathfinderState:
         state.get("compacted_session", {}),
         state.get("profile_data", {}),
         state.get("semantic_memory", {}),
+        primary_transcript_state(state.get("transcript_states", []), state.get("semantic_memory", {})),
         state.get("query", ""),
     )
     student_strategy = state.get("student_strategy", {})
@@ -69,7 +71,7 @@ async def course_planner(state: PathfinderState) -> PathfinderState:
     llm_payload = await _llm_course_payload(query, summary, evidence_groups, runtime["handoff_context"])
 
     merged = _merge_payloads(decision_payload, llm_payload)
-    merged["student_strategy"] = dict(student_strategy or {})
+    merged["student_strategy"] = dict(student_strategy) if isinstance(student_strategy, dict) else {}
     merged["recommendation_paths"] = _build_recommendation_paths(
         merged.get("recommended_items", []),
         merged.get("blocked_or_uncertain_items", []),
@@ -142,10 +144,6 @@ def _heuristic_course_payload(
     recommendation_outcome_profile = recommendation_outcome_profile or {}
     """Build a baseline decision payload deterministically."""
     target_program = target_program or str(summary.get("program", {}).get("value", ""))
-    if target_level == "unknown":
-        program_text = target_program.lower()
-        if any(word in program_text for word in ("master", "masters", "graduate", "ms")):
-            target_level = "graduate"
     target_institution = str((summary.get("institution", {}) or {}).get("value", "") or "")
     query_lower = (query or "").lower()
     asks_major_or_electives = any(token in query_lower for token in ("major", "elective", "specialization", "concentration"))
@@ -181,6 +179,9 @@ def _heuristic_course_payload(
     support_refs = []
     goal_text = " ".join(summary.get("goals", {}).get("value", []))
     completed = set(summary.get("completed_courses", {}).get("value", []))
+    raw_transcript_state = summary.get("transcript_state", {}) or {}
+    transcript_state = dict(raw_transcript_state) if isinstance(raw_transcript_state, dict) else {}
+    completed.update(_transcript_course_codes(transcript_state.get("completed_courses", [])))
     availability_records = evidence_groups.get("availability", [])
     course_records = evidence_groups.get("courses", [])
     constraint_records = evidence_groups.get("constraints", [])
@@ -192,6 +193,12 @@ def _heuristic_course_payload(
 
     if constraint_records:
         assumptions.append("Some prerequisite or program-constraint evidence was found and may affect final enrollment eligibility.")
+    transcript_planned_items = _transcript_planned_recommendations(transcript_state, query)
+    if transcript_planned_items:
+        required.extend(transcript_planned_items)
+    for milestone_note in _transcript_milestone_notes(transcript_state):
+        if milestone_note not in assumptions:
+            assumptions.append(milestone_note)
 
     program_model = _compile_academic_program_model(requirement_records, course_records, summary, target_program)
 
@@ -300,7 +307,7 @@ def _heuristic_course_payload(
         and record.get("fit_tier") in {"direct", "adjacent", ""}
     ]
 
-    if not direct_primary_courses and not direct_primary_requirements:
+    if not direct_primary_courses and not direct_primary_requirements and not transcript_planned_items:
         return {
             "decision_type": "course_planning",
             "answer_outline": [
@@ -313,7 +320,7 @@ def _heuristic_course_payload(
                 "kind": "blocked",
             }],
             "assumptions": assumptions,
-            "next_best_action": "Retrieve the official program page, official course catalog, or current graduate schedule and then rank the next-semester options.",
+            "next_best_action": "Retrieve the official program page, official course catalog, or current schedule of offerings and then rank the next-term options.",
             "source_refs": _dedupe_source_refs(support_refs)[:8],
             "verified_requirements": _render_verified_requirements(program_model),
             "semester_plan_options": [],
@@ -330,12 +337,12 @@ def _heuristic_course_payload(
             ],
             "recommended_items": sample_plan[0].get("courses", [])[:6] if sample_plan else [],
             "blocked_or_uncertain_items": [{
-                "label": "Program-matched graduate course set not verified",
+                "label": "Program-matched course set not verified",
                 "reason": "Live schedule availability is not confirmed; this plan is catalog-based and should be verified against the registrar schedule.",
                 "kind": "needs_verification",
             }],
             "assumptions": assumptions,
-            "next_best_action": "Use the official graduate program page and current graduate schedule, then I can rank the best next-semester options.",
+            "next_best_action": "Use the official program page and current schedule of offerings, then I can rank the best next-term options.",
             "source_refs": _dedupe_source_refs(support_refs)[:8],
             "verified_requirements": _render_verified_requirements(program_model),
             "semester_plan_options": sample_plan,
@@ -665,14 +672,18 @@ def _record_matches_program_context(
     number_match = re.search(r"(\d{3})", code)
     if target_level == "graduate" and number_match:
         number = int(number_match.group(1))
-        # Only filter out very low course numbers (< 100) that are almost
-        # certainly intro/remedial. Different universities use different
-        # numbering conventions, so we cannot assume < 200 = undergraduate.
+        # Only down-rank very low numbers when the surrounding evidence does
+        # not explicitly frame them as requirements, admission deficiencies,
+        # or prerequisite-clearing courses.
         if number < 100:
             prereq_context = f"{title} {excerpt}".lower()
-            if source_type == "schedule_page":
-                return False
-            if "prereq" not in prereq_context and "deficien" not in prereq_context and "admission" not in prereq_context:
+            if (
+                "prereq" not in prereq_context
+                and "deficien" not in prereq_context
+                and "admission" not in prereq_context
+                and "foundation" not in prereq_context
+                and "requirement" not in prereq_context
+            ):
                 return False
     if code and not course_code_matches_level(code, target_level, title, excerpt):
         return False
@@ -770,9 +781,9 @@ def _compile_academic_program_model(
             if breadth_match:
                 model["breadth_units"] = int(breadth_match.group(1))
         if re.search(r"\bcandidacy\b", text, re.I):
-            model["milestones"].append("Advancement to candidacy required before culminating experience.")
-        if re.search(r"\bculminating\b|\bthesis\b|\bproject\b", text, re.I):
-            model["milestones"].append("Culminating experience planning is required in later semesters.")
+            model["milestones"].append("A candidacy or classification milestone appears in the official requirements.")
+        if re.search(r"\bculminating\b|\bthesis\b|\bproject\b|\bcapstone\b|\binternship\b", text, re.I):
+            model["milestones"].append("A culminating or end-stage completion requirement appears in the official requirements.")
 
         for code in _extract_course_codes_from_text(text):
             if code in seen_codes:
@@ -826,7 +837,7 @@ def _build_semester_plan_options(
     ranked_courses: list[dict[str, Any]],
     query: str,
 ) -> list[dict[str, Any]]:
-    wants_long_range = bool(re.search(r"\b(2\s*year|two\s*year|semester[- ]wise|spring\s+20\d{2}|fall\s+20\d{2}|graduate\s+by)\b", query, re.I))
+    wants_long_range = _wants_long_range_plan(query)
     if not ranked_courses:
         return []
 
@@ -869,9 +880,10 @@ def _merge_planner_summary(
     compacted_session: dict[str, Any],
     profile_data: dict[str, Any],
     semantic_memory: dict[str, Any],
+    transcript_state: dict[str, Any],
     query: str,
 ) -> dict[str, Any]:
-    merged = dict(session_summary or {})
+    merged = dict(session_summary) if isinstance(session_summary, dict) else {}
     stable = (compacted_session or {}).get("stable_facts", {}) or {}
     personal = (profile_data or {}).get("personal", {}) or {}
     corrections = list((session_summary or {}).get("recent_corrections", []))
@@ -899,7 +911,10 @@ def _merge_planner_summary(
     if not completed_courses:
         completed_courses = list(stable.get("completed_courses", []) or [])
     if not completed_courses:
-        completed_courses = [c.get("code", "") for c in (profile_data or {}).get("courses", []) if c.get("code")]
+        completed_courses = [_course_code_from_profile_entity(c) for c in (profile_data or {}).get("courses", [])]
+        completed_courses = [code for code in completed_courses if code]
+    if transcript_state:
+        completed_courses = _dedupe_sequence(completed_courses + _transcript_course_codes(transcript_state.get("completed_courses", [])))
 
     goals = list((session_summary.get("goals", {}) or {}).get("value", []) or [])
     if not goals:
@@ -929,6 +944,7 @@ def _merge_planner_summary(
     merged["standing"] = {"known": bool(standing_value), "value": standing_value}
     merged["completed_courses"] = {"known": True, "value": _dedupe_sequence(completed_courses)}
     merged["goals"] = {"known": bool(goals), "value": _dedupe_sequence([goal for goal in goals if goal])}
+    merged["transcript_state"] = transcript_state or {}
     merged["recent_corrections"] = corrections
     return merged
 
@@ -939,7 +955,11 @@ def _extract_institution_from_query(query: str) -> str:
 
 
 def _extract_program_from_query(query: str) -> str:
-    match = re.search(r"\b(?:in|for)\s+(masters?|ms|m\.s\.)\s+(?:in\s+)?([A-Za-z][A-Za-z0-9&/,\- ]{2,80})\b", query or "", re.I)
+    match = re.search(
+        r"\b(?:in|for)\s+((?:masters?|ms|m\.s\.|bachelors?|bs|b\.s\.|phd|doctoral|certificate|diploma))\s+(?:in\s+)?([A-Za-z][A-Za-z0-9&/,\- ]{2,80})\b",
+        query or "",
+        re.I,
+    )
     if not match:
         return ""
     degree = match.group(1).strip()
@@ -948,7 +968,7 @@ def _extract_program_from_query(query: str) -> str:
 
 
 def _extract_semester_from_query(query: str) -> str:
-    match = re.search(r"\b(first|second|third|fourth|\d(?:st|nd|rd|th))\s+semester\b", query or "", re.I)
+    match = re.search(r"\b(first|second|third|fourth|\d(?:st|nd|rd|th))\s+(semester|term|quarter)\b", query or "", re.I)
     return match.group(0).strip() if match else ""
 
 
@@ -957,11 +977,23 @@ def _enforce_recommendation_support(payload: DecisionPayload) -> DecisionPayload
         return {}
 
     source_refs = payload.get("source_refs", [])
-    ref_urls = {ref.get("url", "") for ref in source_refs if ref.get("url")}
+    ref_urls = {
+        ref.get("url", "")
+        for ref in source_refs
+        if isinstance(ref, dict) and ref.get("url")
+    }
     validated = dict(payload)
     kept = []
     blocked = list(payload.get("blocked_or_uncertain_items", []))
     for item in payload.get("recommended_items", []):
+        if not isinstance(item, dict):
+            if str(item or "").strip():
+                blocked.append({
+                    "label": str(item).strip(),
+                    "reason": "Removed because the recommendation item was not structured well enough to validate support.",
+                    "kind": "needs_verification",
+                })
+            continue
         refs = item.get("support_refs", [])
         if refs:
             urls = {ref.get("url", "") for ref in refs if isinstance(ref, dict) and ref.get("url")}
@@ -991,3 +1023,82 @@ def _planner_stop_reason(payload: DecisionPayload, blocked_reasons: list[str]) -
     if blocked_reasons:
         return "partial_answer"
     return ""
+
+
+def _course_code_from_profile_entity(course: dict[str, Any]) -> str:
+    code = str(course.get("code", "") or "").strip()
+    if code:
+        return code
+    name = str(course.get("name", "") or "")
+    match = re.search(r"\b([A-Z]{2,4}\s*\d{3}[A-Z]?)\b", name)
+    return " ".join(match.group(1).split()) if match else ""
+
+
+def _transcript_course_codes(courses: list[dict[str, Any]]) -> list[str]:
+    codes = []
+    for course in courses or []:
+        code = str(course.get("code", "") or "").strip()
+        if code:
+            codes.append(code)
+    return _dedupe_sequence(codes)
+
+
+def _transcript_planned_recommendations(transcript_state: dict[str, Any], query: str) -> list[dict[str, Any]]:
+    if not transcript_state:
+        return []
+    if not _is_near_term_course_selection_query(query, transcript_state):
+        return []
+    upcoming_term = str((transcript_state.get("summary", {}) or {}).get("upcoming_term", "") or "")
+    recommendations = []
+    for course in transcript_state.get("planned_courses", [])[:4]:
+        code = str(course.get("code", "") or "").strip()
+        title = str(course.get("title", "") or "").strip()
+        if not code:
+            continue
+        recommendations.append({
+            "label": f"{code} {title}".strip(),
+                "reason": (
+                    f"This course already appears on your transcript for {upcoming_term or 'the upcoming term'}, "
+                    "so it is the strongest transcript-backed near-term option."
+                ),
+            "status": "likely_next",
+            "support_codes": [code],
+            "support_refs": [],
+            "assumption": "",
+        })
+    return recommendations
+
+
+def _transcript_milestone_notes(transcript_state: dict[str, Any]) -> list[str]:
+    notes = []
+    for milestone in transcript_state.get("milestones", [])[:3]:
+        description = str(milestone.get("description", "") or "").strip()
+        status = str(milestone.get("status", "") or "").strip()
+        if description and status:
+            notes.append(f"Transcript milestone detected: {description} ({status}).")
+        elif description:
+            notes.append(f"Transcript milestone detected: {description}.")
+    return notes
+
+
+def _wants_long_range_plan(query: str) -> bool:
+    lowered = (query or "").lower()
+    return bool(
+        re.search(r"\b(2\s*year|two\s*year|semester[- ]wise|year[- ]wise|graduate\s+by|finish\s+by|complete\s+by)\b", lowered)
+        or re.search(r"\b(spring|fall|summer|winter|autumn)\s+20\d{2}\b", lowered)
+        or any(token in lowered for token in ("roadmap", "course sequence", "plan out", "long term"))
+    )
+
+
+def _is_near_term_course_selection_query(query: str, transcript_state: dict[str, Any]) -> bool:
+    lowered = (query or "").lower()
+    if any(
+        token in lowered
+        for token in (
+            "next semester", "next term", "next quarter", "upcoming term",
+            "which courses", "what should i take", "what classes", "course selection",
+            "this semester", "this term", "coming term",
+        )
+    ):
+        return True
+    return bool((transcript_state.get("planned_courses", []) or []) and any(token in lowered for token in ("take", "register", "enroll", "plan")))

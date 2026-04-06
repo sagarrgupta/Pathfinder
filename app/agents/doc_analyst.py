@@ -9,6 +9,7 @@ Processes uploaded documents through the adaptive pipeline:
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -19,6 +20,7 @@ from app.adapters.embeddings.ollama import get_embeddings
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import (
     store_document_node,
+    store_evidence,
     store_extracted_entities,
 )
 from app.adapters.neo4j.vector_store import store_chunks
@@ -30,6 +32,8 @@ from app.core.prompts import (
 )
 from app.core.state import PathfinderState
 from app.services.execution_registry import execute_document_ingestion
+from app.services.document_roles import infer_document_role
+from app.services.transcript_state import build_transcript_state
 from app.services.runtime_recovery import (
     recovery_for_document_embedding_failure,
     recovery_for_document_extraction_failure,
@@ -48,6 +52,7 @@ _ENTITY_EXTRACTION_USER = DOC_ANALYST_ENTITY_EXTRACTION_USER_PROMPT
 async def doc_analyst(state: PathfinderState) -> PathfinderState:
     """Process uploaded files: extract, chunk, embed, store."""
     files = state.get("files", [])
+    files = list(files) if isinstance(files, list) else []
     session_id = state.get("session_id", "")
     student_id = state.get("student_id", "")
     is_global = state.get("is_global_upload", False)
@@ -56,6 +61,8 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
     step_progress = list(state.get("step_progress", []))
     all_entities: list[dict[str, Any]] = []
     total_chunks = 0
+    document_roles: list[dict[str, Any]] = []
+    transcript_states: list[dict[str, Any]] = []
     recovery_events = list(state.get("recovery_events", []))
 
     if not files:
@@ -71,6 +78,8 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
     llm = get_text_llm()
 
     for file_info in files:
+        if not isinstance(file_info, dict):
+            continue
         filename = file_info.get("filename", "document.pdf")
         content = file_info.get("content", b"")
 
@@ -104,6 +113,31 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
             )
             continue
 
+        inferred_role = infer_document_role(filename, full_text, file_type=file_type)
+        document_roles.append({
+            "document_id": doc_id,
+            "filename": filename,
+            **inferred_role,
+        })
+        step_progress.append(
+            f"Inferred {inferred_role.get('role', 'general_document')} role for {filename}"
+        )
+
+        if inferred_role.get("role") == "transcript":
+            transcript_state = build_transcript_state(full_text, filename)
+            transcript_states.append({
+                "document_id": doc_id,
+                "filename": filename,
+                "role": "transcript",
+                "state": transcript_state,
+            })
+            step_progress.append(
+                f"Built transcript state for {filename}: "
+                f"{len(transcript_state.get('completed_courses', []))} completed, "
+                f"{len(transcript_state.get('planned_courses', []))} planned, "
+                f"{len(transcript_state.get('milestones', []))} milestones"
+            )
+
         # Step 2: Store document node
         await store_document_node(
             document_id=doc_id,
@@ -111,7 +145,30 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
             scope=scope,
             student_id=student_id,
             session_id=session_id if scope == "session" else None,
+            doc_type=inferred_role.get("role", "general_document"),
+            file_type=file_type,
+            document_role=inferred_role.get("role", "general_document"),
+            role_confidence=float(inferred_role.get("confidence", 0.0) or 0.0),
+            role_signals=(
+                list(inferred_role.get("signals", []) or [])
+                if isinstance(inferred_role.get("signals", []), list)
+                else []
+            ),
         )
+        if inferred_role.get("role") == "transcript":
+            await store_evidence(
+                student_id=student_id,
+                source_type="transcript_state",
+                content=json.dumps(transcript_states[-1]["state"], ensure_ascii=True),
+                source_ref=f"doc:{doc_id}",
+                session_id=session_id if scope == "session" else None,
+                metadata={
+                    "document_id": doc_id,
+                    "filename": filename,
+                    "document_role": "transcript",
+                    "summary": transcript_states[-1]["state"].get("summary", {}),
+                },
+            )
 
         # Step 3: Chunk and embed
         text_chunks = text_splitter.split_text(full_text)
@@ -185,6 +242,8 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         **state,
         "files": [],  # Clear binary file data — no longer needed after processing
         "extracted_entities": all_entities,
+        "document_roles": document_roles,
+        "transcript_states": transcript_states,
         "recovery_events": recovery_events,
         "step_progress": step_progress,
         "next_node": _determine_next(state),

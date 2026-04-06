@@ -68,6 +68,9 @@ class PathfinderState(TypedDict, total=False):
     latest_ingestion_result: dict[str, Any]   # Last in-turn memory ingestion summary for debugging/tracing
     conflicts: list[dict[str, Any]]           # Retrieved memory/profile conflicts for the current turn
     extracted_entities: list[dict[str, Any]]  # Entities extracted from documents
+    document_roles: list[dict[str, Any]]      # Inferred semantic roles for uploaded documents
+    transcript_states: list[dict[str, Any]]   # Structured transcript state derived from uploaded transcripts
+    targeted_web_questions: list[str]         # Gap-driven follow-up questions for web research
     evidence_records: list[dict[str, Any]]    # Typed evidence extracted from web/profile/doc sources
     decision_payload: dict[str, Any]          # Structured planner output used for final response
     tool_call_log: list[dict[str, Any]]       # Provenance log of tool calls/results used this turn

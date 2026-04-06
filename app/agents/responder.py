@@ -6,6 +6,7 @@ and prepares the output for SSE streaming.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -33,7 +34,8 @@ async def responder(state: PathfinderState) -> PathfinderState:
     is_blocked = state.get("is_blocked", False)
     block_reason = state.get("block_reason", "")
     stop_reason = str(state.get("stop_reason", "") or "")
-    decision_payload = state.get("decision_payload", {})
+    raw_decision_payload = state.get("decision_payload", {})
+    decision_payload = raw_decision_payload if isinstance(raw_decision_payload, dict) else {}
     evidence_pack = state.get("evidence_pack", {})
 
     step_progress = list(state.get("step_progress", []))
@@ -408,7 +410,7 @@ def _merge_citations_with_payload(
 ) -> list[dict[str, Any]]:
     """Ensure payload support refs are surfaced as citations."""
     merged = list(citations)
-    seen = {(c.get("source", ""), c.get("metadata", {}).get("title", "")) for c in merged}
+    seen = {(c.get("source", ""), _metadata_dict(c.get("metadata")).get("title", "")) for c in merged}
     for ref in payload.get("source_refs", []):
         if not isinstance(ref, dict):
             continue
@@ -427,3 +429,16 @@ def _merge_citations_with_payload(
             },
         })
     return merged
+
+
+def _metadata_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}

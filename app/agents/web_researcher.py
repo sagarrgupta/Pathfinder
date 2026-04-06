@@ -60,6 +60,8 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     target_institution = str(((session_summary.get("institution", {}) or {}).get("value", "")) or "")
     preferred_domains = _preferred_domains(profile, query)
     source_policy = state.get("source_policy", {})
+    targeted_questions = [str(item).strip() for item in (state.get("targeted_web_questions", []) or source_policy.get("targeted_web_questions", []) or []) if str(item).strip()]
+    web_research_mode = str(source_policy.get("web_research_mode", "") or "").strip().lower() or "broad"
     if source_policy.get("target_institution"):
         target_institution = str(source_policy.get("target_institution", "") or target_institution)
     if source_policy.get("target_program"):
@@ -76,7 +78,10 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
         task_graph = start_task(task_graph, "retrieve_live_schedule")
 
     step_progress = list(state.get("step_progress", []))
-    step_progress.append("Searching the web for relevant information...")
+    if targeted_questions and web_research_mode == "targeted":
+        step_progress.append(f"Validating unresolved questions with targeted web research ({len(targeted_questions)} prompts)...")
+    else:
+        step_progress.append("Searching the web for relevant information...")
     tool_call_log = _trim_tool_log(list(state.get("tool_call_log", [])))
 
     all_results: list[dict[str, Any]] = []
@@ -158,6 +163,7 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     else:
         search_queries = await _generate_smart_queries(query, intent, profile)
 
+    search_queries = _merge_targeted_queries(targeted_questions, search_queries, web_research_mode)
     search_queries = _expand_queries(
         search_queries,
         query,
@@ -167,9 +173,11 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     )
     max_search_queries = int(source_policy.get("max_search_queries", 6))
     search_retries = max(1, int(source_policy.get("search_retries", 1)))
+    if web_research_mode == "targeted" and targeted_questions:
+        max_search_queries = max(max_search_queries, len(targeted_questions))
     search_queries = search_queries[:max_search_queries]
 
-    log.info("Web researcher: running %d queries: %s", len(search_queries), search_queries)
+    log.info("Web researcher: mode=%s running %d queries: %s", web_research_mode, len(search_queries), search_queries)
 
     # ── Step 3: Execute search queries through the fallback chain ────
     for sq in search_queries:
@@ -479,6 +487,7 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
         "task_graph": task_graph,
         "tool_call_log": tool_call_log,
         "step_progress": step_progress,
+        "targeted_web_questions": targeted_questions,
         "next_node": next_node,
     }
 
@@ -632,6 +641,24 @@ def _build_fallback_queries(
     return unique[:3]
 
 
+def _merge_targeted_queries(targeted_questions: list[str], generated_queries: list[str], mode: str) -> list[str]:
+    if not targeted_questions:
+        return generated_queries
+    if mode == "targeted":
+        combined = list(targeted_questions) + list(generated_queries)
+    else:
+        combined = list(generated_queries) + list(targeted_questions)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in combined:
+        cleaned = " ".join(str(value).split()).strip()
+        lowered = cleaned.lower()
+        if cleaned and lowered not in seen:
+            seen.add(lowered)
+            deduped.append(cleaned)
+    return deduped
+
+
 def _preferred_domains(profile: dict[str, Any], query: str) -> list[str]:
     """Infer official or high-trust domains from the student's context."""
     domains: list[str] = []
@@ -664,7 +691,9 @@ def _expand_queries(
 
     target_program = str(source_policy.get("target_program", "") or "").strip()
     target_institution = str(source_policy.get("target_institution", "") or "").strip()
+    target_level = str(source_policy.get("target_level", "") or "").strip().lower()
     wants_live = bool(source_policy.get("requires_live_data"))
+    level_label = _level_query_label(target_level)
 
     if intent in {"academic", "research"} and preferred_domains:
         domain = preferred_domains[0]
@@ -672,17 +701,17 @@ def _expand_queries(
         expanded.append(f"site:{domain} official catalog {query}")
         expanded.append(f"site:{domain} schedule requirements {query}")
         if target_program:
-            expanded.append(f"site:{domain} \"{target_program}\" graduate requirements")
+            expanded.append(f"site:{domain} \"{target_program}\" {level_label} requirements")
             expanded.append(f"site:{domain} \"{target_program}\" course catalog")
         if target_institution:
-            expanded.append(f"site:{domain} \"{target_institution}\" \"{target_program or 'graduate'}\"")
+            expanded.append(f"site:{domain} \"{target_institution}\" \"{target_program or level_label}\"")
         if wants_live:
-            expanded.append(f"site:{domain} class schedule graduate {target_program or query}")
+            expanded.append(f"site:{domain} class schedule {level_label} {target_program or query}")
         if source_policy.get("prefer_pdfs"):
             expanded.append(f"site:{domain} filetype:pdf {query}")
     elif intent in {"academic", "research"} and target_institution:
         expanded.append(f"\"{target_institution}\" {target_program or ''} official catalog")
-        expanded.append(f"\"{target_institution}\" {target_program or ''} graduate requirements")
+        expanded.append(f"\"{target_institution}\" {target_program or ''} {level_label} requirements")
         if wants_live:
             expanded.append(f"\"{target_institution}\" class schedule {target_program or ''}")
 
@@ -697,6 +726,13 @@ def _expand_queries(
             seen.add(lowered)
             unique.append(cleaned)
     return unique[:6]
+
+
+def _level_query_label(level: str) -> str:
+    lowered = str(level or "").strip().lower()
+    if lowered in {"graduate", "undergraduate", "doctoral", "certificate"}:
+        return lowered
+    return "program"
 
 
 def _accepted_domains_from_candidates(candidates: list[dict[str, Any]]) -> list[str]:

@@ -43,6 +43,7 @@ def build_request_plan(query: str, files: list[dict] | None = None, advisor_mode
         return RequestPlan(
             intent_hint="greeting",
             workflow_hint="general_guidance",
+            advisor_mode=normalized_mode,
             plan_hint=[],
             skip_llm_routing=True,
             has_files=has_files,
