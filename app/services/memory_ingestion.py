@@ -10,7 +10,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.adapters.embeddings.ollama import get_embeddings
+from app.adapters.embeddings.ollama import aembed_query
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import (
     ensure_student,
@@ -509,8 +509,7 @@ async def ingest_memory(
     if not text:
         return {"evidence": None, "candidate_facts": [], "memory_items": [], "student_updates": {}}
 
-    embeddings = get_embeddings()
-    embedding = embeddings.embed_query(text[:4000])
+    embedding = await aembed_query(text[:4000])
 
     evidence = await store_evidence(
         student_id,
@@ -553,7 +552,7 @@ async def ingest_memory(
         if fact_key in seen_fact_keys:
             continue
         seen_fact_keys.add(fact_key)
-        fact_embedding = embeddings.embed_query(value)
+        fact_embedding = await aembed_query(value)
         stored_fact = await store_candidate_fact(
             student_id,
             fact_type,
@@ -587,7 +586,7 @@ async def ingest_memory(
         summary = str(memory.get("summary", "")).strip()
         if not summary:
             continue
-        mem_embedding = embeddings.embed_query(summary)
+        mem_embedding = await aembed_query(summary)
         stored_memory = await store_memory_item(
             student_id,
             str(memory.get("memory_type", "generic")),

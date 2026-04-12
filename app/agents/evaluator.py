@@ -13,7 +13,7 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from app.adapters.llm.lmstudio import get_json_llm, get_text_llm
+from app.adapters.llm.lmstudio import get_structured_llm, get_text_llm
 from app.adapters.neo4j.graph_store import store_extracted_entities, update_student
 from app.core.prompts import (
     EVALUATOR_PROMPT,
@@ -70,7 +70,7 @@ async def evaluator(state: PathfinderState) -> PathfinderState:
             "next_node": "responder",
         }
 
-    llm = get_json_llm()
+    llm = get_structured_llm("evaluator")
 
     # Compile sources
     source_documents = list(evidence_pack.get("document_records", []) or documents)

@@ -11,7 +11,7 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from app.adapters.llm.lmstudio import get_text_llm
+from app.adapters.llm.lmstudio import get_structured_llm, get_text_llm
 from app.adapters.neo4j.graph_store import get_full_profile
 from app.core.prompts import ORCHESTRATOR_SYSTEM_PROMPT
 from app.core.quality import (
@@ -157,7 +157,7 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         if request_plan_reasons:
             step_progress.append(f"Using deterministic request plan: {', '.join(request_plan_reasons)}")
     elif workflow == "general_guidance":
-        llm = get_text_llm()
+        llm = get_structured_llm("orchestrator")
         response = await llm.ainvoke([
             SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT),
             HumanMessage(content=f"Context:\n{context}\n\nUser query: {query}"),

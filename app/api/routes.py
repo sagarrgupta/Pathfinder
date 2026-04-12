@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -29,6 +30,7 @@ from app.adapters.neo4j.graph_store import (
     reset_student_data,
     reset_all_data,
     run_cypher,
+    execute_cypher,
     store_memory_item,
     update_saved_recommendation_outcome,
     update_entity,
@@ -99,6 +101,113 @@ def _metadata_dict(value: Any) -> dict[str, Any]:
             return {}
     return {}
 
+
+def _profile_info_from_student(student: dict[str, Any]) -> ProfileInfo:
+    """Normalize a raw student record into the API response shape."""
+    return ProfileInfo(
+        student_id=student.get("id", ""),
+        name=student.get("name", "Student"),
+        email=student.get("email"),
+        university=student.get("university"),
+        program=student.get("program"),
+        created_at=student.get("created_at"),
+        updated_at=student.get("updated_at"),
+        completeness=float(student.get("completeness", 0.0) or 0.0),
+    )
+
+
+def _saved_recommendation_info_from_record(
+    record: dict[str, Any],
+    *,
+    fallback_student_id: str,
+    default_title: str | None = None,
+    default_recommendation_type: str | None = None,
+    default_actions: list[str] | None = None,
+    default_source_session_id: str | None = None,
+    default_source_query: str | None = None,
+) -> SavedRecommendationInfo:
+    """Normalize a stored memory record into a saved recommendation response."""
+    metadata = _metadata_dict(record.get("metadata"))
+    status = metadata.get("status", "active")
+    return SavedRecommendationInfo(
+        id=record.get("id", ""),
+        student_id=record.get("student_id", fallback_student_id),
+        title=metadata.get("title") or default_title or record.get("summary", "Saved recommendation"),
+        summary=record.get("summary", ""),
+        recommendation_type=default_recommendation_type or str(record.get("memory_type", "saved_plan")).replace("saved_", ""),
+        actions=metadata.get("actions", default_actions or []),
+        source_session_id=metadata.get("source_session_id", default_source_session_id),
+        source_query=metadata.get("source_query", default_source_query),
+        created_at=record.get("created_at"),
+        status=status,
+        next_review_at=metadata.get("next_review_at"),
+        follow_up_prompt=metadata.get("follow_up_prompt"),
+        outcome_status=metadata.get("outcome_status", status),
+        outcome_notes=metadata.get("outcome_notes"),
+        outcome_updated_at=metadata.get("outcome_updated_at"),
+        metadata=metadata,
+    )
+
+
+def _parse_replace_filenames(value: str) -> set[str]:
+    """Parse a comma-separated replacement list into unique filenames."""
+    return {name.strip() for name in value.split(",") if name.strip()}
+
+
+def _validate_upload_filename(filename: str | None) -> str:
+    """Validate that an uploaded filename exists and matches allowed types."""
+    if not filename:
+        raise HTTPException(400, "Filename is required")
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in settings.ALLOWED_FILE_TYPES:
+        allowed = ", ".join(settings.ALLOWED_FILE_TYPES)
+        raise HTTPException(400, f"Unsupported file type '{ext}'. Allowed: {allowed}")
+    return filename
+
+
+def _enforce_upload_size(content: bytes, *, filename: str) -> None:
+    """Reject uploads larger than the configured file-size limit."""
+    if len(content) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
+        raise HTTPException(413, f"File {filename} exceeds {settings.MAX_FILE_SIZE_MB}MB limit")
+
+
+async def _read_upload_file(file: UploadFile) -> dict[str, Any]:
+    """Read and validate one FastAPI uploaded file."""
+    filename = _validate_upload_filename(file.filename)
+    content = await file.read()
+    _enforce_upload_size(content, filename=filename)
+    return {
+        "filename": filename,
+        "content": content,
+        "size": len(content),
+        "content_type": file.content_type,
+    }
+
+
+def _profile_confidence(profile: dict[str, Any]) -> float:
+    """Estimate profile confidence from resolved candidate facts first."""
+    candidate_facts = profile.get("candidate_facts", [])
+    resolved_candidates = [item for item in candidate_facts if item.get("status") == "resolved"]
+    confidence_values = [float(item.get("confidence", 0.0) or 0.0) for item in resolved_candidates] or [
+        float(item.get("confidence", 0.0) or 0.0) for item in candidate_facts
+    ]
+    return round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else 0.0
+
+
+def _profile_memory_overview(profile: dict[str, Any]) -> dict[str, Any]:
+    """Build the profile memory summary returned to the frontend."""
+    candidate_facts = profile.get("candidate_facts", [])
+    fact_summary = profile.get("fact_summary", {})
+    return {
+        "candidate_facts": len(candidate_facts),
+        "memory_items": len(profile.get("memory_items", [])),
+        "evidence": len(profile.get("evidence", [])),
+        "conflicts": len([item for item in candidate_facts if item.get("status") == "conflicted"]),
+        "confirmed": int(fact_summary.get("confirmed_candidate_facts", 0) or 0),
+        "reinforced": int(fact_summary.get("reinforced_candidate_facts", 0) or 0),
+        "inferred": int(fact_summary.get("inferred_candidate_facts", 0) or 0),
+    }
+
 # ── Runtime state ────────────────────────────────────────────────
 _topic_guard_enabled: bool = settings.TOPIC_GUARD_ENABLED
 _advisor_mode: str = "adaptive"
@@ -124,9 +233,7 @@ async def chat(
     files = list(files) if isinstance(files, list) else []
 
     # Parse replace filenames (comma-separated list of filenames to replace)
-    replace_set = set(
-        name.strip() for name in replace_filenames.split(",") if name.strip()
-    )
+    replace_set = _parse_replace_filenames(replace_filenames)
 
     # Delete existing documents that are being replaced
     for fname in replace_set:
@@ -136,17 +243,7 @@ async def chat(
             log.info("Chat: replaced existing document before re-upload: %s", fname)
 
     # Read uploaded files
-    file_data = []
-    for f in files:
-        content = await f.read()
-        if len(content) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
-            raise HTTPException(413, f"File {f.filename} exceeds {settings.MAX_FILE_SIZE_MB}MB limit")
-        file_data.append({
-            "filename": f.filename,
-            "content": content,
-            "size": len(content),
-            "content_type": f.content_type,
-        })
+    file_data = [await _read_upload_file(upload) for upload in files]
 
     async def event_stream():
         try:
@@ -224,19 +321,7 @@ async def chat(
 async def get_profiles():
     """List local student profiles."""
     students = await list_students()
-    return [
-        ProfileInfo(
-            student_id=student.get("id", ""),
-            name=student.get("name", "Student"),
-            email=student.get("email"),
-            university=student.get("university"),
-            program=student.get("program"),
-            created_at=student.get("created_at"),
-            updated_at=student.get("updated_at"),
-            completeness=float(student.get("completeness", 0.0) or 0.0),
-        )
-        for student in students
-    ]
+    return [_profile_info_from_student(student) for student in students]
 
 
 @router.post("/profiles", response_model=ProfileInfo)
@@ -248,16 +333,7 @@ async def create_profile(body: ProfileCreate):
         university=body.university,
         program=body.program,
     )
-    return ProfileInfo(
-        student_id=student.get("id", ""),
-        name=student.get("name", "Student"),
-        email=student.get("email"),
-        university=student.get("university"),
-        program=student.get("program"),
-        created_at=student.get("created_at"),
-        updated_at=student.get("updated_at"),
-        completeness=float(student.get("completeness", 0.0) or 0.0),
-    )
+    return _profile_info_from_student(student)
 
 
 # ── Document Upload ──────────────────────────────────────────────
@@ -281,33 +357,20 @@ async def upload_document(
 ):
     """Upload a document to the student profile or session."""
     resolved_student_id = await _resolve_student_id(student_id)
-
-    content = await file.read()
-    if len(content) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
-        raise HTTPException(413, f"File exceeds {settings.MAX_FILE_SIZE_MB}MB limit")
-
-    if not file.filename:
-        raise HTTPException(400, "Filename is required")
-
-    import os
-
-    ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in settings.ALLOWED_FILE_TYPES:
-        allowed = ", ".join(settings.ALLOWED_FILE_TYPES)
-        raise HTTPException(400, f"Unsupported file type '{ext}'. Allowed: {allowed}")
+    upload = await _read_upload_file(file)
 
     # If replacing, delete the existing document first
     if replace.lower() == "true":
-        existing = await find_document_by_filename(file.filename, resolved_student_id)
+        existing = await find_document_by_filename(upload["filename"], resolved_student_id)
         if existing and existing.get("id"):
             await delete_document_cascade(existing["id"], resolved_student_id)
-            log.info("Replaced existing document: %s", file.filename)
+            log.info("Replaced existing document: %s", upload["filename"])
 
     # Process through the registered document ingestion pipeline
     from app.agents.doc_analyst import doc_analyst as process_doc
 
     state: dict[str, Any] = {
-        "files": [{"filename": file.filename, "content": content, "size": len(content), "content_type": file.content_type}],
+        "files": [upload],
         "session_id": session_id or "",
         "student_id": resolved_student_id,
         "is_global_upload": scope == "global",
@@ -322,7 +385,7 @@ async def upload_document(
 
     return DocumentUploadResponse(
         document_id=f"doc_uploaded",
-        filename=file.filename,
+        filename=upload["filename"],
         scope=scope,
         document_role=first_role.get("role", "general_document"),
         role_confidence=float(first_role.get("confidence", 0.0) or 0.0),
@@ -339,21 +402,6 @@ async def get_profile(student_id: Optional[str] = Query(default=None)):
     """Get the student's full profile from the knowledge graph."""
     resolved_student_id = await _resolve_student_id(student_id)
     profile = await get_full_profile(resolved_student_id)
-    candidate_facts = profile.get("candidate_facts", [])
-    resolved_candidates = [item for item in candidate_facts if item.get("status") == "resolved"]
-    confidence_values = [float(item.get("confidence", 0.0) or 0.0) for item in resolved_candidates] or [
-        float(item.get("confidence", 0.0) or 0.0) for item in candidate_facts
-    ]
-    confidence = round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else 0.0
-    memory_overview = {
-        "candidate_facts": len(profile.get("candidate_facts", [])),
-        "memory_items": len(profile.get("memory_items", [])),
-        "evidence": len(profile.get("evidence", [])),
-        "conflicts": len([item for item in profile.get("candidate_facts", []) if item.get("status") == "conflicted"]),
-        "confirmed": int(profile.get("fact_summary", {}).get("confirmed_candidate_facts", 0) or 0),
-        "reinforced": int(profile.get("fact_summary", {}).get("reinforced_candidate_facts", 0) or 0),
-        "inferred": int(profile.get("fact_summary", {}).get("inferred_candidate_facts", 0) or 0),
-    }
     return ProfileResponse(
         personal=profile.get("personal", {}),
         academic={"courses_count": len(profile.get("courses", []))},
@@ -371,8 +419,8 @@ async def get_profile(student_id: Optional[str] = Query(default=None)):
         temporal_profile=profile.get("temporal_profile", {}),
         all_entities=profile.get("all_entities", {}),
         completeness=float(profile.get("completeness", 0.0) or 0.0),
-        confidence=confidence,
-        memory_overview=memory_overview,
+        confidence=_profile_confidence(profile),
+        memory_overview=_profile_memory_overview(profile),
     )
 
 
@@ -564,24 +612,7 @@ async def get_saved_recommendations(student_id: Optional[str] = Query(default=No
     resolved_student_id = await _resolve_student_id(student_id)
     items = await list_saved_recommendations(resolved_student_id)
     return [
-        SavedRecommendationInfo(
-            id=item.get("id", ""),
-            student_id=item.get("student_id", resolved_student_id),
-            title=_metadata_dict(item.get("metadata")).get("title") or item.get("summary", "Saved recommendation"),
-            summary=item.get("summary", ""),
-            recommendation_type=str(item.get("memory_type", "saved_plan")).replace("saved_", ""),
-            actions=_metadata_dict(item.get("metadata")).get("actions", []),
-            source_session_id=_metadata_dict(item.get("metadata")).get("source_session_id"),
-            source_query=_metadata_dict(item.get("metadata")).get("source_query"),
-            created_at=item.get("created_at"),
-            status=_metadata_dict(item.get("metadata")).get("status", "active"),
-            next_review_at=_metadata_dict(item.get("metadata")).get("next_review_at"),
-            follow_up_prompt=_metadata_dict(item.get("metadata")).get("follow_up_prompt"),
-            outcome_status=_metadata_dict(item.get("metadata")).get("outcome_status", _metadata_dict(item.get("metadata")).get("status", "active")),
-            outcome_notes=_metadata_dict(item.get("metadata")).get("outcome_notes"),
-            outcome_updated_at=_metadata_dict(item.get("metadata")).get("outcome_updated_at"),
-            metadata=_metadata_dict(item.get("metadata")),
-        )
+        _saved_recommendation_info_from_record(item, fallback_student_id=resolved_student_id)
         for item in items
     ]
 
@@ -608,23 +639,14 @@ async def save_recommendation(body: SavedRecommendationCreate):
             "source_query": body.source_query,
         },
     )
-    return SavedRecommendationInfo(
-        id=stored.get("id", ""),
-        student_id=stored.get("student_id", resolved_student_id),
-        title=body.title,
-        summary=stored.get("summary", body.summary),
-        recommendation_type=body.recommendation_type,
-        actions=body.actions,
-        source_session_id=body.source_session_id,
-        source_query=body.source_query,
-        created_at=stored.get("created_at"),
-        status=_metadata_dict(stored.get("metadata")).get("status", "active"),
-        next_review_at=_metadata_dict(stored.get("metadata")).get("next_review_at"),
-        follow_up_prompt=_metadata_dict(stored.get("metadata")).get("follow_up_prompt"),
-        outcome_status=_metadata_dict(stored.get("metadata")).get("outcome_status", _metadata_dict(stored.get("metadata")).get("status", "active")),
-        outcome_notes=_metadata_dict(stored.get("metadata")).get("outcome_notes"),
-        outcome_updated_at=_metadata_dict(stored.get("metadata")).get("outcome_updated_at"),
-        metadata=_metadata_dict(stored.get("metadata")),
+    return _saved_recommendation_info_from_record(
+        stored,
+        fallback_student_id=resolved_student_id,
+        default_title=body.title,
+        default_recommendation_type=body.recommendation_type,
+        default_actions=body.actions,
+        default_source_session_id=body.source_session_id,
+        default_source_query=body.source_query,
     )
 
 
@@ -643,24 +665,7 @@ async def update_recommendation_outcome(recommendation_id: str, body: SavedRecom
     )
     if not stored:
         raise HTTPException(404, "Saved recommendation not found")
-    return SavedRecommendationInfo(
-        id=stored.get("id", ""),
-        student_id=stored.get("student_id", resolved_student_id),
-        title=_metadata_dict(stored.get("metadata")).get("title") or stored.get("summary", "Saved recommendation"),
-        summary=stored.get("summary", ""),
-        recommendation_type=str(stored.get("memory_type", "saved_plan")).replace("saved_", ""),
-        actions=_metadata_dict(stored.get("metadata")).get("actions", []),
-        source_session_id=_metadata_dict(stored.get("metadata")).get("source_session_id"),
-        source_query=_metadata_dict(stored.get("metadata")).get("source_query"),
-        created_at=stored.get("created_at"),
-        status=_metadata_dict(stored.get("metadata")).get("status", "active"),
-        next_review_at=_metadata_dict(stored.get("metadata")).get("next_review_at"),
-        follow_up_prompt=_metadata_dict(stored.get("metadata")).get("follow_up_prompt"),
-        outcome_status=_metadata_dict(stored.get("metadata")).get("outcome_status", _metadata_dict(stored.get("metadata")).get("status", "active")),
-        outcome_notes=_metadata_dict(stored.get("metadata")).get("outcome_notes"),
-        outcome_updated_at=_metadata_dict(stored.get("metadata")).get("outcome_updated_at"),
-        metadata=_metadata_dict(stored.get("metadata")),
-    )
+    return _saved_recommendation_info_from_record(stored, fallback_student_id=resolved_student_id)
 
 
 @router.delete("/sessions/{session_id}")
@@ -668,7 +673,7 @@ async def delete_session(session_id: str, student_id: Optional[str] = Query(defa
     """Delete a chat session and its session-scoped documents."""
     resolved_student_id = await _resolve_student_id(student_id)
     # Delete session-scoped documents from Neo4j
-    await run_cypher(
+    await execute_cypher(
         """
         MATCH (s:Student {id: $student_id})-[:UPLOADED]->(d:Document {session_id: $sid, scope: 'session'})
         OPTIONAL MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d)

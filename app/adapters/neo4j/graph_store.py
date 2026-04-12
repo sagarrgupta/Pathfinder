@@ -6,468 +6,62 @@ skills, documents, and their relationships.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-from datetime import datetime, date, time, timedelta, timezone
+from datetime import timedelta
 from typing import Any, Optional
 
 from neo4j import AsyncGraphDatabase, AsyncDriver
-import neo4j.time as neo4j_time
 
 from app.config.settings import settings
 from app.services.conflict_semantics import normalize_fact_value, split_conflict_groups
 from app.utils.ids import generate_evidence_id, generate_memory_id, generate_student_id
+from ._graph_common import (
+    iso_utc as _iso_utc,
+    merge_unique_strings as _merge_unique_strings,
+    metadata_dict as _metadata_dict,
+    metadata_fields as _metadata_fields,
+    record_map as _record_map,
+    safe_float as _safe_float,
+    safe_int as _safe_int,
+    sanitize as _sanitize,
+    utc_now as _utc_now,
+    validate_graph_identifier as _validate_graph_identifier,
+)
+from ._graph_profile import (
+    build_full_profile_payload,
+    candidate_confirmation_state as _candidate_confirmation_state,
+    candidate_promotion_score as _candidate_promotion_score,
+    fact_source_support_kind as _fact_source_support_kind,
+    parse_datetimeish as _parse_datetimeish,
+)
 
 log = logging.getLogger("pathfinder.neo4j.graph")
 
-
-def _sanitize(value: Any) -> Any:
-    """Convert Neo4j-specific types to Python-native types recursively."""
-    if isinstance(value, neo4j_time.DateTime):
-        return value.to_native().isoformat()
-    if isinstance(value, neo4j_time.Date):
-        return value.to_native().isoformat()
-    if isinstance(value, neo4j_time.Time):
-        return str(value)
-    if isinstance(value, neo4j_time.Duration):
-        return str(value)
-    if isinstance(value, dict):
-        sanitized = {k: _sanitize(v) for k, v in value.items()}
-        metadata_json = sanitized.get("metadata_json")
-        if isinstance(metadata_json, str) and metadata_json.strip():
-            try:
-                sanitized["metadata"] = json.loads(metadata_json)
-            except Exception:
-                if "metadata" not in sanitized:
-                    sanitized["metadata"] = {}
-        elif isinstance(sanitized.get("metadata"), str):
-            try:
-                sanitized["metadata"] = json.loads(str(sanitized["metadata"]))
-            except Exception:
-                pass
-        return sanitized
-    if isinstance(value, list):
-        return [_sanitize(v) for v in value]
-    return value
+_CYPHER_WRITE_PATTERN = re.compile(r"\b(CREATE|MERGE|SET|DELETE|DETACH|REMOVE|DROP|CALL\s+db\.)\b", re.IGNORECASE)
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return max(0.0, min(1.0, float(value)))
-    except (TypeError, ValueError):
-        return default
-
-
-def _merge_unique_strings(*groups: list[str]) -> list[str]:
-    merged: list[str] = []
-    seen: set[str] = set()
-    for group in groups:
-        for item in group:
-            text = str(item or "").strip()
-            key = text.casefold()
-            if text and key not in seen:
-                seen.add(key)
-                merged.append(text)
-    return merged
-
-
-def _fact_source_support_kind(source_type: str | None, source_ref: str | None) -> str:
-    lowered_type = str(source_type or "").strip().lower()
-    lowered_ref = str(source_ref or "").strip().lower()
-    if any(token in lowered_type for token in ("document", "resume", "transcript", "upload", "pdf")):
-        return "document"
-    if lowered_ref.startswith("doc:") or lowered_ref.startswith("document:"):
-        return "document"
-    if lowered_type in {"profile_text", "chat_query"}:
-        return "direct_input"
-    return "other"
-
-
-def _candidate_promotion_score(
-    confidence: float,
-    salience: float,
-    support_count: int,
-    direct_statement_count: int,
-    document_support_count: int,
-) -> float:
-    score = (confidence * 0.45) + (salience * 0.2)
-    score += min(0.15, max(0, support_count - 1) * 0.06)
-    if direct_statement_count > 0:
-        score += 0.12
-    if document_support_count > 0:
-        score += 0.08
-    return round(min(1.0, score), 2)
-
-
-def _candidate_confirmation_state(fact: dict[str, Any]) -> str:
-    status = str(fact.get("status") or "candidate").lower()
-    support_count = int(fact.get("support_count") or 0)
-    direct_statement_count = int(fact.get("direct_statement_count") or 0)
-    document_support_count = int(fact.get("document_support_count") or 0)
-    promotion_score = _safe_float(fact.get("promotion_score"), 0.0)
-    if status == "resolved":
-        return "confirmed"
-    if promotion_score >= 0.8 or (support_count >= 2 and (direct_statement_count > 0 or document_support_count > 0)):
-        return "reinforced"
-    return "inferred"
-
-
-def _profile_completeness_breakdown(
-    student: dict[str, Any],
-    entities_by_label: dict[str, list[dict[str, Any]]],
-    candidate_fact_ledger: list[dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
-    confirmed_or_reinforced = [
-        item
-        for item in candidate_fact_ledger
-        if item.get("confirmation_state") in {"confirmed", "reinforced"}
-    ]
-    by_type: dict[str, list[dict[str, Any]]] = {}
-    for fact in confirmed_or_reinforced:
-        by_type.setdefault(str(fact.get("fact_type") or "generic").lower(), []).append(fact)
-
-    categories = {
-        "identity": [
-            bool(student.get("name")),
-            bool(student.get("email")),
-            bool(student.get("university")),
-        ],
-        "academics": [
-            bool(student.get("program")),
-            bool(student.get("semester")),
-            bool(student.get("gpa")),
-            bool(entities_by_label.get("Course")),
-        ],
-        "goals": [
-            bool(entities_by_label.get("Goal")),
-            bool(by_type.get("goal")),
-        ],
-        "skills": [
-            bool(entities_by_label.get("Skill")),
-            bool(by_type.get("skill")),
-        ],
-        "experience": [
-            bool(entities_by_label.get("Company")),
-            bool(entities_by_label.get("Project")),
-            bool(entities_by_label.get("Document")),
-        ],
-        "preferences": [
-            bool(entities_by_label.get("Preference")),
-            bool(entities_by_label.get("Constraint")),
-            bool(by_type.get("preference")),
-            bool(by_type.get("constraint")),
-        ],
-    }
-    breakdown: dict[str, dict[str, Any]] = {}
-    for category, checks in categories.items():
-        total = len(checks)
-        score = round(sum(1 for item in checks if item) / total, 2) if total else 0.0
-        breakdown[category] = {
-            "score": score,
-            "covered": sum(1 for item in checks if item),
-            "total": total,
-        }
-    return breakdown
-
-
-def _profile_fact_summary(
-    profile_facts: list[dict[str, Any]],
-    candidate_fact_ledger: list[dict[str, Any]],
-) -> dict[str, Any]:
-    confirmed = sum(1 for item in candidate_fact_ledger if item.get("confirmation_state") == "confirmed")
-    reinforced = sum(1 for item in candidate_fact_ledger if item.get("confirmation_state") == "reinforced")
-    inferred = sum(1 for item in candidate_fact_ledger if item.get("confirmation_state") == "inferred")
-    direct = sum(1 for item in candidate_fact_ledger if int(item.get("direct_statement_count") or 0) > 0)
-    document_backed = sum(1 for item in candidate_fact_ledger if int(item.get("document_support_count") or 0) > 0)
-    stable_count = sum(1 for item in profile_facts if str(item.get("stability") or "").lower() == "stable")
-    evolving_count = sum(1 for item in profile_facts if str(item.get("stability") or "").lower() == "evolving")
-    temporary_count = sum(1 for item in profile_facts if str(item.get("stability") or "").lower() == "temporary")
-    temporal_profile = _build_temporal_profile(profile_facts, candidate_fact_ledger)
-    return {
-        "durable_profile_facts": len(profile_facts),
-        "confirmed_candidate_facts": confirmed,
-        "reinforced_candidate_facts": reinforced,
-        "inferred_candidate_facts": inferred,
-        "direct_statement_backed": direct,
-        "document_backed": document_backed,
-        "stable_profile_facts": stable_count,
-        "evolving_profile_facts": evolving_count,
-        "temporary_profile_facts": temporary_count,
-        "stale_candidate_facts": len(temporal_profile.get("stale_candidates", [])),
-    }
-
-
-def _parse_datetimeish(value: Any) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    text = text.replace("Z", "+00:00")
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _build_temporal_profile(
-    profile_facts: list[dict[str, Any]],
-    candidate_fact_ledger: list[dict[str, Any]],
-) -> dict[str, Any]:
-    now = datetime.now(timezone.utc)
-    stale_cutoff = now - timedelta(days=120)
-    event_cutoff = now - timedelta(days=365)
-
-    stable_facts = [fact for fact in profile_facts if str(fact.get("stability") or "").lower() == "stable"]
-    evolving_facts = [fact for fact in profile_facts if str(fact.get("stability") or "").lower() == "evolving"]
-    temporary_facts = [fact for fact in profile_facts if str(fact.get("stability") or "").lower() == "temporary"]
-    expired_preferences: list[dict[str, Any]] = []
-    recent_events: list[dict[str, Any]] = []
-
-    stale_candidates: list[dict[str, Any]] = []
-    active_candidates: list[dict[str, Any]] = []
-    for item in candidate_fact_ledger:
-        status = str(item.get("status") or "candidate").lower()
-        fact_type = str(item.get("fact_type") or "").lower()
-        stability = str(item.get("stability") or "").lower()
-        updated_at = _parse_datetimeish(item.get("updated_at") or item.get("created_at"))
-        is_stale = status in {"superseded", "archived"} or (
-            stability == "temporary"
-            and updated_at is not None
-            and updated_at < stale_cutoff
-        )
-        if stability == "temporary" and fact_type in {"preference", "constraint"} and updated_at is not None and updated_at < stale_cutoff:
-            expired_preferences.append(item)
-        if is_stale:
-            stale_candidates.append(item)
-        else:
-            active_candidates.append(item)
-
-        event_at = updated_at or _parse_datetimeish(item.get("created_at"))
-        if event_at is None or event_at < event_cutoff:
-            continue
-        event_type = "reinforced" if int(item.get("support_count") or 0) > 1 else "observed"
-        if status in {"resolved", "superseded", "archived", "conflicted"}:
-            event_type = status
-        recent_events.append(
-            {
-                "fact_type": fact_type or "generic",
-                "value": str(item.get("value", "")).strip(),
-                "status": status,
-                "stability": stability,
-                "event_type": event_type,
-                "timestamp": event_at.isoformat(),
-            }
-        )
-
-    recent_events.sort(key=lambda item: str(item.get("timestamp", "")), reverse=True)
-
-    return {
-        "stable_facts": stable_facts,
-        "evolving_facts": evolving_facts,
-        "temporary_facts": temporary_facts,
-        "active_candidates": active_candidates,
-        "stale_candidates": stale_candidates,
-        "expired_preferences": expired_preferences,
-        "recent_events": recent_events[:12],
-        "summary": {
-            "stable_count": len(stable_facts),
-            "evolving_count": len(evolving_facts),
-            "temporary_count": len(temporary_facts),
-            "active_candidate_count": len(active_candidates),
-            "stale_candidate_count": len(stale_candidates),
-            "expired_preference_count": len(expired_preferences),
-            "recent_event_count": min(len(recent_events), 12),
-        },
-    }
-
-
-def _profile_fact_from_personal(key: str, value: Any) -> dict[str, Any] | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    return {
-        "fact_type": key,
-        "value": text,
-        "normalized_value": text.casefold(),
-        "source_kind": "student_property",
-        "stability": "stable",
-        "confidence": 1.0,
-        "status": "resolved",
-        "metadata": {"field": key},
-    }
-
-
-def _profile_fact_from_entity(label: str, entity: dict[str, Any]) -> dict[str, Any] | None:
-    value = str(entity.get("name") or entity.get("value") or "").strip()
-    if not value:
-        return None
-    fact_type_map = {
-        "Course": "course",
-        "Skill": "skill",
-        "Goal": "goal",
-        "Interest": "interest",
-        "Company": "experience",
-        "Project": "project",
-        "Constraint": "constraint",
-        "Preference": "preference",
-    }
-    fact_type = fact_type_map.get(label)
-    if not fact_type:
-        return None
-    return {
-        "fact_type": fact_type,
-        "value": value,
-        "normalized_value": value.casefold(),
-        "source_kind": "core_entity",
-        "stability": "stable" if fact_type in {"skill", "course", "project", "experience"} else "evolving",
-        "confidence": float(entity.get("confidence", 1.0) or 1.0),
-        "status": "resolved",
-        "metadata": {"label": label, "relationship": entity.get("_relationship", "")},
-    }
-
-
-def _metadata_json(metadata: dict[str, Any] | None) -> str:
-    try:
-        return json.dumps(metadata or {})
-    except Exception:
-        return "{}"
-
-
-def _property_safe_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
-    """Convert nested metadata into Neo4j property-safe scalars/arrays."""
-    safe: dict[str, Any] = {}
-    for key, value in (metadata or {}).items():
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            safe[key] = value
-        elif isinstance(value, list) and all(isinstance(item, (str, int, float, bool)) or item is None for item in value):
-            safe[key] = value
-        else:
-            try:
-                safe[key] = json.dumps(value, ensure_ascii=True)
-            except Exception:
-                safe[key] = str(value)
-    return safe
-
-
-def _metadata_dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    if isinstance(value, str) and value.strip():
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            return {}
+def _entity_identity_props(label: str, properties: dict[str, Any]) -> dict[str, Any]:
+    """Choose stable merge keys for extracted entities within one student profile."""
+    if label == "Course":
+        code = str(properties.get("code", "") or "").strip()
+        if code:
+            return {"code": code}
+    name = str(properties.get("name", "") or properties.get("value", "") or "").strip()
+    if name:
+        return {"name": name}
     return {}
 
 
-def _utc_now() -> datetime:
-    return datetime.utcnow()
-
-
-def _iso_utc(value: datetime) -> str:
-    return value.isoformat() + "Z"
-
-
-def _normalize_name(value: str | None) -> str:
-    text = re.sub(r"[^\w\s/+&,-]", "", (value or "").strip())
-    text = re.sub(r"\s+", " ", text)
-    return text.casefold()
-
-
-def _semantic_entity_key(label: str | None, value: str | None) -> str:
-    text = _normalize_name(value)
-    if not text:
-        return ""
-    if label == "Goal":
-        replacements = {
-            "obtain": "get",
-            "seeking": "get",
-            "looking": "get",
-            "want": "get",
-            "wanting": "get",
-            "enter": "industry",
-            "entering": "industry",
-            "internships": "internship",
-            "jobs": "job",
-            "roles": "role",
-        }
-        stopwords = {"to", "a", "an", "the", "and", "go", "into", "first", "for", "my"}
-        tokens = []
-        for token in re.findall(r"[a-z0-9]+", text):
-            mapped = replacements.get(token, token)
-            if mapped not in stopwords:
-                tokens.append(mapped)
-        return " ".join(sorted(dict.fromkeys(tokens)))
-    return text
-
-
-def _canonical_entity_key(item: dict[str, Any], label: str | None, key_field: str = "name") -> str:
-    raw = str(item.get("normalized_name") or item.get(key_field) or item.get("value") or item.get("summary") or "")
-    text = _semantic_entity_key(label, raw)
-    if not text:
-        return str(item.get("id", ""))
-    if label == "Goal":
-        text = re.sub(r"^(seeking|looking for|aiming for|wanting|want)\s+", "", text)
-        text = re.sub(r"\binternships\b", "internship", text)
-        text = re.sub(r"\bjobs\b", "job", text)
-        text = re.sub(r"\broles\b", "role", text)
-        text = text.rstrip(".")
-    elif label == "Interest":
-        text = re.sub(r"^(interested in)\s+", "", text)
-        text = text.rstrip(".")
-    elif label == "Preference":
-        text = re.sub(r"^(prefer|prefers)\s+", "", text)
-        text = text.rstrip(".")
-    return text
-
-
-def _expand_compound_entity_values(name: str) -> list[str]:
-    if not name:
-        return []
-    stripped = name.strip()
-    if len(stripped) > 80:
-        return []
-    normalized = re.sub(r"\s+(and|&)\s+", ",", stripped, flags=re.IGNORECASE)
-    parts = [part.strip(" .") for part in normalized.split(",")]
-    return [part for part in parts if part]
-
-
-def _dedupe_entities(items: list[dict[str, Any]], key_field: str = "name", label: str | None = None) -> list[dict[str, Any]]:
-    deduped: dict[str, dict[str, Any]] = {}
-    for item in items:
-        key = _canonical_entity_key(item, label, key_field)
-        current = deduped.get(key)
-        if current is None:
-            deduped[key] = item
-            continue
-        current_score = len(json.dumps(current, sort_keys=True, default=str)) + int(bool(current.get("updated_at")))
-        candidate_score = len(json.dumps(item, sort_keys=True, default=str)) + int(bool(item.get("updated_at")))
-        if candidate_score >= current_score:
-            deduped[key] = item
-    values = list(deduped.values())
-
-    if label in {"Skill", "Interest"}:
-        atomic_keys = {
-            _canonical_entity_key(item, label, key_field)
-            for item in values
-            if len(_expand_compound_entity_values(str(item.get(key_field) or ""))) <= 1
-        }
-        filtered: list[dict[str, Any]] = []
-        for item in values:
-            parts = _expand_compound_entity_values(str(item.get(key_field) or ""))
-            if len(parts) > 1:
-                part_keys = {_normalize_name(part) for part in parts if part}
-                if part_keys and part_keys.issubset(atomic_keys):
-                    continue
-            filtered.append(item)
-        values = filtered
-
-    return values
+def _prepare_entity_properties(properties: dict[str, Any], *, document_id: str) -> dict[str, Any]:
+    """Normalize extracted entity props before storage."""
+    clean = dict(properties)
+    if "name" in clean:
+        clean["name"] = str(clean.get("name", "") or "").strip()
+    if "value" in clean and not clean.get("name"):
+        clean["value"] = str(clean.get("value", "") or "").strip()
+    clean["_source_document"] = document_id
+    return clean
 
 # ── Singleton Driver ────────────────────────────────────────────
 
@@ -478,6 +72,10 @@ async def get_driver() -> AsyncDriver:
     """Return (or create) the singleton Neo4j async driver."""
     global _driver
     if _driver is None:
+        if not str(settings.NEO4J_PASSWORD or "").strip():
+            raise RuntimeError(
+                "NEO4J_PASSWORD is not configured. Set Neo4j credentials before starting Pathfinder."
+            )
         _driver = AsyncGraphDatabase.driver(
             settings.NEO4J_URI,
             auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
@@ -559,7 +157,7 @@ async def get_student(student_id: str) -> dict[str, Any] | None:
             id=student_id,
         )
         record = await result.single()
-        return _sanitize(dict(record["student"])) if record else None
+        return _record_map(record, "student") if record else None
 
 
 async def create_student(
@@ -592,7 +190,7 @@ async def create_student(
             program=program,
         )
         record = await result.single()
-        return _sanitize(dict(record["student"])) if record else {"id": student_id, "name": name}
+        return _record_map(record, "student", {"id": student_id, "name": name})
 
 
 async def list_students() -> list[dict[str, Any]]:
@@ -629,6 +227,9 @@ async def list_students() -> list[dict[str, Any]]:
 
 async def update_student(student_id: str, **props: Any) -> dict[str, Any]:
     """Update student properties (name, gpa, university, …)."""
+    if not props:
+        existing = await get_student(student_id)
+        return existing or {}
     driver = await get_driver()
     async with driver.session() as session:
         set_clauses = ", ".join(f"s.{k} = ${k}" for k in props)
@@ -642,7 +243,7 @@ async def update_student(student_id: str, **props: Any) -> dict[str, Any]:
             **props,
         )
         record = await result.single()
-        return _sanitize(dict(record["student"])) if record else {}
+        return _record_map(record, "student")
 
 
 # ── Entity CRUD (generic) ──────────────────────────────────────
@@ -655,6 +256,8 @@ async def create_entity(
     relationship: str = "HAS",
 ) -> dict[str, Any]:
     """Create a node with *label* and link it to the student via *relationship*."""
+    label = _validate_graph_identifier(label, "label")
+    relationship = _validate_graph_identifier(relationship, "relationship")
     driver = await get_driver()
     async with driver.session() as session:
         result = await session.run(
@@ -668,13 +271,16 @@ async def create_entity(
             props=properties,
         )
         record = await result.single()
-        return _sanitize(dict(record["entity"])) if record else {}
+        return _record_map(record, "entity")
 
 
 async def update_entity(
     label: str, match_props: dict[str, Any], new_props: dict[str, Any], student_id: str | None = None
 ) -> dict[str, Any]:
     """Update properties on an existing entity node."""
+    label = _validate_graph_identifier(label, "label")
+    if not match_props or not new_props:
+        return {}
     driver = await get_driver()
     where_parts = [f"n.{k} = ${k}" for k in match_props]
     params = {**match_props, **{f"new_{k}": v for k, v in new_props.items()}}
@@ -695,11 +301,14 @@ async def update_entity(
             **params,
         )
         record = await result.single()
-        return _sanitize(dict(record["entity"])) if record else {}
+        return _record_map(record, "entity")
 
 
 async def delete_entity(label: str, match_props: dict[str, Any]) -> bool:
     """Delete a node (and its relationships) matching *label* and *match_props*."""
+    label = _validate_graph_identifier(label, "label")
+    if not match_props:
+        return False
     driver = await get_driver()
     where = " AND ".join(f"n.{k} = ${k}" for k in match_props)
     async with driver.session() as session:
@@ -717,6 +326,9 @@ async def delete_entity_for_student(
     student_id: str,
 ) -> bool:
     """Delete a node linked to a specific student profile."""
+    label = _validate_graph_identifier(label, "label")
+    if not match_props:
+        return False
     driver = await get_driver()
     where = " AND ".join(f"n.{k} = ${k}" for k in match_props)
     async with driver.session() as session:
@@ -740,8 +352,9 @@ async def get_entities(
     relationship: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return all nodes of *label* linked to the student."""
+    label = _validate_graph_identifier(label, "label")
     driver = await get_driver()
-    rel = f"-[:{relationship}]->" if relationship else "-[]->"
+    rel = f"-[:{_validate_graph_identifier(relationship, 'relationship')}]->" if relationship else "-[]->"
     async with driver.session() as session:
         result = await session.run(
             f"""
@@ -800,7 +413,7 @@ async def store_document_node(
             role_signals=list(role_signals or []),
         )
         record = await result.single()
-        return _sanitize(dict(record["doc"])) if record else {}
+        return _record_map(record, "doc")
 
 
 async def find_document_by_filename(
@@ -818,33 +431,37 @@ async def find_document_by_filename(
             fname=filename,
         )
         record = await result.single()
-        return _sanitize(dict(record["doc"])) if record else None
+        return _record_map(record, "doc") if record else None
 
 
 async def delete_document_cascade(document_id: str, student_id: str) -> bool:
     """Delete a document and ALL entities sourced only from it."""
     driver = await get_driver()
     async with driver.session() as session:
-        # Delete chunks belonging to this document
-        await session.run(
-            """
-            MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d:Document {id: $doc_id})
-            DETACH DELETE c
-            """,
-            doc_id=document_id,
-        )
-        # Delete the document node itself
-        result = await session.run(
-            """
-            MATCH (s:Student {id: $student_id})-[:UPLOADED]->(d:Document {id: $doc_id})
-            DETACH DELETE d
-            RETURN count(d) AS cnt
-            """,
-            doc_id=document_id,
-            student_id=student_id,
-        )
-        record = await result.single()
-        return record["cnt"] > 0 if record else False
+        tx = await session.begin_transaction()
+        try:
+            await tx.run(
+                """
+                MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d:Document {id: $doc_id})
+                DETACH DELETE c
+                """,
+                doc_id=document_id,
+            )
+            result = await tx.run(
+                """
+                MATCH (s:Student {id: $student_id})-[:UPLOADED]->(d:Document {id: $doc_id})
+                DETACH DELETE d
+                RETURN count(d) AS cnt
+                """,
+                doc_id=document_id,
+                student_id=student_id,
+            )
+            record = await result.single()
+            await tx.commit()
+            return record["cnt"] > 0 if record else False
+        except Exception:
+            await tx.rollback()
+            raise
 
 
 async def promote_document_to_global(document_id: str, student_id: str) -> bool:
@@ -881,10 +498,15 @@ async def store_extracted_entities(
     count = 0
     async with driver.session() as session:
         for ent in entities:
-            label = ent.get("label", "Entity")
-            props = ent.get("properties", {})
-            rel = ent.get("relationship", "HAS")
-            props["_source_document"] = document_id
+            label = _validate_graph_identifier(ent.get("label", "Entity"), "label")
+            rel = _validate_graph_identifier(ent.get("relationship", "HAS"), "relationship")
+            props = _prepare_entity_properties(
+                ent.get("properties", {}) if isinstance(ent.get("properties", {}), dict) else {},
+                document_id=document_id,
+            )
+            if not str(props.get("name", "")).strip():
+                log.warning("Skipping extracted %s entity with no name: %s", label, props)
+                continue
             try:
                 await session.run(
                     f"""
@@ -916,7 +538,7 @@ async def store_evidence(
 ) -> dict[str, Any]:
     """Store a raw evidence item for later provenance-aware retrieval."""
     evidence_id = generate_evidence_id()
-    metadata_json = _metadata_json(metadata)
+    metadata_fields = _metadata_fields(metadata)
     driver = await get_driver()
     async with driver.session() as session:
         result = await session.run(
@@ -929,7 +551,6 @@ async def store_evidence(
                 source_ref: $source_ref,
                 session_id: $session_id,
                 content: $content,
-                metadata: $metadata,
                 metadata_json: $metadata_json,
                 embedding: $embedding,
                 status: 'resolved',
@@ -944,12 +565,11 @@ async def store_evidence(
             source_ref=source_ref,
             session_id=session_id,
             content=content,
-            metadata=metadata_json,
-            metadata_json=metadata_json,
+            **metadata_fields,
             embedding=embedding,
         )
         record = await result.single()
-        return _sanitize(dict(record["evidence"])) if record else {"id": evidence_id}
+        return _record_map(record, "evidence", {"id": evidence_id})
 
 
 async def store_candidate_fact(
@@ -972,110 +592,189 @@ async def store_candidate_fact(
     """Store a candidate memory/fact node."""
     driver = await get_driver()
     async with driver.session() as session:
-        normalized = (normalized_value or value).strip()
-        existing_result = await session.run(
-            """
-            MATCH (s:Student {id: $student_id})-[:HAS_CANDIDATE_FACT]->(c:CandidateFact)
-            WHERE c.fact_type = $fact_type
-              AND c.normalized_value = $normalized_value
-              AND coalesce(c.status, 'candidate') <> 'archived'
-            RETURN c {.*} AS fact
-            ORDER BY coalesce(c.updated_at, c.last_reinforced_at, c.created_at) DESC
-            LIMIT 1
-            """,
-            student_id=student_id,
-            fact_type=fact_type,
-            normalized_value=normalized,
-        )
-        existing_record = await existing_result.single()
-        existing = _sanitize(dict(existing_record["fact"])) if existing_record else None
+        tx = await session.begin_transaction()
+        try:
+            normalized = (normalized_value or value).strip()
+            existing_result = await tx.run(
+                """
+                MATCH (s:Student {id: $student_id})-[:HAS_CANDIDATE_FACT]->(c:CandidateFact)
+                WHERE c.fact_type = $fact_type
+                  AND c.normalized_value = $normalized_value
+                  AND coalesce(c.status, 'candidate') <> 'archived'
+                RETURN c {.*} AS fact
+                ORDER BY coalesce(c.updated_at, c.last_reinforced_at, c.created_at) DESC
+                LIMIT 1
+                """,
+                student_id=student_id,
+                fact_type=fact_type,
+                normalized_value=normalized,
+            )
+            existing_record = await existing_result.single()
+            existing = _record_map(existing_record, "fact") if existing_record else None
 
-        support_kind = _fact_source_support_kind(source_type, source_ref)
-        now_iso = _iso_utc(_utc_now())
-        base_metadata = dict(metadata) if isinstance(metadata, dict) else {}
-        provenance_item = {
-            "source_ref": source_ref,
-            "source_type": source_type or "",
-            "observed_at": now_iso,
-            "confidence": confidence,
-            "evidence_kind": evidence_kind,
-        }
+            support_kind = _fact_source_support_kind(source_type, source_ref)
+            now_iso = _iso_utc(_utc_now())
+            base_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            provenance_item = {
+                "source_ref": source_ref,
+                "source_type": source_type or "",
+                "observed_at": now_iso,
+                "confidence": confidence,
+                "evidence_kind": evidence_kind,
+            }
 
-        if existing:
-            existing_metadata = _metadata_dict(existing.get("metadata"))
-            support_count = int(existing.get("support_count") or existing_metadata.get("support_count") or 1) + 1
-            direct_statement_count = int(
-                existing.get("direct_statement_count") or existing_metadata.get("direct_statement_count") or 0
-            ) + (1 if evidence_kind == "direct_statement" else 0)
-            document_support_count = int(
-                existing.get("document_support_count") or existing_metadata.get("document_support_count") or 0
-            ) + (1 if support_kind == "document" else 0)
-            revision_count = int(existing.get("revision_count") or existing_metadata.get("revision_count") or 1) + 1
+            if existing:
+                existing_metadata = _metadata_dict(existing.get("metadata"))
+                support_count = _safe_int(existing.get("support_count") or existing_metadata.get("support_count") or 1, 1) + 1
+                direct_statement_count = _safe_int(
+                    existing.get("direct_statement_count") or existing_metadata.get("direct_statement_count") or 0,
+                    0,
+                ) + (1 if evidence_kind == "direct_statement" else 0)
+                document_support_count = _safe_int(
+                    existing.get("document_support_count") or existing_metadata.get("document_support_count") or 0,
+                    0,
+                ) + (1 if support_kind == "document" else 0)
+                revision_count = _safe_int(existing.get("revision_count") or existing_metadata.get("revision_count") or 1, 1) + 1
+                promotion_score = _candidate_promotion_score(
+                    max(_safe_float(existing.get("confidence"), confidence), confidence),
+                    max(_safe_float(existing.get("salience"), salience), salience),
+                    support_count,
+                    direct_statement_count,
+                    document_support_count,
+                )
+                merged_metadata = {
+                    **existing_metadata,
+                    **base_metadata,
+                    "support_count": support_count,
+                    "direct_statement_count": direct_statement_count,
+                    "document_support_count": document_support_count,
+                    "revision_count": revision_count,
+                    "first_observed_at": existing_metadata.get("first_observed_at") or existing.get("created_at") or now_iso,
+                    "last_observed_at": now_iso,
+                    "source_refs": _merge_unique_strings(existing_metadata.get("source_refs", []), [source_ref]),
+                    "provenance": [*list(existing_metadata.get("provenance", []))[-5:], provenance_item],
+                }
+                result = await tx.run(
+                    """
+                    MATCH (c:CandidateFact {id: $id})
+                    SET c.value = $value,
+                        c.source_ref = $source_ref,
+                        c.confidence = $confidence,
+                        c.salience = $salience,
+                        c.status = CASE
+                            WHEN c.status = 'conflicted' THEN c.status
+                            WHEN $status = 'resolved' THEN 'resolved'
+                            ELSE coalesce(c.status, $status)
+                        END,
+                        c.time_scope = $time_scope,
+                        c.stability = CASE
+                            WHEN c.stability = 'stable' THEN c.stability
+                            ELSE $stability
+                        END,
+                        c.evidence_kind = CASE
+                            WHEN c.evidence_kind = 'direct_statement' THEN c.evidence_kind
+                            ELSE $evidence_kind
+                        END,
+                        c.metadata_json = $metadata_json,
+                        c.embedding = coalesce($embedding, c.embedding),
+                        c.updated_at = datetime(),
+                        c.last_used_at = datetime(),
+                        c.last_reinforced_at = datetime(),
+                        c.support_count = $support_count,
+                        c.direct_statement_count = $direct_statement_count,
+                        c.document_support_count = $document_support_count,
+                        c.revision_count = $revision_count,
+                        c.promotion_score = $promotion_score
+                    RETURN c {.*} AS fact
+                    """,
+                    id=existing["id"],
+                    value=value,
+                    source_ref=source_ref,
+                    confidence=max(_safe_float(existing.get("confidence"), confidence), confidence),
+                    salience=max(_safe_float(existing.get("salience"), salience), salience),
+                    status=status,
+                    time_scope=time_scope,
+                    stability=stability,
+                    evidence_kind=evidence_kind,
+                    metadata_json=_metadata_fields(merged_metadata)["metadata_json"],
+                    embedding=embedding,
+                    support_count=support_count,
+                    direct_statement_count=direct_statement_count,
+                    document_support_count=document_support_count,
+                    revision_count=revision_count,
+                    promotion_score=promotion_score,
+                )
+                record = await result.single()
+                await tx.commit()
+                return _record_map(record, "fact", {"id": existing["id"]})
+
+            fact_id = generate_memory_id("candidate")
+            support_count = 1
+            direct_statement_count = 1 if evidence_kind == "direct_statement" else 0
+            document_support_count = 1 if support_kind == "document" else 0
+            revision_count = 1
             promotion_score = _candidate_promotion_score(
-                max(_safe_float(existing.get("confidence"), confidence), confidence),
-                max(_safe_float(existing.get("salience"), salience), salience),
+                confidence,
+                salience,
                 support_count,
                 direct_statement_count,
                 document_support_count,
             )
-            merged_metadata = {
-                **existing_metadata,
+            initial_metadata = {
                 **base_metadata,
                 "support_count": support_count,
                 "direct_statement_count": direct_statement_count,
                 "document_support_count": document_support_count,
                 "revision_count": revision_count,
-                "first_observed_at": existing_metadata.get("first_observed_at") or existing.get("created_at") or now_iso,
+                "first_observed_at": now_iso,
                 "last_observed_at": now_iso,
-                "source_refs": _merge_unique_strings(existing_metadata.get("source_refs", []), [source_ref]),
-                "provenance": [*list(existing_metadata.get("provenance", []))[-5:], provenance_item],
+                "source_refs": [source_ref] if source_ref else [],
+                "provenance": [provenance_item],
             }
-            metadata_json = _metadata_json(merged_metadata)
-            result = await session.run(
+            result = await tx.run(
                 """
-                MATCH (c:CandidateFact {id: $id})
-                SET c.value = $value,
-                    c.source_ref = $source_ref,
-                    c.confidence = $confidence,
-                    c.salience = $salience,
-                    c.status = CASE
-                        WHEN c.status = 'conflicted' THEN c.status
-                        WHEN $status = 'resolved' THEN 'resolved'
-                        ELSE coalesce(c.status, $status)
-                    END,
-                    c.time_scope = $time_scope,
-                    c.stability = CASE
-                        WHEN c.stability = 'stable' THEN c.stability
-                        ELSE $stability
-                    END,
-                    c.evidence_kind = CASE
-                        WHEN c.evidence_kind = 'direct_statement' THEN c.evidence_kind
-                        ELSE $evidence_kind
-                    END,
-                    c.metadata = $metadata,
-                    c.metadata_json = $metadata_json,
-                    c.embedding = coalesce($embedding, c.embedding),
-                    c.updated_at = datetime(),
-                    c.last_used_at = datetime(),
-                    c.last_reinforced_at = datetime(),
-                    c.support_count = $support_count,
-                    c.direct_statement_count = $direct_statement_count,
-                    c.document_support_count = $document_support_count,
-                    c.revision_count = $revision_count,
-                    c.promotion_score = $promotion_score
+                MATCH (s:Student {id: $student_id})
+                CREATE (s)-[:HAS_CANDIDATE_FACT]->(c:CandidateFact {
+                    id: $id,
+                    student_id: $student_id,
+                    fact_type: $fact_type,
+                    value: $value,
+                    source_ref: $source_ref,
+                    confidence: $confidence,
+                    salience: $salience,
+                    status: $status,
+                    time_scope: $time_scope,
+                    normalized_value: $normalized_value,
+                    stability: $stability,
+                    evidence_kind: $evidence_kind,
+                    metadata_json: $metadata_json,
+                    embedding: $embedding,
+                    support_count: $support_count,
+                    direct_statement_count: $direct_statement_count,
+                    document_support_count: $document_support_count,
+                    revision_count: $revision_count,
+                    promotion_score: $promotion_score,
+                    created_at: datetime(),
+                    last_used_at: datetime(),
+                    last_reinforced_at: datetime(),
+                    nudge_count: 0,
+                    nudge_state: 'pending'
+                })
                 RETURN c {.*} AS fact
                 """,
-                id=existing["id"],
+                id=fact_id,
+                student_id=student_id,
+                fact_type=fact_type,
                 value=value,
                 source_ref=source_ref,
-                confidence=max(_safe_float(existing.get("confidence"), confidence), confidence),
-                salience=max(_safe_float(existing.get("salience"), salience), salience),
+                confidence=confidence,
+                salience=salience,
                 status=status,
                 time_scope=time_scope,
+                normalized_value=normalized,
                 stability=stability,
                 evidence_kind=evidence_kind,
-                metadata=metadata_json,
-                metadata_json=metadata_json,
+                metadata_json=_metadata_fields(initial_metadata)["metadata_json"],
                 embedding=embedding,
                 support_count=support_count,
                 direct_statement_count=direct_statement_count,
@@ -1084,87 +783,11 @@ async def store_candidate_fact(
                 promotion_score=promotion_score,
             )
             record = await result.single()
-            return _sanitize(dict(record["fact"])) if record else {"id": existing["id"]}
-
-        fact_id = generate_memory_id("candidate")
-        support_count = 1
-        direct_statement_count = 1 if evidence_kind == "direct_statement" else 0
-        document_support_count = 1 if support_kind == "document" else 0
-        revision_count = 1
-        promotion_score = _candidate_promotion_score(
-            confidence,
-            salience,
-            support_count,
-            direct_statement_count,
-            document_support_count,
-        )
-        initial_metadata = {
-            **base_metadata,
-            "support_count": support_count,
-            "direct_statement_count": direct_statement_count,
-            "document_support_count": document_support_count,
-            "revision_count": revision_count,
-            "first_observed_at": now_iso,
-            "last_observed_at": now_iso,
-            "source_refs": [source_ref] if source_ref else [],
-            "provenance": [provenance_item],
-        }
-        metadata_json = _metadata_json(initial_metadata)
-        result = await session.run(
-            """
-            MATCH (s:Student {id: $student_id})
-            CREATE (s)-[:HAS_CANDIDATE_FACT]->(c:CandidateFact {
-                id: $id,
-                student_id: $student_id,
-                fact_type: $fact_type,
-                value: $value,
-                source_ref: $source_ref,
-                confidence: $confidence,
-                salience: $salience,
-                status: $status,
-                time_scope: $time_scope,
-                normalized_value: $normalized_value,
-                stability: $stability,
-                evidence_kind: $evidence_kind,
-                metadata: $metadata,
-                metadata_json: $metadata_json,
-                embedding: $embedding,
-                support_count: $support_count,
-                direct_statement_count: $direct_statement_count,
-                document_support_count: $document_support_count,
-                revision_count: $revision_count,
-                promotion_score: $promotion_score,
-                created_at: datetime(),
-                last_used_at: datetime(),
-                last_reinforced_at: datetime(),
-                nudge_count: 0,
-                nudge_state: 'pending'
-            })
-            RETURN c {.*} AS fact
-            """,
-            id=fact_id,
-            student_id=student_id,
-            fact_type=fact_type,
-            value=value,
-            source_ref=source_ref,
-            confidence=confidence,
-            salience=salience,
-            status=status,
-            time_scope=time_scope,
-            normalized_value=normalized,
-            stability=stability,
-            evidence_kind=evidence_kind,
-            metadata=metadata_json,
-            metadata_json=metadata_json,
-            embedding=embedding,
-            support_count=support_count,
-            direct_statement_count=direct_statement_count,
-            document_support_count=document_support_count,
-            revision_count=revision_count,
-            promotion_score=promotion_score,
-        )
-        record = await result.single()
-        return _sanitize(dict(record["fact"])) if record else {"id": fact_id}
+            await tx.commit()
+            return _record_map(record, "fact", {"id": fact_id})
+        except Exception:
+            await tx.rollback()
+            raise
 
 
 async def mark_candidate_fact_promoted(fact_id: str) -> dict[str, Any]:
@@ -1184,7 +807,7 @@ async def mark_candidate_fact_promoted(fact_id: str) -> dict[str, Any]:
             id=fact_id,
         )
         record = await result.single()
-        return _sanitize(dict(record["fact"])) if record else {"id": fact_id}
+        return _record_map(record, "fact", {"id": fact_id})
 
 
 async def store_memory_item(
@@ -1203,7 +826,7 @@ async def store_memory_item(
 ) -> dict[str, Any]:
     """Store a generic long-term memory item."""
     memory_id = generate_memory_id("memory")
-    metadata_json = _metadata_json(metadata)
+    metadata_fields = _metadata_fields(metadata)
     driver = await get_driver()
     async with driver.session() as session:
         result = await session.run(
@@ -1220,7 +843,6 @@ async def store_memory_item(
                 status: $status,
                 time_scope: $time_scope,
                 tags: $tags,
-                metadata: $metadata,
                 metadata_json: $metadata_json,
                 embedding: $embedding,
                 created_at: datetime(),
@@ -1241,12 +863,11 @@ async def store_memory_item(
             status=status,
             time_scope=time_scope,
             tags=tags or [],
-            metadata=metadata_json,
-            metadata_json=metadata_json,
+            **metadata_fields,
             embedding=embedding,
         )
         record = await result.single()
-        return _sanitize(dict(record["memory"])) if record else {"id": memory_id}
+        return _record_map(record, "memory", {"id": memory_id})
 
 
 async def link_memory_to_evidence(
@@ -1256,6 +877,8 @@ async def link_memory_to_evidence(
     relationship: str = "DERIVED_FROM",
 ) -> None:
     """Link a layered-memory node to its source evidence."""
+    memory_label = _validate_graph_identifier(memory_label, "label")
+    relationship = _validate_graph_identifier(relationship, "relationship")
     driver = await get_driver()
     async with driver.session() as session:
         await session.run(
@@ -1284,7 +907,7 @@ async def get_due_saved_recommendations(student_id: str, limit: int = 5) -> list
             student_id=student_id,
             limit=limit,
         )
-        return [_sanitize(dict(record["memory"])) async for record in result]
+        return [_record_map(record, "memory") async for record in result]
 
 
 async def list_saved_recommendations(student_id: str, limit: int = 25) -> list[dict[str, Any]]:
@@ -1302,7 +925,7 @@ async def list_saved_recommendations(student_id: str, limit: int = 25) -> list[d
             student_id=student_id,
             limit=limit,
         )
-        return [_sanitize(dict(record["memory"])) async for record in result]
+        return [_record_map(record, "memory") async for record in result]
 
 
 async def update_saved_recommendation_outcome(
@@ -1318,48 +941,52 @@ async def update_saved_recommendation_outcome(
     """Update outcome/feedback metadata for a saved recommendation."""
     driver = await get_driver()
     async with driver.session() as session:
-        existing_result = await session.run(
-            """
-            MATCH (s:Student {id: $student_id})-[:HAS_MEMORY]->(m:MemoryItem {id: $recommendation_id})
-            WHERE m.memory_type IN ['saved_plan', 'saved_recommendation']
-            RETURN m {.*} AS memory
-            """,
-            student_id=student_id,
-            recommendation_id=recommendation_id,
-        )
-        existing_record = await existing_result.single()
-        if not existing_record:
-            return None
-        existing_memory = _sanitize(dict(existing_record["memory"]))
-        merged_metadata = {
-            **_metadata_dict(existing_memory.get("metadata")),
-            **(metadata_patch or {}),
-            "outcome_status": outcome_status,
-            "outcome_notes": outcome_notes,
-            "outcome_updated_at": _iso_utc(_utc_now()),
-        }
-        if next_review_at:
-            merged_metadata["next_review_at"] = next_review_at
-        if follow_up_prompt:
-            merged_metadata["follow_up_prompt"] = follow_up_prompt
-        result = await session.run(
-            """
-            MATCH (s:Student {id: $student_id})-[:HAS_MEMORY]->(m:MemoryItem {id: $recommendation_id})
-            WHERE m.memory_type IN ['saved_plan', 'saved_recommendation']
-            SET m.metadata = $metadata,
-                m.metadata_json = $metadata_json,
-                m.updated_at = datetime($now),
-                m.last_used_at = datetime($now)
-            RETURN m {.*} AS memory
-            """,
-            student_id=student_id,
-            recommendation_id=recommendation_id,
-            metadata=_metadata_json(merged_metadata),
-            metadata_json=_metadata_json(merged_metadata),
-            now=_iso_utc(_utc_now()),
-        )
-        record = await result.single()
-        return _sanitize(dict(record["memory"])) if record else None
+        tx = await session.begin_transaction()
+        try:
+            existing_result = await tx.run(
+                """
+                MATCH (s:Student {id: $student_id})-[:HAS_MEMORY]->(m:MemoryItem {id: $recommendation_id})
+                WHERE m.memory_type IN ['saved_plan', 'saved_recommendation']
+                RETURN m {.*} AS memory
+                """,
+                student_id=student_id,
+                recommendation_id=recommendation_id,
+            )
+            existing_record = await existing_result.single()
+            if not existing_record:
+                return None
+            existing_memory = _record_map(existing_record, "memory")
+            merged_metadata = {
+                **_metadata_dict(existing_memory.get("metadata")),
+                **(metadata_patch or {}),
+                "outcome_status": outcome_status,
+                "outcome_notes": outcome_notes,
+                "outcome_updated_at": _iso_utc(_utc_now()),
+            }
+            if next_review_at:
+                merged_metadata["next_review_at"] = next_review_at
+            if follow_up_prompt:
+                merged_metadata["follow_up_prompt"] = follow_up_prompt
+            result = await tx.run(
+                """
+                MATCH (s:Student {id: $student_id})-[:HAS_MEMORY]->(m:MemoryItem {id: $recommendation_id})
+                WHERE m.memory_type IN ['saved_plan', 'saved_recommendation']
+                SET m.metadata_json = $metadata_json,
+                    m.updated_at = datetime($now),
+                    m.last_used_at = datetime($now)
+                RETURN m {.*} AS memory
+                """,
+                student_id=student_id,
+                recommendation_id=recommendation_id,
+                metadata_json=_metadata_fields(merged_metadata)["metadata_json"],
+                now=_iso_utc(_utc_now()),
+            )
+            record = await result.single()
+            await tx.commit()
+            return _record_map(record, "memory") if record else None
+        except Exception:
+            await tx.rollback()
+            raise
 
 
 async def get_relevant_memories(student_id: str, query: str, limit: int = 8) -> dict[str, list[dict[str, Any]]]:
@@ -1383,13 +1010,30 @@ async def get_relevant_memories(student_id: str, query: str, limit: int = 8) -> 
             return {"memory_items": [], "candidate_facts": [], "evidence": []}
 
         query_lower = query.lower()
+        query_tokens = {token for token in re.findall(r"[a-z0-9]{2,}", query_lower) if token}
+        limit = max(1, limit)
 
         def score(item: Any, text_keys: tuple[str, ...]) -> float:
             if not item:
                 return 0.0
             text = " ".join(str(item.get(key, "")) for key in text_keys).lower()
-            overlap = sum(1 for token in query_lower.split() if token and token in text)
-            return overlap + float(item.get("salience", 0.0) or 0.0) + float(item.get("confidence", 0.0) or 0.0)
+            item_tokens = {token for token in re.findall(r"[a-z0-9]{2,}", text) if token}
+            overlap = len(query_tokens & item_tokens)
+            normalized_value = str(item.get("normalized_value") or item.get("value") or item.get("summary") or "").strip().lower()
+            exact_match_bonus = 1.5 if normalized_value and (normalized_value == query_lower or normalized_value in query_lower) else 0.0
+            recency_bonus = 0.0
+            updated_at = _parse_datetimeish(item.get("updated_at") or item.get("last_reinforced_at") or item.get("created_at"))
+            if updated_at is not None:
+                age_days = max(0.0, (_utc_now() - updated_at).total_seconds() / 86400.0)
+                if age_days <= 14:
+                    recency_bonus = 0.35
+                elif age_days <= 60:
+                    recency_bonus = 0.18
+            status = str(item.get("status") or "").lower()
+            status_penalty = -2.0 if status in {"archived", "superseded"} else (-0.75 if status == "conflicted" else 0.0)
+            type_text = str(item.get("fact_type") or item.get("memory_type") or item.get("source_type") or "").lower()
+            type_boost = 0.35 if type_text and any(token in type_text for token in query_tokens) else 0.0
+            return (overlap * 1.4) + exact_match_bonus + recency_bonus + type_boost + float(item.get("salience", 0.0) or 0.0) + float(item.get("confidence", 0.0) or 0.0) + status_penalty
 
         def prepare(items: list[Any], text_keys: tuple[str, ...]) -> list[dict[str, Any]]:
             prepared = []
@@ -1397,6 +1041,8 @@ async def get_relevant_memories(student_id: str, query: str, limit: int = 8) -> 
                 if not item:
                     continue
                 data = _sanitize(dict(item))
+                if str(data.get("status") or "").lower() in {"archived", "superseded"}:
+                    continue
                 data["match_score"] = score(data, text_keys)
                 prepared.append(data)
             prepared.sort(key=lambda item: item.get("match_score", 0.0), reverse=True)
@@ -1411,6 +1057,7 @@ async def get_relevant_memories(student_id: str, query: str, limit: int = 8) -> 
 
 async def mark_memory_nudged(label: str, memory_id: str) -> None:
     """Increment nudge counters/timestamps for a memory-like node."""
+    label = _validate_graph_identifier(label, "label")
     driver = await get_driver()
     async with driver.session() as session:
         await session.run(
@@ -1465,7 +1112,7 @@ async def apply_conflict_choice(
     if action == "unresolved":
         if not target_ids:
             target_ids = [conflict_id] if conflict_id else []
-        rows = await run_cypher(
+        rows = await execute_cypher(
             """
             MATCH (c:CandidateFact)
             WHERE c.id IN $target_ids
@@ -1498,7 +1145,7 @@ async def apply_conflict_choice(
             "message": f"I couldn't find an active {fact_type} conflict for '{selected_value}'.",
         }
 
-    rows = await run_cypher(
+    rows = await execute_cypher(
         """
         MATCH (c:CandidateFact)
         WHERE c.id IN $target_ids
@@ -1581,74 +1228,7 @@ async def get_full_profile(student_id: str) -> dict[str, Any]:
                 entities_by_label[label] = []
             entities_by_label[label].append(props)
 
-    for label, items in list(entities_by_label.items()):
-        entities_by_label[label] = _dedupe_entities(items, label=label)
-
-    # Backward-compatible keys mapped from Neo4j labels
-    profile_facts: list[dict[str, Any]] = []
-    for personal_key in ("name", "email", "university", "program", "semester", "gpa"):
-        fact = _profile_fact_from_personal(personal_key, student.get(personal_key))
-        if fact:
-            profile_facts.append(fact)
-    for label in ("Course", "Skill", "Goal", "Interest", "Company", "Project", "Constraint", "Preference"):
-        for entity in entities_by_label.get(label, []):
-            fact = _profile_fact_from_entity(label, entity)
-            if fact:
-                profile_facts.append(fact)
-
-    candidate_fact_ledger = []
-    for fact in entities_by_label.get("CandidateFact", []):
-        ledger_item = {
-            "id": fact.get("id", ""),
-            "fact_type": fact.get("fact_type", "generic"),
-            "value": fact.get("value", ""),
-            "normalized_value": fact.get("normalized_value") or str(fact.get("value", "")).casefold(),
-            "confidence": float(fact.get("confidence", 0.0) or 0.0),
-            "salience": float(fact.get("salience", 0.0) or 0.0),
-            "status": fact.get("status", "candidate"),
-            "time_scope": fact.get("time_scope", "long_term"),
-            "stability": fact.get("stability", "evolving"),
-            "evidence_kind": fact.get("evidence_kind", "inference"),
-            "support_count": int(fact.get("support_count", 0) or 0),
-            "direct_statement_count": int(fact.get("direct_statement_count", 0) or 0),
-            "document_support_count": int(fact.get("document_support_count", 0) or 0),
-            "revision_count": int(fact.get("revision_count", 0) or 0),
-            "promotion_score": _safe_float(fact.get("promotion_score"), 0.0),
-            "created_at": fact.get("created_at"),
-            "updated_at": fact.get("updated_at"),
-            "metadata": _metadata_dict(fact.get("metadata")),
-        }
-        ledger_item["confirmation_state"] = _candidate_confirmation_state(ledger_item)
-        candidate_fact_ledger.append(ledger_item)
-    completeness_breakdown = _profile_completeness_breakdown(student, entities_by_label, candidate_fact_ledger)
-    fact_summary = _profile_fact_summary(profile_facts, candidate_fact_ledger)
-    temporal_profile = _build_temporal_profile(profile_facts, candidate_fact_ledger)
-    overall_completeness = round(
-        sum(item.get("score", 0.0) for item in completeness_breakdown.values()) / max(len(completeness_breakdown), 1),
-        2,
-    )
-    return {
-        "personal": student,
-        "courses": entities_by_label.get("Course", []),
-        "skills": entities_by_label.get("Skill", []),
-        "goals": entities_by_label.get("Goal", []),
-        "interests": entities_by_label.get("Interest", []),
-        "experience": entities_by_label.get("Company", []),
-        "documents": entities_by_label.get("Document", []),
-        "projects": entities_by_label.get("Project", []),
-        "constraints": entities_by_label.get("Constraint", []),
-        "preferences": entities_by_label.get("Preference", []),
-        "candidate_facts": entities_by_label.get("CandidateFact", []),
-        "candidate_fact_ledger": candidate_fact_ledger,
-        "memory_items": entities_by_label.get("MemoryItem", []),
-        "evidence": entities_by_label.get("Evidence", []),
-        "profile_facts": profile_facts,
-        "temporal_profile": temporal_profile,
-        "all_entities": entities_by_label,
-        "completeness": overall_completeness,
-        "completeness_breakdown": completeness_breakdown,
-        "fact_summary": fact_summary,
-    }
+    return build_full_profile_payload(student, entities_by_label)
 
 
 async def get_graph_data(student_id: str) -> dict[str, Any]:
@@ -1683,6 +1263,17 @@ async def get_graph_data(student_id: str) -> dict[str, Any]:
 
 async def run_cypher(query: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Execute an arbitrary read-only Cypher query and return results."""
+    normalized_query = " ".join(query.strip().split())
+    if _CYPHER_WRITE_PATTERN.search(normalized_query):
+        raise ValueError("run_cypher only allows read-only Cypher. Use execute_cypher for write queries.")
+    driver = await get_driver()
+    async with driver.session() as session:
+        result = await session.run(query, **(params or {}))
+        return [_sanitize(dict(record)) async for record in result]
+
+
+async def execute_cypher(query: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Execute a write-capable Cypher query and return sanitized records."""
     driver = await get_driver()
     async with driver.session() as session:
         result = await session.run(query, **(params or {}))

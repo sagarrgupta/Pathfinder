@@ -1,0 +1,693 @@
+<mxfile host="app.diagrams.net" modified="2026-04-12T12:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="overview-page" name="01 Overview">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1400" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="ov-title" value="Pathfinder End-to-End Architecture Flow" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=24;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="520" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-subtitle" value="From user query to streamed answer, replay artifact, and evaluation trace" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="40" y="50" width="620" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-user" value="User / Frontend&#xa;- Query&#xa;- Optional files&#xa;- session_id&#xa;- student_id&#xa;- advisor_mode" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="40" y="130" width="170" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-api" value="FastAPI App&#xa;app/main.py&#xa;&#xa;Startup:&#xa;- init_schema()&#xa;- ensure_vector_index()&#xa;- start_background_jobs()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="280" y="120" width="210" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-route" value="POST /api/v1/chat&#xa;app/api/routes.py::chat()&#xa;&#xa;- resolve/create student id&#xa;- create session id&#xa;- replace old docs if needed&#xa;- validate and read uploads" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="560" y="110" width="240" height="160" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-runtime" value="Runtime Session Builder&#xa;app/services/runtime_session.py&#xa;&#xa;- get_dependency_status()&#xa;- build_request_plan()&#xa;- evaluate_runtime_preflight()&#xa;- build initial PathfinderState&#xa;- build graph config + runtime snapshot" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="880" y="100" width="260" height="180" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-graph" value="LangGraph Runtime&#xa;app/core/graph.py&#xa;&#xa;input_guard -&gt; orchestrator -&gt;&#xa;prep nodes -&gt; advisory node -&gt;&#xa;evaluator -&gt; responder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1210" y="110" width="250" height="160" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-stream" value="SSE Streaming Loop&#xa;&#xa;- merge each node state_update&#xa;- emit step_progress events&#xa;- emit token events from final_answer&#xa;- build done payload" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1540" y="120" width="220" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-persist" value="Persistence / Observability&#xa;&#xa;- persist_decision_record()&#xa;- build_replay_artifact()&#xa;- save_replay_artifact()&#xa;- replay_id in done payload" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1830" y="120" width="220" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-arrow1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-user" target="ov-api">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-arrow2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-api" target="ov-route">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-arrow3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-route" target="ov-runtime">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-arrow4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-runtime" target="ov-graph">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-arrow5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-graph" target="ov-stream">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-arrow6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-stream" target="ov-persist">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ov-agents-title" value="Core LangGraph Nodes" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="340" width="240" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-input" value="1. input_guard&#xa;- empty / length checks&#xa;- prompt injection detection&#xa;- off-topic guardrail" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="390" width="170" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-orch" value="2. orchestrator&#xa;- profile preload&#xa;- workflow inference&#xa;- plan generation&#xa;- ordering guardrails&#xa;- dependency gating" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="260" y="380" width="190" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-doc" value="doc_analyst&#xa;- extract text&#xa;- infer document role&#xa;- build transcript state&#xa;- embed/store chunks&#xa;- extract entities" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="520" y="380" width="180" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-profile" value="profile_manager&#xa;- ensure student&#xa;- in-turn memory ingestion&#xa;- load full profile&#xa;- hybrid vector search&#xa;- build memory/evidence pack" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="760" y="370" width="210" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-web" value="web_researcher&#xa;- direct URL fetch&#xa;- smart query generation&#xa;- web search fallback chain&#xa;- fetch best pages&#xa;- provenance + source audit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="370" width="210" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-advisors" value="Advisory Nodes&#xa;- academic_advisor&#xa;- course_planner&#xa;- program_advisor&#xa;- career_matcher&#xa;- eligibility_reasoner&#xa;- career_planner&#xa;- interview_prep" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1320" y="360" width="210" height="160" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-eval" value="evaluator&#xa;- groundedness check&#xa;- confidence scoring&#xa;- rewrite / patch if needed&#xa;- passive profile learning&#xa;- trace summary" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1600" y="380" width="190" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-resp" value="responder&#xa;- structured rendering&#xa;- greeting/document special cases&#xa;- fallback answer synthesis&#xa;- final formatting" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1850" y="390" width="180" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-a1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-input" target="ov-orch"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ov-a2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-orch" target="ov-doc"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ov-a3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-doc" target="ov-profile"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ov-a4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-profile" target="ov-web"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ov-a5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-web" target="ov-advisors"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ov-a6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-advisors" target="ov-eval"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ov-a7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="ov-eval" target="ov-resp"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="ov-data-title" value="Key Data Systems and Artifacts" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="580" width="320" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-state" value="PathfinderState&#xa;Shared graph state with:&#xa;- planning fields&#xa;- evidence fields&#xa;- output fields&#xa;- progress / trace / recovery" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="630" width="210" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-neo" value="Neo4j Graph Store&#xa;- student profile&#xa;- entities&#xa;- documents&#xa;- evidence&#xa;- saved recommendations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="320" y="630" width="180" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-vec" value="Neo4j Vector Index&#xa;- chunk embeddings&#xa;- hybrid search&#xa;- document retrieval" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="560" y="640" width="170" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-llm" value="LLM / Tool Adapters&#xa;- LM Studio text / structured LLMs&#xa;- embeddings&#xa;- web search chain&#xa;- URL fetcher" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="790" y="630" width="220" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-check" value="SQLite Checkpointer&#xa;- thread_id = student_id:session_id&#xa;- graph memory / continuity" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="640" width="190" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-replay" value="Replay / Eval Artifacts&#xa;- done payload&#xa;- replay artifact&#xa;- decision record&#xa;- eval analytics inputs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="1340" y="630" width="210" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="ov-nav" value="See next pages for detailed subflows:&#xa;02 Request Setup&#xa;03 LangGraph Routing&#xa;04 Document Ingestion&#xa;05 Profile + Web Retrieval&#xa;06 Evaluation + Response" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1630" y="630" width="300" height="120" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="request-setup-page" name="02 Request Setup">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1400" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="rs-title" value="Detailed Request Setup and Runtime Session Assembly" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=24;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="650" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs1" value="Incoming POST /api/v1/chat&#xa;Fields: query, session_id, student_id, files, is_global_upload, replace_filenames, advisor_mode" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="60" y="90" width="280" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs2" value="Resolve student_id&#xa;- if provided: ensure_student()&#xa;- if absent: generate_student_id() + ensure_student()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="420" y="100" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs3" value="Resolve session_id&#xa;- keep caller value if present&#xa;- else generate_session_id()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="720" y="105" width="200" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs4" value="Parse replace_filenames&#xa;- comma-separated list&#xa;- delete matching old document nodes + chunks before re-upload" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="990" y="95" width="240" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs5" value="Read uploaded files&#xa;- validate filename/type&#xa;- enforce max size&#xa;- load bytes into memory&#xa;- normalize filename/content/size/content_type" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1310" y="90" width="250" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs6" value="get_compiled_graph()&#xa;- build_graph()&#xa;- get_checkpointer()&#xa;- graph.compile(checkpointer=SqliteSaver)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1640" y="100" width="220" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rs7" value="build_chat_runtime_session()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="310" width="240" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs8" value="get_dependency_status()&#xa;- Neo4j connectivity&#xa;- LLM availability&#xa;- embedding service availability&#xa;- web search availability" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="60" y="420" width="240" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs9" value="build_request_plan()&#xa;- greeting detection&#xa;- profile-update detection&#xa;- file/URL heuristics&#xa;- advisor_mode forcing&#xa;- skip_llm_routing hints" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="360" y="410" width="250" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs10" value="evaluate_runtime_preflight()&#xa;- dependency-aware policy decisions&#xa;- retrieval mode constraints&#xa;- compare mode settings&#xa;- runtime safety/degradation decisions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="680" y="410" width="260" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs11" value="Create RuntimeSnapshot&#xa;- selected text model&#xa;- selected retrieval mode&#xa;- advisor mode&#xa;- uploaded file count&#xa;- execution registry summary&#xa;- dependency snapshot&#xa;- runtime policy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="400" width="260" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs12" value="Build initial PathfinderState&#xa;Includes input, planning defaults, evidence defaults, progress fields, output fields, and runtime metadata" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1340" y="410" width="260" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs13" value="Build graph config&#xa;- configurable.thread_id = student_id:session_id&#xa;- recursion_limit = 15" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1670" y="430" width="220" height="90" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rs14" value="graph.astream(initial_state, config)&#xa;- stream node-by-node state updates&#xa;- route progress to SSE&#xa;- accumulate final_state" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="760" y="650" width="300" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rs15" value="During streaming loop&#xa;- for each event {node_name: state_update}&#xa;- merge state_update into final_state&#xa;- emit new step_progress messages as SSE progress events" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="420" y="840" width="320" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs16" value="After graph completion&#xa;- final_answer = final_state['final_answer']&#xa;- emit token events word-by-word&#xa;- build done payload" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="820" y="850" width="280" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs17" value="Persistence&#xa;- persist_decision_record()&#xa;- build_replay_artifact()&#xa;- save_replay_artifact()&#xa;- attach replay_id" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="850" width="240" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="rs18" value="Send SSE done event to caller" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1490" y="870" width="220" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rse1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs1" target="rs2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs2" target="rs3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse3" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs3" target="rs4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs4" target="rs5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs5" target="rs6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs6" target="rs7"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="1750" y="250"/><mxPoint x="180" y="250"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="rse7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs7" target="rs8"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse8" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs7" target="rs9"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse9" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs7" target="rs10"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse10" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs8" target="rs11"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse11" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs9" target="rs11"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse12" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs10" target="rs11"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse13" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs11" target="rs12"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse14" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs12" target="rs13"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse15" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs13" target="rs14"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse16" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs14" target="rs15"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="760" y="820"/><mxPoint x="580" y="820"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="rse17" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs14" target="rs16"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse18" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs16" target="rs17"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rse19" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rs17" target="rs18"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="langgraph-page" name="03 LangGraph Routing">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1400" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="lg-title" value="LangGraph Routing and Shared State Flow" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=24;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="520" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-state" value="PathfinderState&#xa;Shared fields include:&#xa;- query, files, student_id, session_id&#xa;- intent, plan, next_node, workflow&#xa;- profile_data, documents, web_results&#xa;- evidence_pack, decision_payload&#xa;- draft_answer, final_answer&#xa;- confidence, citations, trace_summary&#xa;- recovery_events, blocked_reasons, step_progress" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="90" width="310" height="220" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lg-start" value="Graph Entry" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="110" width="120" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-input" value="input_guard&#xa;- empty / length / injection checks&#xa;- topic guard (unless disabled)&#xa;- can short-circuit to responder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="700" y="90" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-block" value="Blocked?&#xa;is_blocked + block_reason" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="990" y="100" width="140" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-orch" value="orchestrator&#xa;- preload profile summary&#xa;- infer workflow / target / source policy&#xa;- use deterministic plan or LLM routing&#xa;- insert ordering guardrails&#xa;- apply dependency gates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1210" y="80" width="260" height="120" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lg-clar" value="clarifier&#xa;- asks for missing info&#xa;- then responder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1540" y="40" width="160" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-doc" value="doc_analyst&#xa;- extraction&#xa;- chunking / embedding&#xa;- document roles&#xa;- transcript state&#xa;- entity extraction" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1520" y="150" width="180" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-profile" value="profile_manager&#xa;- ensure student&#xa;- in-turn memory ingestion&#xa;- load profile&#xa;- hybrid retrieval&#xa;- evidence pack" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1740" y="140" width="190" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-web" value="web_researcher&#xa;- direct URL fetch&#xa;- smart query generation&#xa;- search + filtering&#xa;- source audit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1960" y="150" width="180" height="120" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lg-fact" value="fact_extractor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1560" y="360" width="130" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-course" value="course_planner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1720" y="360" width="130" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-program" value="program_advisor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1880" y="360" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-careerm" value="career_matcher" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="2050" y="360" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-elig" value="eligibility_reasoner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1550" y="460" width="170" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-acad" value="academic_advisor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1760" y="460" width="160" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-careerp" value="career_planner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1960" y="460" width="140" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-interview" value="interview_prep" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="2130" y="460" width="130" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lg-eval" value="evaluator&#xa;- groundedness / confidence&#xa;- rewrite / patch&#xa;- passive profile updates&#xa;- trace_summary / stop_reason" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1770" y="610" width="210" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-resp" value="responder&#xa;- block / dependency special cases&#xa;- structured rendering&#xa;- fallback synthesis&#xa;- final formatting" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1770" y="790" width="210" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg-end" value="END / final_answer" style="ellipse;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1810" y="980" width="130" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lge1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-start" target="lg-input"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-input" target="lg-block"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge3" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-block" target="lg-orch"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge4" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-block" target="lg-resp"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="1060" y="760"/><mxPoint x="1770" y="760"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="lge5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-orch" target="lg-clar"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-orch" target="lg-doc"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-orch" target="lg-profile"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge8" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-orch" target="lg-web"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge9" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-doc" target="lg-fact"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge10" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-profile" target="lg-fact"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge11" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-web" target="lg-fact"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge12" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-fact" target="lg-course"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge13" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-fact" target="lg-program"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge14" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-fact" target="lg-careerm"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge15" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-fact" target="lg-elig"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge16" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-fact" target="lg-acad"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge17" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-fact" target="lg-careerp"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge18" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-fact" target="lg-interview"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge19" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-clar" target="lg-resp"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="1620" y="760"/><mxPoint x="1770" y="760"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="lge20" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-course" target="lg-eval"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge21" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-program" target="lg-eval"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge22" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-careerm" target="lg-eval"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge23" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-elig" target="lg-eval"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge24" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-acad" target="lg-eval"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge25" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-careerp" target="lg-eval"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge26" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-interview" target="lg-eval"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge27" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-eval" target="lg-resp"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lge28" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="lg-resp" target="lg-end"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="document-page" name="04 Document Ingestion">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1400" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="doc-title" value="Detailed Document Ingestion and Knowledge Extraction Flow" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=24;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="700" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc1" value="doc_analyst starts&#xa;Reads files, session_id, student_id, scope" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="220" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc2" value="Files present?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="360" y="105" width="140" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc3" value="Return unchanged state&#xa;- add 'No files to process' progress" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="550" y="100" width="200" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc4" value="For each uploaded file" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="260" width="180" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc5" value="Detect file type&#xa;pdf / image / docx / text / unsupported" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="300" y="255" width="200" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc6" value="Supported type?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="120" y="250" width="130" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc7" value="Skip unsupported file" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="40" y="360" width="180" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="doc8" value="execute_document_ingestion()&#xa;- routes by file type&#xa;- Docling-first extraction pipeline&#xa;- returns pages, plain_text, markdown_text, structured_chunks, backend metadata" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="300" y="380" width="300" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc9" value="Extraction succeeded?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="660" y="400" width="140" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc10" value="Add recovery event&#xa;recovery_for_document_extraction_failure()&#xa;Skip this file" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="850" y="390" width="240" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="doc11" value="Normalize text outputs&#xa;- derive plain_text&#xa;- derive markdown_text&#xa;- fallback from pages if needed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="300" y="560" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc12" value="Text empty?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="610" y="570" width="130" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc13" value="Add empty extraction recovery event&#xa;Skip file" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="800" y="560" width="220" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="doc14" value="Infer document role&#xa;- resume&#xa;- transcript&#xa;- general_document&#xa;- other semantic role" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="300" y="730" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc15" value="If transcript: build_transcript_state_from_sources()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="590" y="750" width="260" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc16" value="store_document_node()&#xa;- document_id&#xa;- filename / scope&#xa;- role / confidence / signals&#xa;- extraction backend metadata" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="930" y="725" width="250" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc17" value="If transcript: store_evidence(source_type=transcript_state)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="750" width="250" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="doc18" value="Chunking strategy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="300" y="910" width="160" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc19" value="Structured chunks available?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="520" y="900" width="160" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc20" value="Use Docling structured chunks&#xa;- headings&#xa;- item labels&#xa;- page numbers&#xa;- chunk_method=docling_hybrid_chunker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="740" y="890" width="230" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc21" value="Fallback chunking&#xa;RecursiveCharacterTextSplitter&#xa;+ best-effort page mapping" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="740" y="1010" width="230" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc22" value="aembed_documents()&#xa;- create embeddings for chunk texts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="920" width="210" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc23" value="Embedding/store success?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1320" y="910" width="150" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc24" value="store_chunks() in vector index" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1530" y="920" width="190" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc25" value="Add embedding failure recovery event&#xa;Document metadata remains available" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1530" y="1010" width="230" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="doc26" value="LLM entity extraction&#xa;- prompt with plain_text / markdown / structured chunk context&#xa;- parse JSON&#xa;- entities + student_properties" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1780" y="900" width="260" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc27" value="store_extracted_entities()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1780" y="1040" width="200" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="doc28" value="Return updated state&#xa;- extracted_entities&#xa;- document_roles&#xa;- transcript_states&#xa;- recovery_events&#xa;- next_node from plan" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1840" y="1140" width="260" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="doce1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc1" target="doc2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce2" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc2" target="doc3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce3" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc2" target="doc5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce4" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc5" target="doc6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce5" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc6" target="doc7"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce6" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc6" target="doc4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc4" target="doc8"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce8" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc8" target="doc9"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce9" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc9" target="doc10"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce10" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc9" target="doc11"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce11" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc11" target="doc12"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce12" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc12" target="doc13"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce13" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc12" target="doc14"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce14" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc14" target="doc15"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce15" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc15" target="doc16"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce16" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc16" target="doc17"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce17" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc17" target="doc18"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="1365" y="880"/><mxPoint x="380" y="880"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="doce18" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc18" target="doc19"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce19" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc19" target="doc20"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce20" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc19" target="doc21"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce21" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc20" target="doc22"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce22" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc21" target="doc22"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce23" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc22" target="doc23"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce24" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc23" target="doc24"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce25" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc23" target="doc25"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce26" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc24" target="doc26"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce27" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc25" target="doc26"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce28" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc26" target="doc27"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="doce29" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="doc27" target="doc28"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="retrieval-page" name="05 Profile + Web Retrieval">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1400" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="rw-title" value="Detailed Profile, Memory, and Web Retrieval Flow" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=24;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="650" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rw-profile-start" value="profile_manager starts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="100" width="200" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-profile-ensure" value="ensure_student(student_id)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="320" y="100" width="180" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-profile-ingest-q" value="Current query looks like profile signal?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="570" y="90" width="170" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-profile-ingest" value="ingest_memory(source=chat_query)&#xa;- candidate facts&#xa;- memory items&#xa;- promoted entities&#xa;- student updates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="820" y="80" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-profile-load" value="get_full_profile(student_id)&#xa;- personal&#xa;- courses&#xa;- skills&#xa;- goals&#xa;- documents&#xa;- candidate facts / evidence / memory_items" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="80" width="250" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-profile-search" value="hybrid_search(query, k=5, student_id, session_id)&#xa;- vector + graph aware retrieval" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1430" y="90" width="230" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-profile-pack" value="build_memory_pack()&#xa;- semantic_memory&#xa;- conflicts&#xa;- saved_recommendations&#xa;- decision_records&#xa;- fallback documents" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1720" y="80" width="240" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-profile-infer" value="Derive planning context&#xa;- session_summary&#xa;- query_focus&#xa;- workflow&#xa;- target_entity&#xa;- student_strategy&#xa;- operating_model&#xa;- decision_continuity" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="260" width="280" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-profile-source" value="Build/govern source_policy&#xa;- preferred domains&#xa;- target institution/program/level&#xa;- strict source requirements&#xa;- targeted_web_questions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="260" width="260" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-profile-evidence" value="build_evidence_pack()&#xa;- profile records&#xa;- document records&#xa;- web records&#xa;- semantic memory&#xa;- evidence records&#xa;- missing information" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1780" y="260" width="240" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-profile-next" value="Return updated state to next node&#xa;- usually web_researcher, fact_extractor, or advisory node" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1780" y="450" width="240" height="90" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rw-web-title" value="web_researcher subflow" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="630" width="240" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-web-start" value="web_researcher starts&#xa;- reads source_policy + targeted_web_questions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="690" width="230" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-web-url" value="Extract explicit URLs from query" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="350" y="700" width="180" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-web-urlq" value="URLs found?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="590" y="690" width="130" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-web-fetch" value="fetch_url_content()&#xa;- direct page content&#xa;- add to web_results&#xa;- log provenance&#xa;- audit trust / fit / freshness" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="790" y="680" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-web-generate" value="Generate smart queries&#xa;- URL-aware prompt if URLs present&#xa;- else standard profile-aware prompt&#xa;- merge targeted questions&#xa;- expand with domains and policy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1090" y="670" width="280" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-web-search" value="search() fallback chain&#xa;- run each generated query&#xa;- retry if configured&#xa;- record tool_call_log entries" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1430" y="680" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-web-score" value="Score + dedupe results&#xa;- domain preference&#xa;- source relevance&#xa;- target program / level / institution fit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1730" y="680" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-web-fetchbest" value="Fetch strongest search hits&#xa;within fetch budget" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1430" y="840" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-web-filter" value="Classify / filter sources&#xa;- source_type&#xa;- trust tier&#xa;- fit tier&#xa;- freshness tier&#xa;- strict_primary_only rules&#xa;- institution-match rules" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="1690" y="830" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="rw-web-return" value="Return updated state&#xa;- web_results&#xa;- working_memory source audit&#xa;- tool_call_log&#xa;- task_graph status&#xa;- next advisory/prep node" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1430" y="990" width="260" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rwe1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-profile-start" target="rw-profile-ensure"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-profile-ensure" target="rw-profile-ingest-q"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe3" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-profile-ingest-q" target="rw-profile-ingest"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe4" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-profile-ingest-q" target="rw-profile-load"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="655" y="220"/><mxPoint x="1245" y="220"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="rwe5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-profile-ingest" target="rw-profile-load"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-profile-load" target="rw-profile-search"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-profile-search" target="rw-profile-pack"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe8" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-profile-pack" target="rw-profile-infer"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe9" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-profile-infer" target="rw-profile-source"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe10" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-profile-source" target="rw-profile-evidence"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe11" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-profile-evidence" target="rw-profile-next"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="rwe12" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-web-start" target="rw-web-url"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe13" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-web-url" target="rw-web-urlq"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe14" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-web-urlq" target="rw-web-fetch"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe15" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-web-urlq" target="rw-web-generate"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="655" y="820"/><mxPoint x="1230" y="820"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="rwe16" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-web-fetch" target="rw-web-generate"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe17" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-web-generate" target="rw-web-search"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe18" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-web-search" target="rw-web-score"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe19" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-web-score" target="rw-web-fetchbest"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe20" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-web-fetchbest" target="rw-web-filter"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="rwe21" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="rw-web-filter" target="rw-web-return"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="response-page" name="06 Evaluation + Response">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1400" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="er-title" value="Detailed Evaluation, Final Response, and Done Payload Flow" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=24;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="760" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="er1" value="Advisory node output&#xa;- draft_answer&#xa;- citations&#xa;- evidence_pack&#xa;- decision_payload&#xa;- tool_call_log" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="60" y="100" width="240" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="er2" value="evaluator starts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="370" y="120" width="170" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="er3" value="Draft exists?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="610" y="110" width="140" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="er4" value="Fail render_final_answer task&#xa;confidence=0&#xa;is_grounded=False&#xa;next_node=responder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="820" y="100" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="er5" value="Compile evaluator evidence&#xa;- document sources&#xa;- web sources&#xa;- evidence records&#xa;- provenance text from tool_call_log&#xa;- handoff context from working_memory" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="820" y="250" width="280" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="er6" value="Structured evaluator LLM call&#xa;Returns is_grounded, confidence_score, issues, profile_updates, disclaimer, etc." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="260" width="280" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="er7" value="Validate decision_payload against source evidence&#xa;- keep supported recommendations&#xa;- drop unsupported items&#xa;- accumulate blocked reasons if needed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1500" y="250" width="300" height="130" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="er8" value="Severity / rewrite decision" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="360" y="460" width="220" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="er9" value="Severe issues or low confidence?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="660" y="450" width="170" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="er10" value="Full grounded rewrite&#xa;If rewrite fails and evidence is too weak, replace with verification warning" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="910" y="440" width="260" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="er11" value="Mild factual issues?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="910" y="600" width="160" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="er12" value="Patch mild factual issues" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1140" y="610" width="190" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="er13" value="Needs disclaimer?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1390" y="600" width="150" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="er14" value="Append disclaimer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1600" y="610" width="170" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="er15" value="Persist passive profile_updates&#xa;- update_student()&#xa;- store_extracted_entities() for entity-like updates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="760" width="290" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="er16" value="Finalize evaluator output&#xa;- confidence_score&#xa;- is_grounded&#xa;- decision_payload&#xa;- blocked_reasons&#xa;- trace_summary&#xa;- stop_reason&#xa;- next_node=responder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1510" y="750" width="290" height="120" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="er17" value="responder starts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="970" width="170" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="er18" value="Blocked or dependency stop_reason?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="320" y="960" width="180" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="er19" value="Return direct user-facing explanation&#xa;- block_reason&#xa;- dependency guidance" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="570" y="950" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="er20" value="Decision payload present?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="860" y="960" width="170" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="er21" value="Render structured answer&#xa;- recommendations&#xa;- semester options&#xa;- verified requirements&#xa;- confidence / citations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1090" y="950" width="240" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="er22" value="No draft?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="1400" y="960" width="130" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="er23" value="Fallback contextual synthesis&#xa;- profile context&#xa;- document excerpts&#xa;- web snippets&#xa;- responder contextual prompt" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1590" y="950" width="260" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="er24" value="Format/polish final draft&#xa;- responder formatter prompt&#xa;- final_answer + citations + AI message" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1880" y="950" width="250" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="er25" value="Done payload + SSE finish&#xa;- confidence&#xa;- citations&#xa;- method&#xa;- quality_path&#xa;- trace_summary&#xa;- dependency / recovery / retrieval metadata&#xa;- replay_id" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1760" y="1120" width="320" height="130" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ere1" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er1" target="er2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere2" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er2" target="er3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere3" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er3" target="er4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere4" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er3" target="er5"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere5" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er5" target="er6"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere6" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er6" target="er7"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere7" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er7" target="er8"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="1650" y="430"/><mxPoint x="470" y="430"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="ere8" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er8" target="er9"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere9" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er9" target="er10"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere10" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er9" target="er11"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="745" y="570"/><mxPoint x="990" y="570"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="ere11" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er11" target="er12"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere12" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er11" target="er13"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere13" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er13" target="er14"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere14" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er13" target="er15"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="1465" y="730"/><mxPoint x="1325" y="730"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="ere15" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er10" target="er15"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere16" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er12" target="er15"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere17" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er14" target="er15"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere18" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er15" target="er16"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere19" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er4" target="er17"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="930" y="920"/><mxPoint x="165" y="920"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="ere20" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er16" target="er17"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="1655" y="920"/><mxPoint x="165" y="920"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="ere21" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er17" target="er18"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere22" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er18" target="er19"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere23" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er18" target="er20"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere24" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er20" target="er21"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere25" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er20" target="er22"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere26" value="Yes" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er22" target="er23"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere27" value="No" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er22" target="er24"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere28" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er19" target="er25"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="680" y="1110"/><mxPoint x="1920" y="1110"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="ere29" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er21" target="er25"><mxGeometry relative="1" as="geometry">
+          <Array as="points"><mxPoint x="1210" y="1110"/><mxPoint x="1920" y="1110"/></Array>
+        </mxGeometry></mxCell>
+        <mxCell id="ere30" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er23" target="er24"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ere31" style="edgeStyle=orthogonalEdgeStyle;html=1;endArrow=block;endFill=1;strokeWidth=2;" edge="1" parent="1" source="er24" target="er25"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -13,6 +13,8 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
+from app.adapters.web_search._common import build_search_result, normalize_url
+
 log = logging.getLogger("pathfinder.search.url_fetcher")
 
 # Regex to extract URLs from user text
@@ -45,7 +47,14 @@ _HEADERS = {
 
 def extract_urls(text: str) -> list[str]:
     """Extract all URLs from a text string."""
-    return _URL_PATTERN.findall(text)
+    urls = [normalize_url(url) for url in _URL_PATTERN.findall(text or "")]
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for url in urls:
+        if url and url not in seen:
+            seen.add(url)
+            deduped.append(url)
+    return deduped
 
 
 async def fetch_url_content(url: str, timeout: float = 15.0) -> dict[str, Any] | None:
@@ -54,6 +63,9 @@ async def fetch_url_content(url: str, timeout: float = 15.0) -> dict[str, Any] |
     Returns a dict with title, url, content, and source fields
     (same shape as web search results), or None on failure.
     """
+    url = normalize_url(url)
+    if not url:
+        return None
     try:
         async with httpx.AsyncClient(
             follow_redirects=True,
@@ -106,13 +118,14 @@ async def fetch_url_content(url: str, timeout: float = 15.0) -> dict[str, Any] |
 
         log.info("Fetched %d chars from %s", len(text), url)
 
-        return {
-            "title": title,
-            "url": url,
-            "content": text,
-            "score": 1.0,  # Direct URL fetch = highest relevance
-            "source": "direct_url",
-        }
+        return build_search_result(
+            title=title,
+            url=url,
+            content=text,
+            score=1.0,
+            source="direct_url",
+            extra={"fetched_via": "url_fetcher"},
+        )
 
     except httpx.HTTPStatusError as exc:
         log.warning("HTTP error fetching %s: %s", url, exc.response.status_code)
@@ -130,7 +143,7 @@ def _extract_text(element) -> str:
 
     Preserves paragraph structure with double newlines between blocks.
     """
-    blocks = []
+    blocks: list[str] = []
     for child in element.find_all(
         ["p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "td", "th", "div", "span"],
         recursive=True,
@@ -144,9 +157,14 @@ def _extract_text(element) -> str:
         return element.get_text(separator="\n", strip=True)
 
     # Deduplicate consecutive blocks (nested elements can repeat)
-    deduped = []
+    deduped: list[str] = []
+    seen_casefold: set[str] = set()
     for block in blocks:
+        key = block.casefold()
+        if key in seen_casefold:
+            continue
         if not deduped or block != deduped[-1]:
             deduped.append(block)
+            seen_casefold.add(key)
 
     return "\n\n".join(deduped)

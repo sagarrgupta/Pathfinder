@@ -13,7 +13,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.adapters.llm.lmstudio import get_json_llm
+from app.adapters.llm.lmstudio import get_structured_llm
 from app.agents.advisor_runtime import (
     finalize_structured_advisor,
     prepare_structured_advisor,
@@ -109,7 +109,7 @@ async def _llm_course_payload(
     if not any(evidence_groups.values()):
         return {}
 
-    llm = get_json_llm()
+    llm = get_structured_llm("course_planner")
     response = await llm.ainvoke([
         SystemMessage(content=COURSE_PLANNER_PROMPT),
         HumanMessage(content=(

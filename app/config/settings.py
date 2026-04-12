@@ -11,10 +11,9 @@ class Settings(BaseSettings):
 
     # ---------- LM Studio (Text + Vision LLM) ----------
     LLM_BASE_URL: str = "http://localhost:1234/v1"
-    LLM_MODEL: str = "qwen/qwen3-14b"
+    LLM_MODEL: str = "google/gemma-4-26b-a4b"
     LLM_API_KEY: str = "sk-no-key"
-    VISION_MODEL: str = "qwen/qwen3-vl-8b"
-    LLM_TEMPERATURE: float = 0.2
+    VISION_MODEL: str = "google/gemma-4-26b-a4b"
 
     # ---------- Ollama (Embeddings) ----------
     OLLAMA_URL: str = "http://localhost:11434"
@@ -24,16 +23,16 @@ class Settings(BaseSettings):
     # ---------- Neo4j ----------
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"
-    NEO4J_PASSWORD: str = ""
+    NEO4J_PASSWORD: str = "pathfinder123"
 
     # ---------- SQLite (LangGraph Memory) ----------
     SQLITE_DB_PATH: str = "data/pathfinder.db"
     REPLAY_ARTIFACT_DIR: str = "data/replays"
 
     # ---------- Retrieval ----------
-    TOP_K: int = 5
-    CHUNK_SIZE: int = 500
-    CHUNK_OVERLAP: int = 100
+    TOP_K: int = 6
+    CHUNK_SIZE: int = 700
+    CHUNK_OVERLAP: int = 120
     
     # ---------- Web Search API Keys ----------
     TAVILY_API_KEY: str = ""
@@ -46,12 +45,7 @@ class Settings(BaseSettings):
 
     # ---------- Session ----------
     SESSION_TTL_MINUTES: int = 60
-    MAX_CONVERSATION_HISTORY_MESSAGES: int = 20
-    
-    # ---------- Rate Limiting ----------
-    RATE_LIMIT_ENABLED: bool = True
-    RATE_LIMIT_PER_MINUTE: int = 60
-    
+
     # ---------- API ----------
     API_V1_PREFIX: str = "/api/v1"
     API_TITLE: str = "Pathfinder API"
@@ -64,16 +58,14 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE_MB: int = 10
     ALLOWED_FILE_TYPES: list[str] = [".pdf", ".png", ".jpg", ".jpeg", ".heif", ".heic", ".docx"]
 
-    # ---------- LLM Limits ----------
-    # Keep a generous token budget for local reasoning models to avoid
-    # empty responses on longer multi-step tasks.
-    LLM_MAX_TOKENS: int = 16384
-    LLM_REQUEST_TIMEOUT: float = 300.0   # Thinking models can take longer
-    LLM_FREQUENCY_PENALTY: float = 0.6   # Penalise repeated tokens (prevents repetition loops)
-    LLM_PRESENCE_PENALTY: float = 0.3    # Encourage topic diversity
-    LLM_JSON_RESPONSE_FORMAT: bool = True # Enforce JSON outputs for structured tasks
+    # ---------- LLM Options ----------
+    LLM_JSON_RESPONSE_FORMAT: bool = True # Keep a JSON-oriented transport for structured tasks
+    LLM_STRUCTURED_OUTPUT_MODE: str = "loose"
+    LLM_STRICT_STRUCTURED_NODES: str = ""
+    LLM_DEBUG_LOG_ENABLED: bool = False
+    LLM_DEBUG_LOG_PATH: str = "data/llm_debug.log"
     TOOL_CALL_TIMEOUT_SECONDS: float = 20.0
-    TOOL_CALL_LOG_MAX_ENTRIES: int = 80
+    TOOL_CALL_LOG_MAX_ENTRIES: int = 30
 
     # ---------- Server ----------
     HOST: str = "0.0.0.0"
