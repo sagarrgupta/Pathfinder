@@ -1,0 +1,14 @@
+requirements.txt
+HowToStart.txt
+PATHFINDER_ARCHITECTURE.md
+AGENTS.md
+how-to/client-and-ui-options.md
+how-to/how-to.md
+how-to/web-search-and-tools.md
+how-to/lmstudio-local-llms.md
+how-to/agent-orchestration-tools.md
+how-to/ollama-embeddings.md
+how-to/mcp-exposing-your-tools.md
+how-to/docker-for-local-services.md
+how-to/neo4j-and-graph-memory.md
+how-to/backend-service-and-agent-graph.md

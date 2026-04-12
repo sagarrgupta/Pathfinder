@@ -61,3 +61,6 @@ slowapi>=0.1.9
 # Testing
 pytest>=8.3.2
 pytest-asyncio>=0.23.0
+
+# Repo graph tooling
+graphifyy

@@ -44,6 +44,13 @@ data/
 logs/
 debug.log
 
+# ── Python Tooling Caches ────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
 # ── Docker volumes ───────────────────────────────
 docker/data/
 docker/plugins/

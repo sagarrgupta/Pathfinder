@@ -1,1 +1,1577 @@
-{"nodes":[{"id":"pathfinder_architecture","label":"Pathfinder: System Architecture","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"pathfinder_core_principles","label":"Core Principles","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"pathfinder_privacy_rationale","label":"Privacy Rationale","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"pathfinder_personalization_rationale","label":"Personalization Rationale","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"pathfinder_reliability_rationale","label":"Reliability Rationale","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"pathfinder_modularity_rationale","label":"Modularity Rationale","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"collaborative_swarm_langgraph","label":"Collaborative Swarm LangGraph","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"langchain_components","label":"LangChain Components","file_type":"document","source_file":"how-to/agent-orchestration-tools.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"langgraph_stategraph","label":"LangGraph StateGraph","file_type":"document","source_file":"how-to/agent-orchestration-tools.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"langflow_visual_prototyping","label":"Langflow Visual Prototyping","file_type":"document","source_file":"how-to/agent-orchestration-tools.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"sqlite_saver_persistence","label":"SqliteSaver Persistent Memory","file_type":"document","source_file":"how-to/agent-orchestration-tools.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"hybrid_kg_extraction","label":"Hybrid Knowledge Graph Extraction","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"neo4j_only_knowledge_store","label":"Neo4j-Only Knowledge Store","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"adaptive_doc_processing","label":"Adaptive Document Processing","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"web_search_fallback_chain","label":"Web Search Fallback Chain","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"guardrails_and_confidence_scoring","label":"Guardrails and Confidence Scoring","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"streaming_sse","label":"Streaming SSE","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"react_vite_tailwind_shadcn_ui","label":"React + Vite + Tailwind + shadcn/ui","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"mcp_server","label":"MCP Server","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"node_design_10_plus_1","label":"10+1 Agent Nodes","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"shared_state_schema","label":"Shared State Schema","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"neo4j_graph_schema","label":"Neo4j Graph Schema","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"vector_index_chunk_embeddings","label":"Chunk Embeddings Vector Index","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"lmstudio_gpt_oss_20b","label":"LM Studio GPT-OSS-20B","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"lmstudio_qwen3_vl_8b","label":"LM Studio Qwen3-VL-8B","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"ollama_mxbai_embed_large","label":"Ollama mxbai-embed-large","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"fastapi_backend","label":"FastAPI Backend","file_type":"document","source_file":"how-to/backend-service-and-agent-graph.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"document_processing_pipeline","label":"Document Processing Pipeline","file_type":"document","source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"project_proposal_pathfinder","label":"Pathfinder Project Proposal","file_type":"paper","source_file":"Project Proposal.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"project_proposal_student_pain_points","label":"Student Pain Points","file_type":"paper","source_file":"Project Proposal.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"project_proposal_guardrails_reliability","label":"Safety and Reliability","file_type":"paper","source_file":"Project Proposal.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"project_proposal_timeline","label":"Project Timeline","file_type":"paper","source_file":"Project Proposal.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"ying_jin","label":"Dr. Ying Jin","file_type":"paper","source_file":"Project Proposal.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"howto_readme_build_your_own_local_ai_agent","label":"Build Your Own Local AI Agent","file_type":"document","source_file":"how-to/README.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"minimal_end_to_end_checklist","label":"Minimal End-to-End Checklist","file_type":"document","source_file":"how-to/README.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"howto_docker_for_local_services","label":"Docker for Local Services","file_type":"document","source_file":"how-to/docker-for-local-services.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"howto_neo4j_and_graph_memory","label":"Neo4j and Graph Memory","file_type":"document","source_file":"how-to/neo4j-and-graph-memory.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"howto_ollama_embeddings","label":"Ollama Embeddings","file_type":"document","source_file":"how-to/ollama-embeddings.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"howto_lmstudio_local_llms","label":"LM Studio: Local LLMs","file_type":"document","source_file":"how-to/lmstudio-local-llms.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"howto_agent_orchestration_tools","label":"Agent Orchestration Tools","file_type":"document","source_file":"how-to/agent-orchestration-tools.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"howto_backend_service_and_agent_graph","label":"Backend Service and Agent Graph","file_type":"document","source_file":"how-to/backend-service-and-agent-graph.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"howto_web_search_and_external_tools","label":"Web Search and External Tools","file_type":"document","source_file":"how-to/web-search-and-tools.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"howto_mcp_exposing_your_tools","label":"MCP: Exposing Your Tools","file_type":"document","source_file":"how-to/mcp-exposing-your-tools.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"howto_client_and_ui_options","label":"Client and UI Options","file_type":"document","source_file":"how-to/client-and-ui-options.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"requirements_dependencies","label":"Requirements Dependency Stack","file_type":"document","source_file":"requirements.txt","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"howtostart_setup","label":"HowToStart Setup","file_type":"document","source_file":"HowToStart.txt","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"graphify_project_instructions","label":"Graphify Project Instructions","file_type":"document","source_file":"AGENTS.md","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"sagar_gupta","label":"Sagar Gupta","file_type":"document","source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"embedded_praise_instruction","label":"Embedded Praise Instruction","file_type":"document","source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"veterinary_information_network","label":"Veterinary Information Network","file_type":"document","source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"nykaa","label":"Nykaa","file_type":"document","source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"appscrip","label":"Appscrip","file_type":"document","source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"california_state_university_sacramento","label":"California State University, Sacramento","file_type":"document","source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"pathfinder_resume_project","label":"Pathfinder - AI Agent for Academic Guidance","file_type":"document","source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"resume_sagar_gupta_primary","label":"Sagar Gupta Resume Primary","file_type":"document","source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null},{"id":"resume_sagar_gupta_secondary","label":"Sagar Gupta Resume Secondary","file_type":"document","source_file":"data/documents/default/doc_980cedc448bd_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"pathfinder_privacy_rationale","target":"neo4j_only_knowledge_store","relation":"rationale_for","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_personalization_rationale","target":"shared_state_schema","relation":"rationale_for","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_reliability_rationale","target":"guardrails_and_confidence_scoring","relation":"rationale_for","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_modularity_rationale","target":"collaborative_swarm_langgraph","relation":"rationale_for","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"pathfinder_core_principles","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"collaborative_swarm_langgraph","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"hybrid_kg_extraction","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"neo4j_only_knowledge_store","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"sqlite_saver_persistence","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"adaptive_doc_processing","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"web_search_fallback_chain","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"guardrails_and_confidence_scoring","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"streaming_sse","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"react_vite_tailwind_shadcn_ui","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"mcp_server","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"node_design_10_plus_1","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"shared_state_schema","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"neo4j_graph_schema","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"vector_index_chunk_embeddings","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"lmstudio_gpt_oss_20b","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"lmstudio_qwen3_vl_8b","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"ollama_mxbai_embed_large","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"fastapi_backend","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"document_processing_pipeline","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"pathfinder_architecture","target":"project_proposal_pathfinder","relation":"conceptually_related_to","confidence":"INFERRED","confidence_score":0.85,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"collaborative_swarm_langgraph","target":"langgraph_stategraph","relation":"semantically_similar_to","confidence":"INFERRED","confidence_score":0.95,"source_file":"PATHFINDER_ARCHITECTURE.md","source_location":null,"weight":1.0},{"source":"howto_agent_orchestration_tools","target":"langchain_components","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/agent-orchestration-tools.md","source_location":null,"weight":1.0},{"source":"howto_agent_orchestration_tools","target":"langgraph_stategraph","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/agent-orchestration-tools.md","source_location":null,"weight":1.0},{"source":"howto_agent_orchestration_tools","target":"langflow_visual_prototyping","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/agent-orchestration-tools.md","source_location":null,"weight":1.0},{"source":"howto_agent_orchestration_tools","target":"sqlite_saver_persistence","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/agent-orchestration-tools.md","source_location":null,"weight":1.0},{"source":"howto_backend_service_and_agent_graph","target":"fastapi_backend","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/backend-service-and-agent-graph.md","source_location":null,"weight":1.0},{"source":"howto_backend_service_and_agent_graph","target":"shared_state_schema","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/backend-service-and-agent-graph.md","source_location":null,"weight":1.0},{"source":"howto_backend_service_and_agent_graph","target":"sqlite_saver_persistence","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/backend-service-and-agent-graph.md","source_location":null,"weight":1.0},{"source":"howto_web_search_and_external_tools","target":"web_search_fallback_chain","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/web-search-and-tools.md","source_location":null,"weight":1.0},{"source":"howto_mcp_exposing_your_tools","target":"mcp_server","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/mcp-exposing-your-tools.md","source_location":null,"weight":1.0},{"source":"howto_client_and_ui_options","target":"react_vite_tailwind_shadcn_ui","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/client-and-ui-options.md","source_location":null,"weight":1.0},{"source":"howto_client_and_ui_options","target":"streaming_sse","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/client-and-ui-options.md","source_location":null,"weight":1.0},{"source":"howto_neo4j_and_graph_memory","target":"neo4j_graph_schema","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/neo4j-and-graph-memory.md","source_location":null,"weight":1.0},{"source":"howto_neo4j_and_graph_memory","target":"vector_index_chunk_embeddings","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/neo4j-and-graph-memory.md","source_location":null,"weight":1.0},{"source":"howto_neo4j_and_graph_memory","target":"ollama_mxbai_embed_large","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/neo4j-and-graph-memory.md","source_location":null,"weight":1.0},{"source":"howto_neo4j_and_graph_memory","target":"neo4j_only_knowledge_store","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/neo4j-and-graph-memory.md","source_location":null,"weight":1.0},{"source":"howto_ollama_embeddings","target":"ollama_mxbai_embed_large","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/ollama-embeddings.md","source_location":null,"weight":1.0},{"source":"howto_lmstudio_local_llms","target":"lmstudio_gpt_oss_20b","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/lmstudio-local-llms.md","source_location":null,"weight":1.0},{"source":"howto_lmstudio_local_llms","target":"lmstudio_qwen3_vl_8b","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/lmstudio-local-llms.md","source_location":null,"weight":1.0},{"source":"howto_docker_for_local_services","target":"neo4j_only_knowledge_store","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/docker-for-local-services.md","source_location":null,"weight":1.0},{"source":"howto_docker_for_local_services","target":"neo4j_graph_schema","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/docker-for-local-services.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"howto_docker_for_local_services","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"howto_neo4j_and_graph_memory","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"howto_ollama_embeddings","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"howto_lmstudio_local_llms","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"howto_agent_orchestration_tools","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"howto_backend_service_and_agent_graph","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"howto_web_search_and_external_tools","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"howto_mcp_exposing_your_tools","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"howto_client_and_ui_options","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"requirements_dependencies","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"minimal_end_to_end_checklist","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howto_readme_build_your_own_local_ai_agent","target":"pathfinder_architecture","relation":"conceptually_related_to","confidence":"INFERRED","confidence_score":0.8,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"minimal_end_to_end_checklist","target":"howto_docker_for_local_services","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"minimal_end_to_end_checklist","target":"howto_ollama_embeddings","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"minimal_end_to_end_checklist","target":"howto_lmstudio_local_llms","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"minimal_end_to_end_checklist","target":"howto_backend_service_and_agent_graph","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"minimal_end_to_end_checklist","target":"howto_client_and_ui_options","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"how-to/README.md","source_location":null,"weight":1.0},{"source":"howtostart_setup","target":"requirements_dependencies","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"HowToStart.txt","source_location":null,"weight":1.0},{"source":"howtostart_setup","target":"fastapi_backend","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"HowToStart.txt","source_location":null,"weight":1.0},{"source":"howtostart_setup","target":"react_vite_tailwind_shadcn_ui","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"HowToStart.txt","source_location":null,"weight":1.0},{"source":"howtostart_setup","target":"lmstudio_gpt_oss_20b","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"HowToStart.txt","source_location":null,"weight":1.0},{"source":"howtostart_setup","target":"ollama_mxbai_embed_large","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"HowToStart.txt","source_location":null,"weight":1.0},{"source":"howtostart_setup","target":"neo4j_only_knowledge_store","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"HowToStart.txt","source_location":null,"weight":1.0},{"source":"graphify_project_instructions","target":"pathfinder_architecture","relation":"conceptually_related_to","confidence":"INFERRED","confidence_score":0.6,"source_file":"AGENTS.md","source_location":null,"weight":1.0},{"source":"graphify_project_instructions","target":"howto_readme_build_your_own_local_ai_agent","relation":"conceptually_related_to","confidence":"INFERRED","confidence_score":0.6,"source_file":"AGENTS.md","source_location":null,"weight":1.0},{"source":"project_proposal_pathfinder","target":"project_proposal_student_pain_points","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"Project Proposal.pdf","source_location":null,"weight":1.0},{"source":"project_proposal_pathfinder","target":"project_proposal_guardrails_reliability","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"Project Proposal.pdf","source_location":null,"weight":1.0},{"source":"project_proposal_pathfinder","target":"project_proposal_timeline","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"Project Proposal.pdf","source_location":null,"weight":1.0},{"source":"project_proposal_pathfinder","target":"ying_jin","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"Project Proposal.pdf","source_location":null,"weight":1.0},{"source":"project_proposal_pathfinder","target":"pathfinder_core_principles","relation":"conceptually_related_to","confidence":"INFERRED","confidence_score":0.85,"source_file":"Project Proposal.pdf","source_location":null,"weight":1.0},{"source":"project_proposal_pathfinder","target":"pathfinder_architecture","relation":"conceptually_related_to","confidence":"INFERRED","confidence_score":0.85,"source_file":"Project Proposal.pdf","source_location":null,"weight":1.0},{"source":"project_proposal_pathfinder","target":"pathfinder_resume_project","relation":"conceptually_related_to","confidence":"INFERRED","confidence_score":0.85,"source_file":"Project Proposal.pdf","source_location":null,"weight":1.0},{"source":"project_proposal_student_pain_points","target":"project_proposal_pathfinder","relation":"rationale_for","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"Project Proposal.pdf","source_location":null,"weight":1.0},{"source":"project_proposal_guardrails_reliability","target":"guardrails_and_confidence_scoring","relation":"rationale_for","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"Project Proposal.pdf","source_location":null,"weight":1.0},{"source":"project_proposal_timeline","target":"project_proposal_pathfinder","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"Project Proposal.pdf","source_location":null,"weight":1.0},{"source":"pathfinder_resume_project","target":"pathfinder_architecture","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"pathfinder_resume_project","target":"fastapi_backend","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"pathfinder_resume_project","target":"collaborative_swarm_langgraph","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"pathfinder_resume_project","target":"node_design_10_plus_1","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"pathfinder_resume_project","target":"neo4j_graph_schema","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"pathfinder_resume_project","target":"web_search_fallback_chain","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"pathfinder_resume_project","target":"react_vite_tailwind_shadcn_ui","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"pathfinder_resume_project","target":"streaming_sse","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"pathfinder_resume_project","target":"sqlite_saver_persistence","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"pathfinder_resume_project","target":"ollama_mxbai_embed_large","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"pathfinder_resume_project","target":"project_proposal_pathfinder","relation":"conceptually_related_to","confidence":"INFERRED","confidence_score":0.85,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_primary","target":"sagar_gupta","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_primary","target":"embedded_praise_instruction","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_primary","target":"veterinary_information_network","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_primary","target":"nykaa","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_primary","target":"appscrip","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_primary","target":"california_state_university_sacramento","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_primary","target":"pathfinder_resume_project","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_secondary","target":"sagar_gupta","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_980cedc448bd_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_secondary","target":"embedded_praise_instruction","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_980cedc448bd_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_secondary","target":"veterinary_information_network","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_980cedc448bd_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_secondary","target":"nykaa","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_980cedc448bd_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_secondary","target":"appscrip","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_980cedc448bd_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_secondary","target":"california_state_university_sacramento","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_980cedc448bd_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_secondary","target":"pathfinder_resume_project","relation":"references","confidence":"EXTRACTED","confidence_score":1.0,"source_file":"data/documents/default/doc_980cedc448bd_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0},{"source":"resume_sagar_gupta_primary","target":"resume_sagar_gupta_secondary","relation":"semantically_similar_to","confidence":"INFERRED","confidence_score":0.95,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf","source_location":null,"weight":1.0}],"hyperedges":[{"id":"pathfinder_local_stack","label":"Pathfinder Local Agent Stack","nodes":["pathfinder_architecture","collaborative_swarm_langgraph","fastapi_backend","neo4j_only_knowledge_store","lmstudio_gpt_oss_20b","ollama_mxbai_embed_large"],"relation":"form","confidence":"INFERRED","confidence_score":0.86,"source_file":"PATHFINDER_ARCHITECTURE.md"},{"id":"document_retrieval_pipeline","label":"Document Retrieval Pipeline","nodes":["adaptive_doc_processing","document_processing_pipeline","vector_index_chunk_embeddings","neo4j_graph_schema","ollama_mxbai_embed_large"],"relation":"participate_in","confidence":"INFERRED","confidence_score":0.85,"source_file":"PATHFINDER_ARCHITECTURE.md"},{"id":"resume_evidence_bundle","label":"Resume Evidence Bundle","nodes":["resume_sagar_gupta_primary","resume_sagar_gupta_secondary","pathfinder_resume_project","sagar_gupta","veterinary_information_network","nykaa","appscrip"],"relation":"participate_in","confidence":"INFERRED","confidence_score":0.8,"source_file":"data/documents/default/doc_16b0f818bf68_Sagar-Gupta-Software-Engineer-5YOE.pdf"}],"input_tokens":0,"output_tokens":0}
+{
+  "nodes": [
+    {
+      "id": "how_to_index",
+      "label": "Build Your Own Local AI Agent",
+      "file_type": "document",
+      "source_file": "how-to/how-to.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "docker_for_local_services_guide",
+      "label": "Docker for Local Services",
+      "file_type": "document",
+      "source_file": "how-to/docker-for-local-services.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "neo4j_and_graph_memory_guide",
+      "label": "Neo4j and Graph Memory",
+      "file_type": "document",
+      "source_file": "how-to/neo4j-and-graph-memory.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "ollama_embeddings_guide",
+      "label": "Ollama Embeddings",
+      "file_type": "document",
+      "source_file": "how-to/ollama-embeddings.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "lm_studio_local_llms_guide",
+      "label": "LM Studio Local LLMs",
+      "file_type": "document",
+      "source_file": "how-to/lmstudio-local-llms.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "agent_orchestration_tools_guide",
+      "label": "Agent Orchestration Tools",
+      "file_type": "document",
+      "source_file": "how-to/agent-orchestration-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "backend_service_and_agent_graph_guide",
+      "label": "Backend Service and Agent Graph",
+      "file_type": "document",
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "web_search_and_external_tools_guide",
+      "label": "Web Search and External Tools",
+      "file_type": "document",
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "mcp_exposing_your_tools_guide",
+      "label": "MCP Exposing Your Tools",
+      "file_type": "document",
+      "source_file": "how-to/mcp-exposing-your-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "client_and_ui_options_guide",
+      "label": "Client and UI Options",
+      "file_type": "document",
+      "source_file": "how-to/client-and-ui-options.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "pathfinder_architecture_reference",
+      "label": "Pathfinder Current System Architecture",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "startup_sequence_guide",
+      "label": "Startup Sequence",
+      "file_type": "document",
+      "source_file": "HowToStart.txt",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "graphify_conventions",
+      "label": "Graphify Rules",
+      "file_type": "document",
+      "source_file": "AGENTS.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "graphifyy_dependency",
+      "label": "graphifyy",
+      "file_type": "code",
+      "source_file": "requirements.txt",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "pathfinder_system",
+      "label": "Pathfinder System",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "fastapi_backend",
+      "label": "FastAPI Backend",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "langgraph_workflow",
+      "label": "LangGraph Workflow",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "pathfinder_state",
+      "label": "PathfinderState",
+      "file_type": "code",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "sqlite_checkpointer",
+      "label": "SqliteSaver Checkpointer",
+      "file_type": "code",
+      "source_file": "how-to/agent-orchestration-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "stategraph_core",
+      "label": "StateGraph",
+      "file_type": "code",
+      "source_file": "how-to/agent-orchestration-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "langchain",
+      "label": "LangChain",
+      "file_type": "document",
+      "source_file": "how-to/agent-orchestration-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "langflow",
+      "label": "Langflow",
+      "file_type": "document",
+      "source_file": "how-to/agent-orchestration-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "neo4j_graph_memory",
+      "label": "Neo4j Graph Memory",
+      "file_type": "document",
+      "source_file": "how-to/neo4j-and-graph-memory.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "neo4j_memory_backbone",
+      "label": "Neo4j as Durable Memory Backbone",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "memory_pack_retrieval",
+      "label": "Memory Pack Retrieval",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "normalized_evidence_envelope",
+      "label": "Normalized Evidence Envelope",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "lm_studio",
+      "label": "LM Studio",
+      "file_type": "document",
+      "source_file": "how-to/lmstudio-local-llms.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "openai_compatible_api",
+      "label": "OpenAI-Compatible API",
+      "file_type": "document",
+      "source_file": "how-to/lmstudio-local-llms.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "gpt_oss_20b",
+      "label": "openai/gpt-oss-20b",
+      "file_type": "document",
+      "source_file": "how-to/lmstudio-local-llms.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "ollama_embeddings",
+      "label": "Ollama Embeddings",
+      "file_type": "document",
+      "source_file": "how-to/ollama-embeddings.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "mxbai_embed_large",
+      "label": "mxbai-embed-large",
+      "file_type": "document",
+      "source_file": "how-to/ollama-embeddings.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "web_search_provider_chain",
+      "label": "Web Search Provider Chain",
+      "file_type": "document",
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "tavily",
+      "label": "Tavily",
+      "file_type": "document",
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "google_cse",
+      "label": "Google CSE",
+      "file_type": "document",
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "brave_search",
+      "label": "Brave Search",
+      "file_type": "document",
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "duckduckgo",
+      "label": "DuckDuckGo",
+      "file_type": "document",
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "mcp_server",
+      "label": "MCP Server",
+      "file_type": "document",
+      "source_file": "how-to/mcp-exposing-your-tools.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "react_frontend",
+      "label": "React Frontend",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "sse_streaming",
+      "label": "SSE Streaming",
+      "file_type": "document",
+      "source_file": "how-to/client-and-ui-options.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "api_surface",
+      "label": "API Surface",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "env_configuration",
+      "label": ".env Configuration",
+      "file_type": "document",
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "document_ingestion_pipeline",
+      "label": "Document Ingestion Pipeline",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "replay_and_evaluation",
+      "label": "Replay and Evaluation",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "recommendation_tracking",
+      "label": "Recommendation Tracking",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "profile_conflicts_ux",
+      "label": "Profile Conflicts UX",
+      "file_type": "document",
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    },
+    {
+      "id": "docker_neo4j_service",
+      "label": "Docker Neo4j Service",
+      "file_type": "document",
+      "source_file": "how-to/docker-for-local-services.md",
+      "source_location": null,
+      "source_url": null,
+      "captured_at": null,
+      "author": null,
+      "contributor": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "how_to_index",
+      "target": "docker_for_local_services_guide",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/how-to.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "how_to_index",
+      "target": "neo4j_and_graph_memory_guide",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/how-to.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "how_to_index",
+      "target": "ollama_embeddings_guide",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/how-to.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "how_to_index",
+      "target": "lm_studio_local_llms_guide",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/how-to.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "how_to_index",
+      "target": "agent_orchestration_tools_guide",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/how-to.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "how_to_index",
+      "target": "backend_service_and_agent_graph_guide",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/how-to.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "how_to_index",
+      "target": "web_search_and_external_tools_guide",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/how-to.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "how_to_index",
+      "target": "mcp_exposing_your_tools_guide",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/how-to.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "how_to_index",
+      "target": "client_and_ui_options_guide",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/how-to.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "docker_for_local_services_guide",
+      "target": "docker_neo4j_service",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/docker-for-local-services.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "neo4j_and_graph_memory_guide",
+      "target": "neo4j_graph_memory",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/neo4j-and-graph-memory.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "neo4j_and_graph_memory_guide",
+      "target": "mxbai_embed_large",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/neo4j-and-graph-memory.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "ollama_embeddings_guide",
+      "target": "ollama_embeddings",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/ollama-embeddings.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "ollama_embeddings_guide",
+      "target": "mxbai_embed_large",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/ollama-embeddings.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "lm_studio_local_llms_guide",
+      "target": "lm_studio",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/lmstudio-local-llms.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "lm_studio_local_llms_guide",
+      "target": "openai_compatible_api",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/lmstudio-local-llms.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "lm_studio_local_llms_guide",
+      "target": "gpt_oss_20b",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/lmstudio-local-llms.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "agent_orchestration_tools_guide",
+      "target": "langchain",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/agent-orchestration-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "agent_orchestration_tools_guide",
+      "target": "langgraph_workflow",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/agent-orchestration-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "agent_orchestration_tools_guide",
+      "target": "stategraph_core",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/agent-orchestration-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "agent_orchestration_tools_guide",
+      "target": "sqlite_checkpointer",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/agent-orchestration-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "agent_orchestration_tools_guide",
+      "target": "langflow",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/agent-orchestration-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "backend_service_and_agent_graph_guide",
+      "target": "fastapi_backend",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "backend_service_and_agent_graph_guide",
+      "target": "langgraph_workflow",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "backend_service_and_agent_graph_guide",
+      "target": "env_configuration",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "backend_service_and_agent_graph_guide",
+      "target": "api_surface",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "backend_service_and_agent_graph_guide",
+      "target": "neo4j_graph_memory",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "backend_service_and_agent_graph_guide",
+      "target": "lm_studio",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "backend_service_and_agent_graph_guide",
+      "target": "ollama_embeddings",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "backend_service_and_agent_graph_guide",
+      "target": "document_ingestion_pipeline",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "web_search_and_external_tools_guide",
+      "target": "web_search_provider_chain",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "web_search_and_external_tools_guide",
+      "target": "tavily",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "web_search_and_external_tools_guide",
+      "target": "google_cse",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "web_search_and_external_tools_guide",
+      "target": "brave_search",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "web_search_and_external_tools_guide",
+      "target": "duckduckgo",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "mcp_exposing_your_tools_guide",
+      "target": "mcp_server",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/mcp-exposing-your-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "client_and_ui_options_guide",
+      "target": "react_frontend",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/client-and-ui-options.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "client_and_ui_options_guide",
+      "target": "sse_streaming",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/client-and-ui-options.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "client_and_ui_options_guide",
+      "target": "profile_conflicts_ux",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/client-and-ui-options.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "pathfinder_system",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "fastapi_backend",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "langgraph_workflow",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "pathfinder_state",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "neo4j_graph_memory",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "sqlite_checkpointer",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "react_frontend",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "mcp_server",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "api_surface",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "document_ingestion_pipeline",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "replay_and_evaluation",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "recommendation_tracking",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "profile_conflicts_ux",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "memory_pack_retrieval",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "normalized_evidence_envelope",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_architecture_reference",
+      "target": "neo4j_memory_backbone",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "startup_sequence_guide",
+      "target": "docker_neo4j_service",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "HowToStart.txt",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "startup_sequence_guide",
+      "target": "ollama_embeddings",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "HowToStart.txt",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "startup_sequence_guide",
+      "target": "lm_studio",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "HowToStart.txt",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "startup_sequence_guide",
+      "target": "backend_service_and_agent_graph_guide",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "HowToStart.txt",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "startup_sequence_guide",
+      "target": "react_frontend",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "HowToStart.txt",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "graphify_conventions",
+      "target": "graphifyy_dependency",
+      "relation": "conceptually_related_to",
+      "confidence": "INFERRED",
+      "confidence_score": 0.7,
+      "source_file": "AGENTS.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_system",
+      "target": "fastapi_backend",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_system",
+      "target": "langgraph_workflow",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_system",
+      "target": "neo4j_graph_memory",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_system",
+      "target": "sqlite_checkpointer",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "pathfinder_system",
+      "target": "react_frontend",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "fastapi_backend",
+      "target": "react_frontend",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "fastapi_backend",
+      "target": "api_surface",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "langgraph_workflow",
+      "target": "pathfinder_state",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "langgraph_workflow",
+      "target": "stategraph_core",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "langgraph_workflow",
+      "target": "sqlite_checkpointer",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "langgraph_workflow",
+      "target": "langchain",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "neo4j_graph_memory",
+      "target": "ollama_embeddings",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "neo4j_graph_memory",
+      "target": "document_ingestion_pipeline",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "neo4j_graph_memory",
+      "target": "recommendation_tracking",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "neo4j_memory_backbone",
+      "target": "neo4j_graph_memory",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "memory_pack_retrieval",
+      "target": "normalized_evidence_envelope",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "normalized_evidence_envelope",
+      "target": "memory_pack_retrieval",
+      "relation": "rationale_for",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "lm_studio",
+      "target": "openai_compatible_api",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/lmstudio-local-llms.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "lm_studio",
+      "target": "gpt_oss_20b",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/lmstudio-local-llms.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "ollama_embeddings",
+      "target": "mxbai_embed_large",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/ollama-embeddings.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "web_search_provider_chain",
+      "target": "tavily",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "web_search_provider_chain",
+      "target": "google_cse",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "web_search_provider_chain",
+      "target": "brave_search",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "web_search_provider_chain",
+      "target": "duckduckgo",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/web-search-and-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "mcp_server",
+      "target": "fastapi_backend",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/mcp-exposing-your-tools.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "react_frontend",
+      "target": "sse_streaming",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "react_frontend",
+      "target": "profile_conflicts_ux",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "react_frontend",
+      "target": "replay_and_evaluation",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "env_configuration",
+      "target": "fastapi_backend",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "env_configuration",
+      "target": "lm_studio",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "env_configuration",
+      "target": "ollama_embeddings",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "env_configuration",
+      "target": "neo4j_graph_memory",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "env_configuration",
+      "target": "sqlite_checkpointer",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/backend-service-and-agent-graph.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "docker_neo4j_service",
+      "target": "neo4j_graph_memory",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/docker-for-local-services.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "document_ingestion_pipeline",
+      "target": "neo4j_graph_memory",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "document_ingestion_pipeline",
+      "target": "ollama_embeddings",
+      "relation": "shares_data_with",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "replay_and_evaluation",
+      "target": "fastapi_backend",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "replay_and_evaluation",
+      "target": "react_frontend",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "recommendation_tracking",
+      "target": "fastapi_backend",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "recommendation_tracking",
+      "target": "neo4j_graph_memory",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "profile_conflicts_ux",
+      "target": "fastapi_backend",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    },
+    {
+      "source": "profile_conflicts_ux",
+      "target": "react_frontend",
+      "relation": "conceptually_related_to",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md",
+      "source_location": null,
+      "weight": 1.0
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "local_agent_stack",
+      "label": "Local Agent Stack",
+      "nodes": [
+        "fastapi_backend",
+        "langgraph_workflow",
+        "neo4j_graph_memory",
+        "lm_studio",
+        "ollama_embeddings",
+        "react_frontend"
+      ],
+      "relation": "form",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "PATHFINDER_ARCHITECTURE.md"
+    },
+    {
+      "id": "web_search_toolchain",
+      "label": "Web Search Toolchain",
+      "nodes": [
+        "web_search_provider_chain",
+        "tavily",
+        "google_cse",
+        "brave_search",
+        "duckduckgo"
+      ],
+      "relation": "form",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "how-to/web-search-and-tools.md"
+    }
+  ],
+  "input_tokens": 0,
+  "output_tokens": 0
+}
