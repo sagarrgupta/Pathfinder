@@ -1,8 +1,35 @@
+# Cache files
 node_modules/
 frontend/dist/
 dist/
 build/
-.venv/
-venv/
+
+# Python cache files
 __pycache__/
 *.pyc
+venv/
+.venv/
+
+# Repo / tool metadata
+.git/
+.cursor/
+.claw/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated graph output
+graphify-out/
+
+# Runtime/local state
+data/
+.env
+*.log
+
+# OS/editor noise
+.DS_Store
+.vscode/
+.idea/
+
+# Large binary docs
+*.pdf
