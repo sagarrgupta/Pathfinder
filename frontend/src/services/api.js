@@ -15,19 +15,18 @@ function withStudentId(path, studentId) {
 
 /**
  * Send a chat message and receive SSE stream.
- * @param {Object} params - { query, sessionId, files, isGlobalUpload }
+ * @param {Object} params - { query, sessionId, files, reasoning }
  * @param {Object} callbacks - { onProgress, onToken, onDone, onError }
  * @returns {AbortController} - call .abort() to cancel
  */
-export function chatSSE({ query, sessionId, studentId, files = [], isGlobalUpload = false, replaceFilenames = [], advisorMode = 'adaptive' }, callbacks) {
+export function chatSSE({ query, sessionId, studentId, files = [], replaceFilenames = [], reasoning = 'medium' }, callbacks) {
   const controller = new AbortController();
 
   const formData = new FormData();
   formData.append('query', query);
   if (sessionId) formData.append('session_id', sessionId);
   if (studentId) formData.append('student_id', studentId);
-  formData.append('is_global_upload', isGlobalUpload.toString());
-  formData.append('advisor_mode', advisorMode);
+  formData.append('reasoning', reasoning);
   if (replaceFilenames.length > 0) {
     formData.append('replace_filenames', replaceFilenames.join(','));
   }
@@ -170,34 +169,6 @@ export async function addProfileText(text, studentId) {
 export async function getProfileGraph(studentId) {
   const response = await fetch(withStudentId(`${API_BASE}/profile/graph`, studentId));
   if (!response.ok) throw new Error(`Failed to load graph: ${response.status}`);
-  return response.json();
-}
-
-export async function getProfileConflicts(studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile/conflicts`, studentId));
-  if (!response.ok) throw new Error(`Failed to load conflicts: ${response.status}`);
-  return response.json();
-}
-
-export async function autoResolveProfileConflicts(studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile/conflicts/self-resolve`, studentId), {
-    method: 'POST',
-  });
-  if (!response.ok) throw new Error(`Failed to resolve conflicts: ${response.status}`);
-  return response.json();
-}
-
-export async function selfResolveProfileConflicts(studentId) {
-  return autoResolveProfileConflicts(studentId);
-}
-
-export async function resolveConflictChoice(payload) {
-  const response = await fetch(`${API_BASE}/profile/conflicts/resolve`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) throw new Error(`Failed to apply conflict choice: ${response.status}`);
   return response.json();
 }
 

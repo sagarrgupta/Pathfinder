@@ -1,4 +1,4 @@
-"""LM Studio LLM adapter and structured-output policy helpers."""
+"""LM Studio LLM adapter and output quality helpers."""
 
 from __future__ import annotations
 
@@ -12,16 +12,22 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage
 
 from app.config.settings import settings
-from app.adapters.llm.structured_schemas import get_structured_output_schema
-
 log = logging.getLogger("pathfinder.llm")
 
-_text_llm: Optional["LoggingChatOpenAI"] = None
+_text_llms: dict[str, "LoggingChatOpenAI"] = {}
 _vision_llm: Optional["LoggingChatOpenAI"] = None
-_structured_llms: dict[str, "LoggingChatOpenAI"] = {}
-_STRUCTURED_OUTPUT_MODES = {"off", "loose", "strict"}
 _REASONING_KEYS = ("reasoning_content", "thinking", "reasoning", "refusal")
 _DEBUG_LOG_PATH = Path(settings.LLM_DEBUG_LOG_PATH)
+_GEMMA_REASONING_MODELS = ("google/gemma-", "gemma-")
+_SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+_REASONING_ALIASES = {
+    "off": "none",
+    "false": "none",
+    "0": "none",
+    "on": "medium",
+    "true": "medium",
+    "1": "medium",
+}
 
 
 # ── Logging wrapper ─────────────────────────────────────────────────
@@ -178,12 +184,45 @@ def _build_llm(*, label: str, model: str, model_kwargs: dict[str, Any] | None = 
     return LoggingChatOpenAI(**kwargs)
 
 
-def get_text_llm() -> LoggingChatOpenAI:
-    """Return the singleton text LLM."""
-    global _text_llm
-    if _text_llm is None:
-        _text_llm = _build_llm(label="text", model=settings.LLM_MODEL)
-    return _text_llm
+def _normalize_reasoning_effort(model: str, reasoning: str | None) -> str:
+    """Map app-level reasoning labels to what the configured model accepts."""
+    reasoning_key = str(reasoning or "medium").strip().lower() or "medium"
+    lowered_model = str(model or "").strip().lower()
+
+    # Older LM Studio/Gemma flows sometimes used a binary on/off toggle.
+    # The current OpenAI-compatible API only accepts the standard effort enum.
+    if reasoning_key in _REASONING_ALIASES:
+        return _REASONING_ALIASES[reasoning_key]
+
+    if reasoning_key in _SUPPORTED_REASONING_EFFORTS:
+        return reasoning_key
+
+    if any(lowered_model.startswith(prefix) for prefix in _GEMMA_REASONING_MODELS):
+        log.warning(
+            "Unsupported Gemma reasoning value %r; falling back to 'medium'.",
+            reasoning_key,
+        )
+        return "medium"
+
+    log.warning(
+        "Unsupported reasoning value %r for model %r; falling back to 'medium'.",
+        reasoning_key,
+        model,
+    )
+    return "medium"
+
+
+def get_text_llm(reasoning: str | None = None) -> LoggingChatOpenAI:
+    """Return a cached text LLM for the requested reasoning setting."""
+    reasoning_key = _normalize_reasoning_effort(settings.LLM_MODEL, reasoning)
+    model_kwargs = {"reasoning_effort": reasoning_key}
+    if reasoning_key not in _text_llms:
+        _text_llms[reasoning_key] = _build_llm(
+            label=f"text:{reasoning_key}",
+            model=settings.LLM_MODEL,
+            model_kwargs=model_kwargs,
+        )
+    return _text_llms[reasoning_key]
 
 
 def get_vision_llm() -> LoggingChatOpenAI:
@@ -192,67 +231,6 @@ def get_vision_llm() -> LoggingChatOpenAI:
     if _vision_llm is None:
         _vision_llm = _build_llm(label="vision", model=settings.VISION_MODEL)
     return _vision_llm
-
-
-def get_structured_llm(node_name: str) -> LoggingChatOpenAI:
-    """Return an LLM configured by the central structured-output policy."""
-    mode = _structured_output_mode_for(node_name)
-    cache_key = f"{node_name}:{mode}"
-    llm = _structured_llms.get(cache_key)
-    if llm is not None:
-        return llm
-
-    llm = _build_llm(
-        label=f"structured:{node_name}:{mode}",
-        model=settings.LLM_MODEL,
-        model_kwargs=_structured_model_kwargs(node_name=node_name, mode=mode),
-    )
-    _structured_llms[cache_key] = llm
-    return llm
-
-
-def _structured_output_mode_for(node_name: str) -> str:
-    """Resolve the effective structured-output mode for one node."""
-    configured = str(settings.LLM_STRUCTURED_OUTPUT_MODE or "loose").strip().lower()
-    if configured not in _STRUCTURED_OUTPUT_MODES:
-        log.warning("Unknown LLM_STRUCTURED_OUTPUT_MODE=%r; falling back to loose", configured)
-        configured = "loose"
-    strict_nodes = {
-        item.strip().lower()
-        for item in str(settings.LLM_STRICT_STRUCTURED_NODES or "").split(",")
-        if item.strip()
-    }
-    if configured == "strict":
-        return "strict"
-    if node_name.strip().lower() in strict_nodes:
-        return "strict"
-    return configured
-
-
-def _structured_model_kwargs(*, node_name: str, mode: str) -> dict[str, Any]:
-    """Build provider kwargs for the configured structured-output mode."""
-    if mode == "off":
-        return {}
-    if mode == "strict":
-        schema = get_structured_output_schema(node_name)
-        if schema:
-            return {
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": f"pathfinder_{node_name}_response",
-                        "schema": schema,
-                        "strict": True,
-                    },
-                }
-            }
-        log.warning("No strict schema registered for %s; falling back to loose mode", node_name)
-    if settings.LLM_JSON_RESPONSE_FORMAT:
-        # LM Studio accepts "json_schema" or "text" on this stack. Loose mode
-        # keeps transport in text so prompts plus parse_json_object(...) can
-        # recover from imperfect local-model formatting.
-        return {"response_format": {"type": "text"}}
-    return {}
 
 
 # ── Output Quality Guards ───────────────────────────────────────────

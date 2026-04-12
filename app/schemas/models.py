@@ -29,7 +29,7 @@ class ChatRequest(RequestModel):
     session_id: Optional[str] = Field(default=None, max_length=120)
     student_id: Optional[str] = Field(default=None, max_length=120)
     topic_guard_enabled: Optional[bool] = None
-    advisor_mode: Optional[str] = Field(default=None, max_length=40)
+    reasoning: Optional[str] = Field(default=None, max_length=40)
 
 
 class ProfileTextInput(RequestModel):
@@ -60,19 +60,10 @@ class ProfileCreate(RequestModel):
     program: Optional[str] = Field(default=None, max_length=200)
 
 
-class ConflictChoiceRequest(RequestModel):
-    """Resolve a profile conflict choice."""
-    student_id: Optional[str] = Field(default=None, max_length=120)
-    conflict_id: str = Field(..., min_length=1, max_length=120)
-    fact_type: str = Field(..., min_length=1, max_length=80)
-    action: str = Field(default="choose_value", min_length=1, max_length=40)  # choose_value | unresolved
-    selected_value: Optional[str] = Field(default=None, max_length=300)
-
-
 class SettingsUpdate(RequestModel):
     """Update application settings."""
     topic_guard_enabled: Optional[bool] = None
-    advisor_mode: Optional[str] = Field(default=None, max_length=40)
+    reasoning: Optional[str] = Field(default=None, max_length=40)
 
 
 class SavedRecommendationCreate(RequestModel):
@@ -150,6 +141,7 @@ class ProfileResponse(ResponseModel):
     completeness_breakdown: dict[str, Any] = Field(default_factory=dict)
     fact_summary: dict[str, Any] = Field(default_factory=dict)
     temporal_profile: dict[str, Any] = Field(default_factory=dict)
+    long_context_preview: dict[str, Any] = Field(default_factory=dict)
     # Dynamic: all entity types from the KG keyed by Neo4j label
     all_entities: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     completeness: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -217,7 +209,7 @@ class HealthResponse(ResponseModel):
 class SettingsResponse(ResponseModel):
     """Current settings."""
     topic_guard_enabled: bool = True
-    advisor_mode: str = "adaptive"
+    reasoning: str = "medium"
     models: dict[str, str] = Field(default_factory=dict)
 
 
@@ -228,7 +220,7 @@ class ReplayArtifactInfo(ResponseModel):
     student_id: str = Field(..., min_length=1, max_length=120)
     session_id: str = Field(..., min_length=1, max_length=120)
     query: str = Field(..., min_length=1, max_length=4000)
-    workflow: str = Field(default="", max_length=120)
+    selected_specialist: str = Field(default="", max_length=120)
     method: str = Field(default="", max_length=120)
     quality_path: str = Field(default="", max_length=200)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -238,7 +230,7 @@ class ReplayEvaluationInfo(ResponseModel):
     """Lightweight replay evaluation result."""
     replay_id: str = Field(..., min_length=1, max_length=120)
     query: str = Field(default="", max_length=4000)
-    workflow: str = Field(default="", max_length=120)
+    selected_specialist: str = Field(default="", max_length=120)
     method: str = Field(default="", max_length=120)
     score: float = Field(default=0.0)
     status: str = Field(default="warn", min_length=1, max_length=40)
@@ -259,7 +251,7 @@ class EvalBenchmarkInfo(ResponseModel):
     id: str = Field(..., min_length=1, max_length=120)
     title: str = Field(..., min_length=1, max_length=200)
     description: str = Field(default="", max_length=2000)
-    workflow: str = Field(default="", max_length=120)
+    specialist: str = Field(default="", max_length=120)
     scenario_count: int = Field(default=0, ge=0)
     examples: list[str] = Field(default_factory=list)
 

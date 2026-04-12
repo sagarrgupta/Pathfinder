@@ -1,7 +1,6 @@
 """Node 1: Input Guard.
 
-Validates user input, detects prompt injection attempts, and
-optionally enforces topic restrictions (academic/career only).
+Validates user input and blocks obvious SQL injection patterns.
 """
 
 from __future__ import annotations
@@ -13,54 +12,17 @@ from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.agents.input_guard")
 
-# ── Patterns for prompt injection detection ─────────────────────
-_INJECTION_PATTERNS = [
-    r"ignore\s+(all\s+)?(previous|above|prior)\s+(instructions|prompts)",
-    r"you\s+are\s+now\s+a",
-    r"disregard\s+(all\s+)?(previous|your)",
-    r"forget\s+(everything|all|your\s+instructions)",
-    r"system\s*:\s*",
-    r"<\s*system\s*>",
-    r"jailbreak",
-    r"do\s+anything\s+now",
+_SQLI_PATTERNS = [
+    r"(?i)\bunion\b\s+\bselect\b",
+    r"(?i)\bdrop\b\s+\btable\b",
+    r"(?i)\binsert\b\s+\binto\b",
+    r"(?i)\bdelete\b\s+\bfrom\b",
+    r"(?i)\bupdate\b\s+\w+\s+\bset\b",
+    r"(?i)\bor\b\s+1\s*=\s*1\b",
+    r"(?i)'\s*or\s*'1'\s*=\s*'1",
+    r"(?i)--",
+    r"(?i)/\*.*\*/",
 ]
-
-# ── Off-topic detection keywords ────────────────────────────────
-# Broader keyword set to reduce false positives on legitimate queries
-_ALLOWED_TOPICS = {
-    # Academic
-    "academic", "university", "college", "course", "class", "grade",
-    "gpa", "transcript", "major", "minor", "degree", "school",
-    "program", "graduate", "undergraduate", "phd", "master", "bachelor",
-    "semester", "credit", "prerequisite", "elective", "curriculum",
-    "professor", "advisor", "department", "thesis", "dissertation",
-    "admission", "application", "scholarship", "financial", "tuition",
-    # Career
-    "career", "job", "internship", "resume", "interview", "skill",
-    "project", "research", "certification", "work", "experience",
-    "salary", "hire", "hiring", "recruit", "apply", "position", "role",
-    "company", "startup", "promotion", "portfolio", "linkedin",
-    # Tech
-    "developer", "engineer", "data", "science", "computer", "software",
-    "programming", "coding", "technology", "ai", "ml", "machine",
-    "learning", "web", "mobile", "cloud", "database", "api",
-    "backend", "frontend", "fullstack", "devops", "security", "design",
-    # Companies
-    "google", "amazon", "microsoft", "apple", "meta", "nvidia",
-    "netflix", "tesla", "openai", "intel", "ibm", "oracle", "adobe",
-    # General interaction
-    "hello", "hi", "hey", "thanks", "thank", "help", "profile",
-    "document", "upload", "file", "what", "how", "can", "should",
-    "recommend", "suggest", "compare", "analyze", "plan", "goal",
-    "review", "summarize", "read", "find", "search", "show", "tell",
-    "list", "give", "explain", "describe", "check", "look", "open",
-    # Study / learning
-    "study", "learn", "practice", "prepare", "improve", "train",
-    "book", "resource", "tutorial", "workshop", "bootcamp", "online",
-}
-
-# URLs always pass — the user explicitly wants web content analyzed
-_URL_PATTERN = re.compile(r"https?://", re.IGNORECASE)
 
 MAX_QUERY_LENGTH = 4000
 
@@ -68,7 +30,7 @@ MAX_QUERY_LENGTH = 4000
 async def input_guard(state: PathfinderState) -> PathfinderState:
     """Validate the user input and update state accordingly."""
     query = state.get("query", "").strip()
-    topic_guard_enabled = state.get("topic_guard_enabled", True)
+    input_guard_enabled = bool(state.get("topic_guard_enabled", True))
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Validating your input...")
@@ -93,38 +55,16 @@ async def input_guard(state: PathfinderState) -> PathfinderState:
             "step_progress": step_progress,
         }
 
-    # 3. Prompt injection detection
+    # 3. SQL injection detection
     query_lower = query.lower()
-    for pattern in _INJECTION_PATTERNS:
-        if re.search(pattern, query_lower):
-            log.warning("Blocked: prompt injection detected — pattern=%s", pattern)
-            return {
-                **state,
-                "is_blocked": True,
-                "block_reason": "I detected an unusual pattern in your message. Please rephrase your question.",
-                "step_progress": step_progress,
-            }
-
-    # 4. Topic guardrail (if enabled)
-    if topic_guard_enabled:
-        # URLs always pass — the user wants Pathfinder to analyze web content
-        has_url = bool(_URL_PATTERN.search(query))
-
-        # Has uploaded files → always relevant
-        has_files = bool(state.get("files"))
-
-        if not has_url and not has_files:
-            words = set(re.findall(r"\w+", query_lower))
-            if not words.intersection(_ALLOWED_TOPICS):
-                log.info("Blocked: off-topic query")
+    if input_guard_enabled:
+        for pattern in _SQLI_PATTERNS:
+            if re.search(pattern, query_lower):
+                log.warning("Blocked: SQL injection pattern detected — pattern=%s", pattern)
                 return {
                     **state,
                     "is_blocked": True,
-                    "block_reason": (
-                        "I'm designed to help with academic and career guidance. "
-                        "Your question doesn't seem related to these topics. "
-                        "You can disable topic filtering in Settings if you'd like to chat freely."
-                    ),
+                    "block_reason": "I detected a potentially unsafe query pattern. Please rephrase your message.",
                     "step_progress": step_progress,
                 }
 

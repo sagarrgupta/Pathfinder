@@ -1785,19 +1785,36 @@ def has_deadline_language(text: str) -> bool:
 
 def infer_quality_path(state: dict[str, Any]) -> str:
     """Return a compact label that describes the evidence path used."""
+    tool_call_log = list(state.get("tool_call_log", []) or [])
+    successful_tools = [
+        str(item.get("tool", "") or "")
+        for item in tool_call_log
+        if isinstance(item, dict) and item.get("status") == "ok"
+    ]
+    if not successful_tools:
+        return "direct"
+
     path = []
-    if state.get("profile_data"):
-        path.append("profile")
-    if state.get("web_results"):
+    if any(
+        name in {
+            "get_profile_summary",
+            "list_entity_types",
+            "typed_node_lookup",
+            "typed_relation_lookup",
+            "fetch_node_by_id",
+            "fetch_relation_detail",
+            "view_durable_memory_summary",
+            "search_memory_semantic",
+        }
+        for name in successful_tools
+    ):
+        path.append("graph")
+    if any(name in {"search_documents_semantic", "fetch_document_snippet", "list_document_groups"} for name in successful_tools):
+        path.append("docs")
+    if any(name in {"search_web", "fetch_url", "find_official_sources"} for name in successful_tools):
         path.append("web")
-    if state.get("evidence_records"):
-        path.append("facts")
-    if state.get("decision_payload"):
-        path.append("planner")
     if state.get("confidence_score") is not None:
-        path.append("eval")
-    if state.get("workflow"):
-        path.append(str(state.get("workflow")))
+        path.append("validated")
     return "+".join(path) if path else "direct"
 
 

@@ -47,6 +47,7 @@ log = logging.getLogger("pathfinder.agents.doc_analyst")
 
 _ENTITY_EXTRACTION_SYSTEM = DOC_ANALYST_ENTITY_EXTRACTION_SYSTEM_PROMPT
 _ENTITY_EXTRACTION_USER = DOC_ANALYST_ENTITY_EXTRACTION_USER_PROMPT
+_EXTRACTED_TEXT_PREVIEW_LIMIT = 12000
 
 
 async def doc_analyst(state: PathfinderState) -> PathfinderState:
@@ -63,6 +64,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
     total_chunks = 0
     document_roles: list[dict[str, Any]] = []
     transcript_states: list[dict[str, Any]] = []
+    extracted_documents: list[dict[str, Any]] = []
     recovery_events = list(state.get("recovery_events", []))
 
     if not files:
@@ -113,6 +115,14 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
             continue
 
         inferred_role = infer_document_role(filename, full_text, file_type=file_type)
+        extracted_documents.append({
+            "document_id": doc_id,
+            "filename": filename,
+            "file_type": file_type,
+            "role": inferred_role.get("role", "general_document"),
+            "page_count": len(pages),
+            "text_preview": full_text[:_EXTRACTED_TEXT_PREVIEW_LIMIT],
+        })
         document_roles.append({
             "document_id": doc_id,
             "filename": filename,
@@ -252,6 +262,11 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         "extracted_entities": all_entities,
         "document_roles": document_roles,
         "transcript_states": transcript_states,
+        "latest_ingestion_result": {
+            "documents": extracted_documents,
+            "chunk_count": total_chunks,
+            "entity_count": len(all_entities),
+        },
         "recovery_events": recovery_events,
         "step_progress": step_progress,
         "next_node": _determine_next(state),
@@ -267,12 +282,5 @@ def _page_for_chunk(chunk_text: str, pages: list[dict]) -> int | None:
 
 
 def _determine_next(state: PathfinderState) -> str:
-    """Determine next node after document processing."""
-    plan = state.get("plan", [])
-    try:
-        idx = plan.index("doc_analyst")
-        if idx + 1 < len(plan):
-            return plan[idx + 1]
-    except ValueError:
-        pass
-    return "profile_manager"
+    """Document processing is now a leaf pre-ingestion step."""
+    return "responder"

@@ -4,7 +4,7 @@ import { useApp } from '@/context/AppContext';
 import {
   MessageSquare, User, Settings, Plus, Trash2,
   PanelLeftClose, PanelLeftOpen, GraduationCap,
-  Pin, PinOff, Pencil, Check, X, Search, ShieldAlert,
+  Pin, PinOff, Pencil, Check, X, Search,
   History,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -75,7 +75,6 @@ export default function Sidebar({ open, onToggle }) {
   const navItems = [
     { path: '/chat', label: 'Chat', icon: MessageSquare },
     { path: '/profile', label: 'My Profile', icon: User },
-    { path: '/profile/conflicts', label: 'Conflicts', icon: ShieldAlert },
     { path: '/replays', label: 'Replays', icon: History },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
@@ -335,14 +334,10 @@ export default function Sidebar({ open, onToggle }) {
                 state.profiles.map((profile) => (
                   <option key={profile.student_id} value={profile.student_id}>
                     {profile.name || profile.student_id}
-                    {profile.program ? ` — ${profile.program}` : ''}
                   </option>
                 ))
               )}
             </select>
-            <p className="mt-2 text-[11px] text-muted-foreground truncate">
-              {state.profile?.personal?.program || state.profile?.personal?.university || 'Switch profiles to change chat and profile context.'}
-            </p>
           </div>
           <button
             onClick={handleNewChat}

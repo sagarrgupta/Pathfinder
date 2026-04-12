@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from app.adapters.neo4j.graph_store import get_full_profile
 from app.core.quality import build_session_summary
@@ -33,11 +34,6 @@ _SPECIALIST_KEYWORDS: dict[str, set[str]] = {
 }
 
 _MODE_TO_SPECIALIST = {
-    "semester_planning": "academic",
-    "degree_audit": "academic",
-    "graduate_school_planning": "academic",
-    "internship_targeting": "career",
-    "resume_review": "general",
 }
 
 _PROFILE_SIGNAL_PATTERNS = (
@@ -50,6 +46,11 @@ _PROFILE_SIGNAL_PATTERNS = (
     "my goal is",
     "my goals are",
     "my skills are",
+)
+
+_LIGHT_CONVERSATION_RE = re.compile(
+    r"^\s*(hi|hello|hey|yo|good morning|good afternoon|good evening|thanks|thank you|bye|goodbye|see you)\b[!. ]*$",
+    re.IGNORECASE,
 )
 
 
@@ -78,12 +79,15 @@ def _durable_context(profile: dict[str, object], session_summary: dict[str, obje
     }
 
 
+def _is_light_conversation(query: str) -> bool:
+    return bool(_LIGHT_CONVERSATION_RE.match(str(query or "").strip()))
+
+
 async def orchestrator(state: PathfinderState) -> PathfinderState:
     """Score the request against the 3 specialist prompt families."""
     query = str(state.get("query", "") or "")
     files = list(state.get("files", []))
     request_plan = state.get("request_plan", {}) if isinstance(state.get("request_plan", {}), dict) else {}
-    advisor_mode = str(state.get("advisor_mode", request_plan.get("advisor_mode", "adaptive")) or "adaptive")
     student_id = str(state.get("student_id", "") or "")
 
     profile = await get_full_profile(student_id)
@@ -105,17 +109,20 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         routing_scores["career"] += 2.0
     if any(token in lowered for token in ("course", "program", "degree", "eligible", "eligibility", "semester")):
         routing_scores["academic"] += 2.0
-    if advisor_mode in _MODE_TO_SPECIALIST:
-        routing_scores[_MODE_TO_SPECIALIST[advisor_mode]] += 3.0
     if request_plan.get("workflow_hint") == "student_state_update":
         routing_scores["general"] += 2.0
 
     selected_specialist = max(routing_scores.items(), key=lambda item: (item[1], item[0] == "general"))[0]
-    intent = "general" if selected_specialist == "general" else selected_specialist
-    routing_reason = (
-        f"Selected {selected_specialist} because its capability score "
-        f"({routing_scores[selected_specialist]:.1f}) was highest for this request."
-    )
+    top_score = float(routing_scores.get(selected_specialist, 0.0) or 0.0)
+    if top_score <= 0.0 and _is_light_conversation(query):
+        routing_reason = "Selected general as the fallback specialist for a lightweight conversational turn."
+    elif top_score <= 0.0 and selected_specialist == "general":
+        routing_reason = "Selected general as the fallback specialist for a broad request."
+    else:
+        routing_reason = (
+            f"Selected {selected_specialist} because its capability score "
+            f"({top_score:.1f}) was highest for this request."
+        )
 
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Scoring request against specialist prompts...")
@@ -124,7 +131,6 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     log.info("Orchestrator selected specialist=%s scores=%s", selected_specialist, routing_scores)
     return {
         **state,
-        "intent": intent,
         "selected_specialist": selected_specialist,
         "routing_scores": routing_scores,
         "routing_reason": routing_reason,

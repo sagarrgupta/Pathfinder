@@ -63,3 +63,6 @@ Thumbs.db
 *.bak
 *.tmp
 *.orig
+
+# ── Generated Graphify Output ────────────────────
+graphify-out/

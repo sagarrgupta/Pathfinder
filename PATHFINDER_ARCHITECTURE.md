@@ -1,49 +1,56 @@
 # Pathfinder: Current System Architecture
 
 > Single-source architecture reference for the Pathfinder codebase.
-> Last updated: 2026-04-11
+> Last updated: 2026-04-12
 
 ---
 
 ## 1. What Pathfinder Is
 
-Pathfinder is a local-first advising system that combines:
+Pathfinder is a local-first advising runtime with:
 
 - a FastAPI backend
-- a LangGraph multi-agent workflow
-- Neo4j for profile, evidence, and graph memory
-- SQLite checkpointers for conversational continuity
-- a React frontend with SSE-based chat streaming
+- a React frontend
+- a LangGraph chat workflow
+- Neo4j as the durable profile, memory, and evidence store
+- SQLite checkpointing for per-session continuity
+- replay and evaluation support for completed turns
 
-The current implementation is broader than the earlier "academic guidance only" framing. It now supports:
+The current implementation supports:
 
-- academic advising
-- course planning
-- program and eligibility reasoning
-- career matching and planning
-- interview preparation
-- document ingestion and profile extraction
-- replay/evaluation workflows
-- saved recommendations with outcome tracking
+- academic guidance and course/program questions
+- career and internship guidance
+- general profile and document-aware assistance
+- document ingestion from chat and direct upload endpoints
+- profile text ingestion
+- saved recommendations and replay artifacts
+- editable long-context notes that are passed into specialist turns
 
 ---
 
 ## 2. Current Architectural Shape
 
-### Core runtime
+### Runtime shape
 
-1. The frontend sends chat, profile, settings, and replay requests to FastAPI.
-2. The backend builds a `PathfinderState` object for the request.
-3. LangGraph routes the request through a multi-step agent workflow.
-4. Agents retrieve profile memory, semantic evidence, and web results as needed.
-5. An evaluator checks groundedness and quality before response synthesis.
-6. The responder streams progress and answer tokens back over SSE.
+The live `/api/v1/chat` path is now a simplified MCP-first flow:
+
+1. FastAPI accepts the request and validates uploads.
+2. `build_chat_runtime_session()` assembles request metadata and dependency status.
+3. `app/core/graph.py` compiles a 5-node LangGraph.
+4. The graph runs:
+   - `input_guard`
+   - `orchestrator`
+   - `specialist_runner`
+   - `light_validator`
+   - `responder`
+5. The route streams progress events, token events, and a final `done` payload over SSE.
+6. After the turn, Pathfinder persists a decision record and replay artifact on a best-effort basis.
 
 ### Main storage layers
 
-- `Neo4j`: long-lived student profile, document evidence, graph entities, recommendation state
-- `SQLite` via LangGraph `SqliteSaver`: per-session conversational checkpointing
-- local filesystem: replay artifacts, logs, uploaded files, eval fixtures
+- `Neo4j`: student profile, entities, documents, candidate facts, memory items, evidence links, recommendations
+- `SQLite` via LangGraph `SqliteSaver`: per-session message/checkpoint continuity
+- local filesystem: replay artifacts, generated data, eval fixtures
 
 ### Main integration points
 
@@ -51,7 +58,7 @@ The current implementation is broader than the earlier "academic guidance only" 
 - LM Studio vision model
 - Ollama embeddings
 - web search provider chain
-- MCP server for external tool access
+- MCP-style tool registry used by the specialist runner
 
 ---
 
@@ -60,19 +67,22 @@ The current implementation is broader than the earlier "academic guidance only" 
 ```text
 Browser UI
   -> FastAPI routes
+  -> Chat runtime session assembly
   -> LangGraph StateGraph
-  -> agent nodes
-  -> retrieval / memory / web tools
-  -> evaluator
+  -> input_guard
+  -> orchestrator
+  -> specialist_runner
+  -> light_validator
   -> responder
   -> SSE stream back to UI
 
-FastAPI / LangGraph depend on:
-  - Neo4j graph + vector memory
+The runtime depends on:
+  - Neo4j graph + memory store
   - SQLite conversation checkpoints
   - LM Studio text + vision inference
   - Ollama embeddings
   - web search adapters
+  - replay / decision persistence
 ```
 
 ---
@@ -84,75 +94,48 @@ FastAPI / LangGraph depend on:
 | Workflow engine | `langgraph.graph.StateGraph` |
 | Shared state | `app/core/state.py::PathfinderState` |
 | Checkpointing | LangGraph SQLite checkpointer in `app/core/memory.py` |
-| Profile + evidence store | Neo4j via `app/adapters/neo4j/graph_store.py` |
-| Semantic retrieval | Neo4j-backed retrieval / memory pack flow |
-| Web search | Tavily -> Google CSE -> Brave -> DuckDuckGo |
-| Document ingestion | PDF/image/DOCX extraction via `app/adapters/pdf/extractor.py` |
-| Streaming | Server-Sent Events from `/api/v1/chat` |
+| Chat routing model | simplified 5-node MCP-first graph |
+| Specialist selection | deterministic keyword/profile-signal routing in `app/agents/orchestrator.py` |
+| Specialist execution | one selected specialist prompt family plus shared tool registry |
+| Retrieval strategy label | `memory_pack` in `app/services/execution_registry.py` |
+| Document ingestion | `app/agents/doc_analyst.py` plus PDF/image/DOCX extractors |
+| Streaming | SSE from `POST /api/v1/chat` |
 | External tool exposure | MCP server in `app/mcp_server.py` |
 
-Two important changes from the older document:
+Important implementation notes:
 
-- the active retrieval model is now best described as a `memory_pack` pipeline rather than a simple "vector search plus graph query" design
-- the active agent graph has 16 nodes, not the older 10+1 layout
+- the current chat graph is not the older multi-branch 16-node workflow
+- the retrieval strategy is still described as `memory_pack`, but the live turn consumes profile data, relevant memories, retrieved documents, and tool results through the selected specialist rather than a dedicated `build_memory_pack()` node
+- profile memory consolidation is simplified and no longer exposes a dedicated conflict-resolution flow
 
 ---
 
 ## 5. LangGraph Workflow
 
-### Registered nodes
-
-The compiled graph in [`app/core/graph.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/core/graph.py) currently registers these nodes:
+The compiled graph in [`app/core/graph.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/core/graph.py) currently registers exactly these nodes:
 
 1. `input_guard`
 2. `orchestrator`
-3. `clarifier`
-4. `doc_analyst`
-5. `profile_manager`
-6. `web_researcher`
-7. `fact_extractor`
-8. `course_planner`
-9. `program_advisor`
-10. `career_matcher`
-11. `eligibility_reasoner`
-12. `academic_advisor`
-13. `career_planner`
-14. `interview_prep`
-15. `evaluator`
-16. `responder`
+3. `specialist_runner`
+4. `light_validator`
+5. `responder`
 
 ### Routing pattern
 
 ```text
 input_guard
-  -> responder        if blocked
-  -> orchestrator     otherwise
+  -> responder           if blocked
+  -> orchestrator        otherwise
 
 orchestrator
-  -> clarifier
-  -> doc_analyst
-  -> profile_manager
-  -> web_researcher
-  -> fact_extractor
-  -> course_planner
-  -> program_advisor
-  -> career_matcher
-  -> eligibility_reasoner
-  -> academic_advisor
-  -> career_planner
-  -> interview_prep
-  -> evaluator
-  -> responder
+  -> specialist_runner   normal path
+  -> responder           short-circuit path
 
-clarifier -> responder
+specialist_runner
+  -> light_validator     normal path
+  -> responder           short-circuit path
 
-doc_analyst / profile_manager / web_researcher / fact_extractor
-  -> next planned node
-
-advisor/planner/reasoner nodes
-  -> evaluator
-
-evaluator
+light_validator
   -> responder
 
 responder
@@ -161,19 +144,17 @@ responder
 
 ### Design intent in the current code
 
-- `input_guard` blocks unsafe or off-scope requests
-- `orchestrator` decides the workflow and next node
-- retrieval and evidence gathering happen before advice-heavy nodes when needed
-- `fact_extractor` converts mixed evidence into structured records
-- planning/advising nodes generate a structured decision payload
-- `evaluator` checks support, issues, and groundedness
-- `responder` turns the result into user-facing streamed output
+- `input_guard` blocks unsafe/off-scope requests
+- `orchestrator` selects one of three specialist families: `academic`, `career`, or `general`
+- `specialist_runner` prepares compact profile/session context, optionally pre-ingests uploaded files, and lets the specialist call the canonical tool registry
+- `light_validator` checks response shape, derives citations from tool provenance, and sets a lightweight confidence score
+- `responder` returns the final answer with minimal rewriting
 
 ---
 
 ## 6. Shared State Model
 
-The shared state has grown well beyond the earlier minimal schema. The current `PathfinderState` includes:
+The current `PathfinderState` is intentionally smaller than the older architecture drafts.
 
 ### Inputs and runtime controls
 
@@ -183,73 +164,50 @@ The shared state has grown well beyond the earlier minimal schema. The current `
 - `session_id`
 - `student_id`
 - `is_global_upload`
-- `advisor_mode`
+- `reasoning`
 - `request_plan`
-- `runtime_policy`
 
-### Orchestration and planning
+### Orchestration output
 
-- `intent`
-- `plan`
+- `selected_specialist`
+- `routing_scores`
+- `routing_reason`
 - `next_node`
-- `missing_info`
-- `workflow`
-- `target_entity`
-- `source_policy`
-- `task_graph`
-- `working_memory`
-- `dependency_status`
-- `trace_summary`
-- `stop_reason`
-
-### Student and session continuity
-
 - `session_summary`
-- `student_strategy`
-- `student_operating_model`
-- `recommendation_outcome_profile`
-- `decision_continuity`
-- `compacted_session`
-- `session_memory`
-- `short_memory_policy`
+- `dependency_status`
+- `recovery_events`
+- `stop_reason`
+- `durable_profile_facts`
 
-### Retrieved and extracted evidence
+### Data gathered during the turn
 
 - `profile_data`
 - `retrieved_documents`
 - `web_results`
 - `semantic_memory`
-- `memory_pack`
-- `evidence_pack`
 - `latest_ingestion_result`
-- `conflicts`
 - `extracted_entities`
 - `document_roles`
 - `transcript_states`
-- `targeted_web_questions`
-- `evidence_records`
-- `decision_payload`
 - `tool_call_log`
+- `specialist_output`
 
 ### Evaluation and output
 
 - `draft_answer`
 - `confidence_score`
 - `is_grounded`
-- `profile_updates`
 - `citations`
 - `final_answer`
 - `step_progress`
 
-### Guardrails
+### Guard fields
 
 - `is_blocked`
 - `block_reason`
 - `topic_guard_enabled`
-- `blocked_reasons`
-- `recovery_events`
 
-This is now a workflow-and-evidence state model, not just a chat state plus a few retrieval fields.
+This is a compact specialist-runtime state, not the older large workflow/planning state that included many intermediate advisor nodes.
 
 ---
 
@@ -257,52 +215,68 @@ This is now a workflow-and-evidence state model, not just a chat state plus a fe
 
 ### Conversation memory
 
-- Implemented with LangGraph checkpointing
-- Backed by SQLite
-- Scoped to session/thread continuity
+- implemented with LangGraph checkpointing
+- backed by SQLite
+- keyed by `student_id:session_id` thread IDs
 
 ### Long-lived student memory
 
-- Stored in Neo4j
-- Includes personal info, academics, skills, projects, documents, profile facts, candidate facts, recommendation outcomes, and evidence links
+- stored in Neo4j
+- includes profile entities, documents, candidate facts, memory items, evidence links, and recommendation state
 
-### Retrieval model
+### Live retrieval used by `/chat`
 
-The active retrieval strategy is exposed as `memory_pack` in [`app/services/execution_registry.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/execution_registry.py).
+The current specialist path gathers context from:
 
-In practice this means downstream nodes work from a normalized evidence envelope instead of directly consuming raw vector search results alone.
+- `get_full_profile(...)`
+- `build_session_summary(...)`
+- `get_relevant_memories(...)`
+- `hybrid_search(...)`
+- MCP-style tools invoked during specialist execution
 
-Key supporting modules:
+The execution registry still exposes the retrieval strategy as `memory_pack`, but there is no dedicated live graph node named `build_memory_pack()` in the current `/chat` flow.
 
-- [`app/services/retrieval.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/retrieval.py)
-- [`app/services/memory_ingestion.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/memory_ingestion.py)
+### Durable long context
+
+The current profile/runtime bridge now exposes a shared long-context payload:
+
+- a manifest of available entity/document groups
+- small durable profile facts
+- editable `long_context_notes`
+
+This same payload is:
+
+- shown on the profile page for inspection
+- stored on the student record through `long_context_notes`
+- passed into the specialist runner for live turns
+
+Key modules:
+
 - [`app/services/consolidation.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/consolidation.py)
-- [`app/core/quality.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/core/quality.py)
+- [`app/services/long_context.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/long_context.py)
+- [`app/services/runtime_session.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/runtime_session.py)
+- [`app/agents/specialist_runner.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/agents/specialist_runner.py)
 
 ---
 
 ## 8. Neo4j Responsibilities
 
-Neo4j is doing more than "knowledge graph only" in the current code. It now acts as the durable structured memory backbone.
+Neo4j acts as the durable structured memory backbone.
 
 Major responsibilities handled by [`app/adapters/neo4j/graph_store.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/adapters/neo4j/graph_store.py):
 
-- student creation and resolution
-- profile reads and profile completeness summaries
+- student creation and lookup
+- full profile reads
 - entity CRUD
-- document storage and promotion
-- candidate fact storage and conflict resolution
+- document storage and deletion
+- candidate fact storage and student profile updates
 - memory item persistence and evidence linking
-- recommendation persistence and outcome updates
+- recommendation persistence and outcome tracking
 - graph data export for visualization
 
-The architecture should therefore be described as:
+The architecture is best described as:
 
 - `Neo4j = profile store + evidence graph + memory ledger + recommendation state`
-
-not just:
-
-- `Neo4j = course/skill/project graph`
 
 ---
 
@@ -318,16 +292,15 @@ Pathfinder currently supports:
 The ingestion path is split across:
 
 - [`app/adapters/pdf/extractor.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/adapters/pdf/extractor.py)
-- [`app/services/memory_ingestion.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/memory_ingestion.py)
 - [`app/agents/doc_analyst.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/agents/doc_analyst.py)
+- [`app/services/profile_text.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/profile_text.py)
 
 Current behavior:
 
-- uploaded files are classified and ingested
-- chunks and extracted entities become memory/evidence
-- document role inference is tracked
-- transcript-specific state can be derived
-- session documents can later be promoted to global scope
+- uploaded chat files are pre-ingested inside `specialist_runner`
+- direct document uploads use the `/api/v1/documents` endpoint and call `doc_analyst` directly
+- profile free text uses `/api/v1/profile/text`
+- document/profile ingestion can trigger consolidation and candidate-fact cleanup
 
 ---
 
@@ -340,8 +313,9 @@ The configured provider chain is:
 3. Brave
 4. DuckDuckGo
 
-This is implemented through the execution registry and adapter modules:
+Implemented through:
 
+- [`app/services/execution_registry.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/execution_registry.py)
 - [`app/adapters/web_search/tavily.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/adapters/web_search/tavily.py)
 - [`app/adapters/web_search/google_cse.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/adapters/web_search/google_cse.py)
 - [`app/adapters/web_search/brave.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/adapters/web_search/brave.py)
@@ -350,8 +324,6 @@ This is implemented through the execution registry and adapter modules:
 ---
 
 ## 11. API Surface
-
-The active API in [`app/api/routes.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/api/routes.py) is broader than the previous architecture doc.
 
 ### Chat and ingestion
 
@@ -369,9 +341,6 @@ The active API in [`app/api/routes.py`](/Users/sagargupta/Library/CloudStorage/O
 - `DELETE /api/v1/profile/entity/{entity_label}/{entity_name}`
 - `PUT /api/v1/profile/entity`
 - `DELETE /api/v1/profile/reset`
-- `GET /api/v1/profile/conflicts`
-- `POST /api/v1/profile/conflicts/self-resolve`
-- `POST /api/v1/profile/conflicts/resolve`
 - `GET /api/v1/profile/graph`
 
 ### Recommendations and outcomes
@@ -400,37 +369,25 @@ The active API in [`app/api/routes.py`](/Users/sagargupta/Library/CloudStorage/O
 - `GET /api/v1/health`
 - `GET /api/v1/background/status`
 
-This means Pathfinder should now be thought of as:
-
-- an advising runtime
-- a profile/memory management backend
-- a replay/evaluation system
-- a recommendation tracking system
-
 ---
 
 ## 12. Frontend
 
-The current router in [`frontend/src/App.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/App.jsx) exposes these pages:
+The current router in [`frontend/src/App.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/App.jsx) exposes:
 
 - `/chat`
 - `/profile`
-- `/profile/conflicts`
 - `/replays`
 - `/settings`
 
-So the frontend is no longer just "Chat / My Profile / Settings". It also includes:
-
-- conflict resolution UX
-- replay inspection/evaluation UX
-
-Key current page files:
+Key pages:
 
 - [`frontend/src/pages/ChatPage.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/pages/ChatPage.jsx)
 - [`frontend/src/pages/ProfilePage.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/pages/ProfilePage.jsx)
-- [`frontend/src/pages/ProfileConflictsPage.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/pages/ProfileConflictsPage.jsx)
 - [`frontend/src/pages/ReplayPage.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/pages/ReplayPage.jsx)
 - [`frontend/src/pages/SettingsPage.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/pages/SettingsPage.jsx)
+
+The profile UI now also surfaces the long-context payload that is passed to specialists and lets the user edit the `long_context_notes` portion directly.
 
 ---
 
@@ -440,34 +397,32 @@ Pathfinder exposes an MCP server through [`app/mcp_server.py`](/Users/sagargupta
 
 At a high level it provides tools for:
 
-- searching the student knowledge graph
-- semantic document search
-- getting the structured profile
-- document analysis / ingestion
+- searching graph/profile context
+- document and memory access
+- saved recommendation inspection
+- web/document retrieval helpers through the shared tool surface
 
-This is still an important architectural feature and remains consistent with the earlier design.
+This shared registry is also what the specialist runner uses internally during chat turns.
 
 ---
 
 ## 14. Quality And Guardrails
 
-Guardrails are now distributed across several layers rather than living only in a single "guardrail node" concept.
-
-### Current quality layers
+Current quality layers:
 
 - `input_guard` for blocking and scope checks
-- `orchestrator` for planning discipline
-- `fact_extractor` for structured evidence extraction
-- `evaluator` for answer review and repair
-- `app/core/quality.py` for evidence normalization, task-graph logic, source audits, and scoring helpers
+- `orchestrator` for deterministic specialist routing
+- `specialist_runner` for bounded tool-based reasoning
+- `light_validator` for response-shape validation and citation extraction
+- `responder` for final answer rendering
 
-This makes the current system closer to:
+This is closer to:
 
-- `guard + plan + extract + evaluate + respond`
+- `guard + route + run specialist + validate + respond`
 
-than the earlier simpler:
+than the older:
 
-- `guard + answer + check`
+- `guard + many preparation nodes + evaluator-heavy orchestration`
 
 ---
 
@@ -479,15 +434,16 @@ app/
   agents/              LangGraph node implementations
   adapters/            Neo4j, LLM, embeddings, PDF, web search adapters
   config/              runtime settings
-  core/                graph assembly, shared state, memory, quality
+  core/                graph assembly, shared state, memory, quality helpers
   schemas/             API request/response models
-  services/            retrieval, ingestion, consolidation, replay/eval, runtime helpers
+  services/            runtime helpers, consolidation, replay/eval, profile text
+  tools/               canonical internal/MCP tool registry
   utils/               ids and misc helpers
-  mcp_server.py        MCP tool server
+  mcp_server.py        MCP server entrypoint
   main.py              FastAPI entrypoint
 
 frontend/
-  src/pages/           chat, profile, conflicts, replays, settings
+  src/pages/           chat, profile, replays, settings
   src/components/      chat/layout/shared UI
   src/services/api.js  HTTP + SSE client
 
@@ -503,21 +459,22 @@ graphify-out/
 
 ---
 
-## 16. What This Document Now Assumes
+## 16. What This Document Assumes
 
-This architecture document intentionally describes the code as it exists now, not the original proposal-only design.
+This document intentionally describes the code as it exists now.
 
 That means:
 
-- the graph has 16 workflow nodes
+- the chat graph has 5 workflow nodes
+- specialist routing is `academic` / `career` / `general`
 - replay/eval and recommendation tracking are first-class parts of the system
-- the state model is significantly richer than a basic RAG chatbot state
-- Neo4j acts as durable memory infrastructure, not just a visualization graph
-- the frontend includes conflicts and replay pages
+- Neo4j acts as durable memory infrastructure
+- the profile page exposes editable long-context notes that are fed into specialist turns
 
-If the code changes again, this file should be updated alongside:
+If the implementation changes again, update this file alongside:
 
 - [`app/core/graph.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/core/graph.py)
 - [`app/core/state.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/core/state.py)
 - [`app/api/routes.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/api/routes.py)
-- [`frontend/src/App.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/App.jsx)
+- [`app/agents/orchestrator.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/agents/orchestrator.py)
+- [`app/agents/specialist_runner.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/agents/specialist_runner.py)

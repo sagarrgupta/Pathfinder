@@ -3,11 +3,9 @@ import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
 import {
   addProfileText,
-  autoResolveProfileConflicts,
   checkDocumentExists,
   deleteProfileEntity,
   getProfile,
-  getProfileConflicts,
   updateProfile,
   updateProfileEntity,
   uploadDocument,
@@ -32,9 +30,11 @@ const ENTITY_CONFIG = {
   Document:   { label: 'Documents',    icon: FileText,   nameKey: 'filename', sortKey: null,   render: (d) => `${d.filename || d.name || 'Document'} [${d.scope || 'global'}]` },
 };
 
-const HIDDEN_PERSONAL_FIELDS = new Set(['id', 'created_at', 'updated_at', '_relationship']);
+const HIDDEN_PERSONAL_FIELDS = new Set(['id', 'created_at', 'updated_at', '_relationship', 'long_context_notes', 'long_context_summary']);
 
 const LABEL_OVERRIDES = { gpa: 'GPA', id: 'ID', url: 'URL' };
+const LONG_CONTEXT_FIELDS = ['Student', 'Academic', 'Goals', 'Preferences', 'Skills', 'Notes'];
+const LONG_CONTEXT_TEMPLATE = LONG_CONTEXT_FIELDS.map((field) => `${field}: `).join('\n');
 
 function formatFieldLabel(key) {
   if (LABEL_OVERRIDES[key.toLowerCase()]) return LABEL_OVERRIDES[key.toLowerCase()];
@@ -46,6 +46,40 @@ function getEntityConfig(label) {
     label: label + 's', icon: Circle, nameKey: 'name', sortKey: null,
     render: (item) => item.name || item.title || JSON.stringify(item).slice(0, 60),
   };
+}
+
+function validateLongContextSummary(text) {
+  const lines = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) {
+    return { valid: false, message: 'Use the required template before saving.' };
+  }
+
+  const seen = new Set();
+  for (const line of lines) {
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex <= 0) {
+      return { valid: false, message: "Each line must follow 'Label: value'." };
+    }
+    const label = line.slice(0, separatorIndex).trim();
+    const value = line.slice(separatorIndex + 1).trim();
+    if (!LONG_CONTEXT_FIELDS.includes(label)) {
+      return { valid: false, message: `Unsupported label '${label}'.` };
+    }
+    if (seen.has(label)) {
+      return { valid: false, message: `Duplicate label '${label}'.` };
+    }
+    if (!value) {
+      return { valid: false, message: `Field '${label}' cannot be empty. Use 'none' if needed.` };
+    }
+    seen.add(label);
+  }
+
+  const missing = LONG_CONTEXT_FIELDS.filter((field) => !seen.has(field));
+  if (missing.length > 0) {
+    return { valid: false, message: `Missing fields: ${missing.join(', ')}.` };
+  }
+
+  return { valid: true, message: '' };
 }
 
 // ── Skeleton component ──────────────────────────────────────────
@@ -73,11 +107,11 @@ export default function ProfilePage() {
   const toast = useToast();
   const [activeTab, setActiveTab] = useState('personal');
   const [freeText, setFreeText] = useState('');
+  const [longContextSummary, setLongContextSummary] = useState('');
+  const [isSavingLongContext, setIsSavingLongContext] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isProcessingText, setIsProcessingText] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
-  const [conflicts, setConflicts] = useState([]);
-  const [isResolvingConflicts, setIsResolvingConflicts] = useState(false);
   const fileInputRef = useRef(null);
   const profile = state.profile;
 
@@ -91,32 +125,18 @@ export default function ProfilePage() {
     loadProfile();
   }, [state.activeStudentId]);
 
+  useEffect(() => {
+    setLongContextSummary(profile?.long_context_preview?.summary || profile?.personal?.long_context_summary || '');
+  }, [profile]);
+
   const loadProfile = async () => {
     dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
     try {
       const data = await getProfile(state.activeStudentId);
       dispatch({ type: 'SET_PROFILE', payload: data });
-      const conflictData = await getProfileConflicts(state.activeStudentId);
-      setConflicts(Array.isArray(conflictData) ? conflictData : []);
     } catch (err) {
       console.error('Failed to load profile:', err);
       dispatch({ type: 'SET_PROFILE_LOADING', payload: false });
-      setConflicts([]);
-    }
-  };
-
-  const handleAutoResolveConflicts = async () => {
-    setIsResolvingConflicts(true);
-    try {
-      const result = await autoResolveProfileConflicts(state.activeStudentId);
-      toast.success(
-        `Resolved ${result.resolved || 0} conflicts and superseded ${result.superseded || 0} entries`
-      );
-      await loadProfile();
-    } catch (err) {
-      toast.error(`Auto-resolve failed: ${err.message}`);
-    } finally {
-      setIsResolvingConflicts(false);
     }
   };
 
@@ -230,6 +250,23 @@ export default function ProfilePage() {
     }
   };
 
+  const handleSaveLongContext = async () => {
+    if (!longContextValidation.valid) {
+      toast.error(longContextValidation.message);
+      return;
+    }
+    setIsSavingLongContext(true);
+    try {
+      await updateProfile('long_context_summary', longContextSummary, state.activeStudentId);
+      toast.success('Saved long-context summary');
+      await loadProfile();
+    } catch (err) {
+      toast.error(`Update failed: ${err.message}`);
+    } finally {
+      setIsSavingLongContext(false);
+    }
+  };
+
   const isProcessing = isUploading || isProcessingText;
   const completeness = Math.round((profile?.completeness || 0) * 100);
   const confidence = Math.round((profile?.confidence || 0) * 100);
@@ -239,6 +276,7 @@ export default function ProfilePage() {
   const temporalProfile = profile?.temporal_profile || {};
   const temporalSummary = temporalProfile.summary || {};
   const temporalEvents = temporalProfile.recent_events || [];
+  const longContextValidation = validateLongContextSummary(longContextSummary);
   const completenessChecklist = [
     { label: 'Name', done: !!profile?.personal?.name },
     { label: 'University', done: !!profile?.personal?.university },
@@ -328,7 +366,7 @@ export default function ProfilePage() {
                 {memoryOverview.candidate_facts || 0} candidate facts, {memoryOverview.memory_items || 0} memories
               </p>
               <p className="text-sm text-muted-foreground mt-1">
-                {memoryOverview.conflicts || 0} unresolved conflicts, {memoryOverview.evidence || 0} evidence items
+                {memoryOverview.evidence || 0} evidence items tracked across your profile and documents
               </p>
             </div>
             <div className="rounded-xl border bg-card p-5">
@@ -511,36 +549,47 @@ export default function ProfilePage() {
         <div className="rounded-xl border bg-card p-5 mb-8">
           <div className="flex items-center justify-between gap-3 mb-3">
             <h3 className="font-semibold text-sm flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-primary" /> Profile Conflicts
+              <Sparkles className="h-4 w-4 text-primary" /> Long Context Passed To The Specialist
             </h3>
-            <button
-              onClick={handleAutoResolveConflicts}
-              disabled={isResolvingConflicts || conflicts.length === 0}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium border hover:bg-accent disabled:opacity-50 flex items-center gap-1.5"
-            >
-              {isResolvingConflicts ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-              {isResolvingConflicts ? 'Resolving...' : 'Auto-resolve'}
-            </button>
+            <p className="text-xs text-muted-foreground">
+              This is the durable context shape Pathfinder builds before each turn.
+            </p>
           </div>
-          {conflicts.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No unresolved profile conflicts.</p>
-          ) : (
-            <div className="space-y-2">
-              {conflicts.slice(0, 5).map((item) => (
-                <div key={item.id || `${item.fact_type}-${item.current_option}`} className="rounded-lg border bg-muted/20 p-3">
-                  <p className="text-sm font-medium">{item.question || `Resolve ${item.fact_type}`}</p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Current: <span className="text-foreground">{item.current_option || '-'}</span>
-                  </p>
-                  {Array.isArray(item.other_options) && item.other_options.length > 0 && (
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Alternatives: {item.other_options.join(', ')}
-                    </p>
-                  )}
-                </div>
-              ))}
+          <div className="grid grid-cols-1 xl:grid-cols-[1.1fr,0.9fr] gap-4">
+            <div className="rounded-lg border bg-muted/20 p-4">
+              <p className="text-xs text-muted-foreground mb-2">Runtime Payload Preview</p>
+              <pre className="text-xs whitespace-pre-wrap break-words overflow-x-auto">
+                {JSON.stringify(profile?.long_context_preview || {}, null, 2)}
+              </pre>
             </div>
-          )}
+            <div className="rounded-lg border bg-muted/20 p-4">
+              <p className="text-xs text-muted-foreground mb-2">Editable Long-Context Summary</p>
+              <textarea
+                value={longContextSummary}
+                onChange={(e) => setLongContextSummary(e.target.value)}
+                placeholder={LONG_CONTEXT_TEMPLATE}
+                className="w-full rounded-lg border bg-background px-3 py-2.5 text-sm resize-none h-40 focus:outline-none focus:ring-2 focus:ring-ring/50 transition-shadow"
+              />
+              <div className="flex items-center justify-between gap-3 mt-3">
+                <div>
+                  <p className="text-xs text-muted-foreground">
+                    Required format: one line each for {LONG_CONTEXT_FIELDS.join(', ')}.
+                  </p>
+                  {!longContextValidation.valid ? (
+                    <p className="text-xs text-red-600 dark:text-red-400 mt-1">{longContextValidation.message}</p>
+                  ) : null}
+                </div>
+                <button
+                  onClick={handleSaveLongContext}
+                  disabled={isSavingLongContext || !longContextValidation.valid}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {isSavingLongContext ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  {isSavingLongContext ? 'Saving...' : 'Save Summary'}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Profile Tabs */}

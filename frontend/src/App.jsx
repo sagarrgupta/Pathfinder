@@ -4,7 +4,6 @@ import { useApp } from './context/AppContext';
 import Sidebar from './components/layout/Sidebar';
 import ChatPage from './pages/ChatPage';
 import ProfilePage from './pages/ProfilePage';
-import ProfileConflictsPage from './pages/ProfileConflictsPage';
 import ReplayPage from './pages/ReplayPage';
 import SettingsPage from './pages/SettingsPage';
 import ErrorBoundary from './components/shared/ErrorBoundary';
@@ -27,7 +26,6 @@ export default function App() {
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/profile" element={<ProfilePage />} />
-            <Route path="/profile/conflicts" element={<ProfileConflictsPage />} />
             <Route path="/replays" element={<ReplayPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>

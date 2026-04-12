@@ -46,7 +46,6 @@ function generateSmartTitle(query) {
 export default function ChatPage() {
   const { state, dispatch, createSession } = useApp();
   const [files, setFiles] = useState([]);
-  const [isGlobalUpload, setIsGlobalUpload] = useState(false);
   const [replaceFlags, setReplaceFlags] = useState({});  // filename -> true if user chose to replace
   const abortRef = useRef(null);
 
@@ -152,9 +151,8 @@ export default function ChatPage() {
         sessionId: sid,
         studentId: state.activeStudentId,
         files: pendingFiles,
-        isGlobalUpload,
         replaceFilenames: pendingReplaceNames,
-        advisorMode: state.settings.advisor_mode || 'adaptive',
+        reasoning: state.settings.reasoning || 'medium',
       },
       {
         onProgress: (data) => {
@@ -184,17 +182,15 @@ export default function ChatPage() {
                   replayId: data.replay_id,
                   dependencyStatus: data.dependency_status,
                   stopReason: data.stop_reason,
-                  studentStrategy: data.student_strategy,
-                  studentOperatingModel: data.student_operating_model,
-                  recommendationOutcomeProfile: data.recommendation_outcome_profile,
-                  decisionContinuity: data.decision_continuity,
-                  sessionMemory: data.session_memory,
-                  retrievalSummary: data.retrieval_summary,
-                  retrievalTrace: data.retrieval_trace,
-                  retrievalDiagnostics: data.retrieval_diagnostics,
                   runtimeSnapshot: data.runtime_snapshot,
-                  traceSummary: data.trace_summary,
-                  advisorMode: state.settings.advisor_mode || 'adaptive',
+                  selectedSpecialist: data.selected_specialist,
+                  routingScores: data.routing_scores,
+                  routingReason: data.routing_reason,
+                  toolCallLog: data.tool_call_log,
+                  specialistOutput: data.specialist_output,
+                  documentRoles: data.document_roles,
+                  transcriptStates: data.transcript_states,
+                  reasoning: state.settings.reasoning || 'medium',
                 },
               },
             },
@@ -394,10 +390,8 @@ export default function ChatPage() {
         isStreaming={state.isStreaming}
         files={files}
         onFilesChange={handleFilesChange}
-        isGlobalUpload={isGlobalUpload}
-        onGlobalUploadChange={setIsGlobalUpload}
-        advisorMode={state.settings.advisor_mode || 'adaptive'}
-        onAdvisorModeChange={(value) => dispatch({ type: 'SET_SETTINGS', payload: { advisor_mode: value } })}
+        reasoning={state.settings.reasoning || 'medium'}
+        onReasoningChange={(value) => dispatch({ type: 'SET_SETTINGS', payload: { reasoning: value } })}
       />
     </div>
   );

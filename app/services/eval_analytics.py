@@ -29,7 +29,7 @@ def list_benchmark_sets() -> list[dict[str, Any]]:
                 "id": data.get("id", path.stem),
                 "title": data.get("title", path.stem.replace("_", " ").title()),
                 "description": data.get("description", ""),
-                "workflow": data.get("workflow", ""),
+                "specialist": data.get("specialist", data.get("workflow", "")),
                 "scenario_count": int(data.get("scenario_count", 0) or 0),
                 "examples": list(data.get("examples", []) or [])[:3],
             }
@@ -124,14 +124,14 @@ def build_eval_analytics(limit: int = 50, student_id: str | None = None) -> dict
             {
                 **evaluated,
                 "created_at": artifact.get("created_at", ""),
-                "workflow_key": artifact.get("workflow", "") or "unknown",
+                "specialist_key": artifact.get("selected_specialist", "") or "unknown",
                 "method_key": artifact.get("method", "") or "unknown",
                 "model_key": runtime_snapshot.get("selected_text_model", "") or "unknown",
                 "retrieval_mode_key": runtime_snapshot.get("selected_retrieval_mode", "") or "unknown",
             }
         )
 
-    by_workflow = _group_summary([{"key": item.get("workflow_key", "unknown"), **item} for item in evaluations])
+    by_specialist = _group_summary([{"key": item.get("specialist_key", "unknown"), **item} for item in evaluations])
     by_method = _group_summary([{"key": item.get("method_key", "unknown"), **item} for item in evaluations])
     by_model = _group_summary([{"key": item.get("model_key", "unknown"), **item} for item in evaluations])
     by_retrieval_mode = _group_summary([{"key": item.get("retrieval_mode_key", "unknown"), **item} for item in evaluations])
@@ -150,7 +150,7 @@ def build_eval_analytics(limit: int = 50, student_id: str | None = None) -> dict
         },
         "benchmarks": list_benchmark_sets(),
         "comparisons": {
-            "by_workflow": by_workflow,
+            "by_specialist": by_specialist,
             "by_method": by_method,
             "by_model": by_model,
             "by_retrieval_mode": by_retrieval_mode,

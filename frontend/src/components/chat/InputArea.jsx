@@ -2,13 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Square, Paperclip, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const ADVISOR_MODE_OPTIONS = [
-  { value: 'adaptive', label: 'Adaptive' },
-  { value: 'semester_planning', label: 'Semester Planning' },
-  { value: 'degree_audit', label: 'Degree Audit' },
-  { value: 'resume_review', label: 'Resume Review' },
-  { value: 'internship_targeting', label: 'Internship Targeting' },
-  { value: 'graduate_school_planning', label: 'Graduate School Planning' },
+const REASONING_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
 ];
 
 export default function InputArea({
@@ -17,10 +15,8 @@ export default function InputArea({
   isStreaming,
   files,
   onFilesChange,
-  isGlobalUpload,
-  onGlobalUploadChange,
-  advisorMode,
-  onAdvisorModeChange,
+  reasoning,
+  onReasoningChange,
 }) {
   const [input, setInput] = useState('');
   const fileInputRef = useRef(null);
@@ -125,42 +121,21 @@ export default function InputArea({
                     onChange={handleFileSelect}
                     className="hidden"
                   />
-                  <div className="inline-flex h-9 rounded-full border border-border/70 bg-muted/20 p-1 text-[11px]">
-                    <button
-                      type="button"
-                      onClick={() => onGlobalUploadChange(false)}
-                      title="Use uploaded files only in this conversation without saving them to long-term profile memory."
-                      className={cn(
-                        'inline-flex items-center rounded-full px-3 transition-colors',
-                        !isGlobalUpload ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                      )}
+                  <div className="flex items-center gap-1.5 h-9 rounded-full border border-border/70 bg-muted/20 px-3 text-[11px] text-foreground">
+                    <span className="text-muted-foreground">Reasoning:</span>
+                    <select
+                      value={reasoning || 'medium'}
+                      onChange={(e) => onReasoningChange?.(e.target.value)}
+                      className="bg-transparent text-foreground outline-none"
+                      title="Choose the model reasoning level"
                     >
-                      This chat
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onGlobalUploadChange(true)}
-                      title="Save uploaded files to the profile so Pathfinder can use them across future chats."
-                      className={cn(
-                        'inline-flex items-center rounded-full px-3 transition-colors',
-                        isGlobalUpload ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      Global
-                    </button>
+                      {REASONING_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                  <select
-                    value={advisorMode || 'adaptive'}
-                    onChange={(e) => onAdvisorModeChange?.(e.target.value)}
-                    className="h-9 rounded-full border border-border/70 bg-muted/20 px-3 text-[11px] text-foreground outline-none"
-                    title="Choose a focused advisor mode"
-                  >
-                    {ADVISOR_MODE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
                 </div>
 
                 <div className="flex items-center gap-2">
