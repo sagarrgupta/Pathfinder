@@ -64,6 +64,9 @@ Thumbs.db
 *.tmp
 *.orig
 
+# ── Generated Graphify Output ────────────────────
+graphify-out/
+
 # Private local AI sessions and generated reports
 .claw/
 output/

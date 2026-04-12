@@ -36,21 +36,19 @@ from app.adapters.neo4j.graph_store import (
     update_entity,
     update_student,
 )
-from app.agents.profile_manager import process_free_text
 from app.config.settings import settings
 from app.core.graph import get_compiled_graph
 from app.core.memory import reset_checkpointer_storage
 from app.services.runtime_session import build_chat_runtime_session, get_dependency_status
-from app.services.conflict_autoresolve import (
-    auto_resolve_profile_conflicts,
-    list_profile_conflicts,
-    resolve_conflict_choice,
-)
+from app.services.long_context import build_long_context_payload, normalize_long_context_summary
+from app.services.profile_text import process_free_text
 from app.services.consolidation import maybe_consolidate_memory
 from app.services.background_jobs import get_background_status
 from app.services.execution_registry import get_active_retrieval_strategy, get_active_text_model
 from app.services.replay_store import (
     build_replay_artifact,
+    delete_all_replay_artifacts,
+    delete_replay_artifacts_for_student,
     get_replay_artifact,
     list_replay_artifacts,
     save_replay_artifact,
@@ -64,7 +62,6 @@ from app.schemas.models import (
     EntityUpdate,
     GraphDataResponse,
     HealthResponse,
-    ConflictChoiceRequest,
     ProfileCreate,
     ProfileInfo,
     ProfileResponse,
@@ -202,7 +199,6 @@ def _profile_memory_overview(profile: dict[str, Any]) -> dict[str, Any]:
         "candidate_facts": len(candidate_facts),
         "memory_items": len(profile.get("memory_items", [])),
         "evidence": len(profile.get("evidence", [])),
-        "conflicts": len([item for item in candidate_facts if item.get("status") == "conflicted"]),
         "confirmed": int(fact_summary.get("confirmed_candidate_facts", 0) or 0),
         "reinforced": int(fact_summary.get("reinforced_candidate_facts", 0) or 0),
         "inferred": int(fact_summary.get("inferred_candidate_facts", 0) or 0),
@@ -210,7 +206,7 @@ def _profile_memory_overview(profile: dict[str, Any]) -> dict[str, Any]:
 
 # ── Runtime state ────────────────────────────────────────────────
 _topic_guard_enabled: bool = settings.TOPIC_GUARD_ENABLED
-_advisor_mode: str = "adaptive"
+_reasoning: str = "medium"
 
 
 # ── Chat (SSE Streaming) ────────────────────────────────────────
@@ -224,7 +220,7 @@ async def chat(
     files: list[UploadFile] = File(default=[]),
     is_global_upload: bool = Form(False),
     replace_filenames: str = Form(""),
-    advisor_mode: str = Form("adaptive"),
+    reasoning: str = Form("medium"),
 ):
     """Main chat endpoint with SSE streaming."""
     resolved_student_id = await _resolve_student_id(student_id)
@@ -255,7 +251,7 @@ async def chat(
                 files=file_data,
                 is_global_upload=is_global_upload,
                 topic_guard_enabled=_topic_guard_enabled,
-                advisor_mode=(advisor_mode if str(advisor_mode or "").strip() else _advisor_mode),
+                reasoning=(reasoning if str(reasoning or "").strip() else _reasoning),
             )
             initial_state = runtime_session.build_initial_state()
             config = runtime_session.build_graph_config()
@@ -375,7 +371,6 @@ async def upload_document(
         "student_id": resolved_student_id,
         "is_global_upload": scope == "global",
         "step_progress": [],
-        "plan": [],
     }
 
     result = await process_doc(state)
@@ -402,6 +397,7 @@ async def get_profile(student_id: Optional[str] = Query(default=None)):
     """Get the student's full profile from the knowledge graph."""
     resolved_student_id = await _resolve_student_id(student_id)
     profile = await get_full_profile(resolved_student_id)
+    long_context_preview = build_long_context_payload(profile, {})
     return ProfileResponse(
         personal=profile.get("personal", {}),
         academic={"courses_count": len(profile.get("courses", []))},
@@ -417,6 +413,7 @@ async def get_profile(student_id: Optional[str] = Query(default=None)):
         completeness_breakdown=profile.get("completeness_breakdown", {}),
         fact_summary=profile.get("fact_summary", {}),
         temporal_profile=profile.get("temporal_profile", {}),
+        long_context_preview=long_context_preview,
         all_entities=profile.get("all_entities", {}),
         completeness=float(profile.get("completeness", 0.0) or 0.0),
         confidence=_profile_confidence(profile),
@@ -428,7 +425,13 @@ async def get_profile(student_id: Optional[str] = Query(default=None)):
 async def update_profile(update: ProfileUpdate):
     """Update a specific profile field."""
     resolved_student_id = await _resolve_student_id(update.student_id)
-    result = await update_student(resolved_student_id, **{update.field: update.value})
+    value = update.value
+    if update.field == "long_context_summary":
+        try:
+            value = normalize_long_context_summary(str(update.value or ""))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    result = await update_student(resolved_student_id, **{update.field: value})
     return {"updated": True, "data": result}
 
 
@@ -471,7 +474,12 @@ async def reset_all_profile_data(student_id: Optional[str] = Query(default=None)
     """Delete ALL student data from the knowledge graph."""
     resolved_student_id = await _resolve_student_id(student_id)
     deleted = await reset_student_data(resolved_student_id)
-    return {"deleted": deleted, "message": "All profile data has been reset."}
+    deleted_replays = delete_replay_artifacts_for_student(resolved_student_id)
+    return {
+        "deleted": deleted,
+        "deleted_replays": deleted_replays,
+        "message": "All profile data and replay artifacts for this profile have been reset.",
+    }
 
 
 @router.delete("/settings/delete-all-data")
@@ -479,9 +487,11 @@ async def delete_all_data_everywhere():
     """Delete all profiles, graph data, and persisted chat sessions for all profiles."""
     deleted_nodes = await reset_all_data()
     await reset_checkpointer_storage()
+    deleted_replays = delete_all_replay_artifacts()
     return {
         "deleted_nodes": deleted_nodes,
-        "message": "All profiles, Neo4j data, and chat sessions have been deleted.",
+        "deleted_replays": deleted_replays,
+        "message": "All profiles, Neo4j data, chat sessions, and replay artifacts have been deleted.",
     }
 
 
@@ -492,42 +502,6 @@ async def add_profile_text(input_data: ProfileTextInput, student_id: Optional[st
     result = await process_free_text(input_data.text, resolved_student_id)
     await maybe_consolidate_memory(resolved_student_id, "profile_text")
     return result
-
-
-@router.get("/profile/conflicts")
-async def get_profile_conflicts(student_id: Optional[str] = Query(default=None)):
-    """List unresolved profile-memory conflicts for the active student."""
-    resolved_student_id = await _resolve_student_id(student_id)
-    return await list_profile_conflicts(resolved_student_id)
-
-
-@router.post("/profile/conflicts/self-resolve")
-async def self_resolve_profile_conflicts(student_id: Optional[str] = Query(default=None)):
-    """Auto-resolve obvious profile-memory conflicts for the active student."""
-    resolved_student_id = await _resolve_student_id(student_id)
-    result = await auto_resolve_profile_conflicts(resolved_student_id)
-    return {
-        "student_id": resolved_student_id,
-        "resolved_count": result.get("resolved_count", 0),
-        "superseded_count": result.get("superseded_count", 0),
-        "resolved": result.get("resolved_count", 0),
-        "superseded": result.get("superseded_count", 0),
-        "decisions": result.get("decisions", []),
-        "remaining_conflicts": result.get("remaining_conflicts", 0),
-    }
-
-
-@router.post("/profile/conflicts/resolve")
-async def resolve_profile_conflict(body: ConflictChoiceRequest):
-    """Apply a user-selected conflict resolution."""
-    resolved_student_id = await _resolve_student_id(body.student_id)
-    return await resolve_conflict_choice(
-        student_id=resolved_student_id,
-        conflict_id=body.conflict_id,
-        fact_type=body.fact_type,
-        action=body.action,
-        selected_value=body.selected_value,
-    )
 
 
 @router.get("/profile/graph", response_model=GraphDataResponse)
@@ -700,7 +674,7 @@ async def get_settings():
     """Get current application settings."""
     return SettingsResponse(
         topic_guard_enabled=_topic_guard_enabled,
-        advisor_mode=_advisor_mode,
+        reasoning=_reasoning,
         models={
             "text_llm": get_active_text_model(),
             "vision_llm": settings.VISION_MODEL,
@@ -713,12 +687,12 @@ async def get_settings():
 @router.put("/settings")
 async def update_settings(update: SettingsUpdate):
     """Update application settings."""
-    global _topic_guard_enabled, _advisor_mode
+    global _topic_guard_enabled, _reasoning
     if update.topic_guard_enabled is not None:
         _topic_guard_enabled = update.topic_guard_enabled
-    if update.advisor_mode is not None:
-        _advisor_mode = str(update.advisor_mode or "adaptive").strip().lower() or "adaptive"
-    return {"updated": True, "topic_guard_enabled": _topic_guard_enabled, "advisor_mode": _advisor_mode}
+    if update.reasoning is not None:
+        _reasoning = str(update.reasoning or "medium").strip().lower() or "medium"
+    return {"updated": True, "topic_guard_enabled": _topic_guard_enabled, "reasoning": _reasoning}
 
 
 # ── Health ───────────────────────────────────────────────────────

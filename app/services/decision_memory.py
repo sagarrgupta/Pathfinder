@@ -15,30 +15,22 @@ def build_decision_record(
     student_id: str,
     session_id: str,
 ) -> dict[str, Any] | None:
-    """Build a structured decision record from a completed turn."""
-    raw_payload = final_state.get("decision_payload", {}) or {}
-    decision_payload = dict(raw_payload) if isinstance(raw_payload, dict) else {}
+    """Build a compact specialist-turn memory record from a completed turn."""
     final_answer = str(final_state.get("final_answer", "") or "").strip()
-    workflow = str(final_state.get("workflow", "") or "")
-    if not decision_payload and not final_answer:
+    selected_specialist = str(final_state.get("selected_specialist", "") or "")
+    specialist_output = final_state.get("specialist_output", {}) or {}
+    provenance = list(specialist_output.get("provenance", []) or []) if isinstance(specialist_output, dict) else []
+    citations = list(done_payload.get("citations", []) or [])
+    if not final_answer:
         return None
 
-    recommended_items = [
-        item for item in (decision_payload.get("recommended_items", []) or [])
-        if isinstance(item, dict)
-    ]
-    recommendation_labels = [
-        str(item.get("label", "")).strip()
-        for item in recommended_items
-        if str(item.get("label", "")).strip()
-    ][:5]
-    source_refs = [
-        ref for ref in (decision_payload.get("source_refs", []) or [])
-        if isinstance(ref, dict)
-    ][:5]
-    summary = final_answer[:700] if final_answer else " ".join(recommendation_labels[:3]).strip()
-    if not summary:
-        return None
+    summary = final_answer[:700]
+    tool_names = [
+        str(item.get("tool", "")).strip()
+        for item in (final_state.get("tool_call_log", []) or [])
+        if isinstance(item, dict) and str(item.get("tool", "")).strip()
+    ][:8]
+    memory_patch = specialist_output.get("memory_patch") if isinstance(specialist_output, dict) else None
 
     return {
         "memory_type": "decision_record",
@@ -48,19 +40,15 @@ def build_decision_record(
         "salience": 0.82,
         "status": "resolved",
         "time_scope": "long_term",
-        "tags": [workflow or "general_guidance", str(decision_payload.get("decision_type", "decision") or "decision"), "decision"],
+        "tags": [selected_specialist or "general", "specialist_turn", "decision"],
         "metadata": {
-            "title": str(decision_payload.get("decision_type", workflow or "decision")).replace("_", " ").strip().title(),
-            "workflow": workflow,
-            "decision_type": str(decision_payload.get("decision_type", "") or ""),
+            "title": f"{(selected_specialist or 'general').replace('_', ' ').title()} turn",
+            "selected_specialist": selected_specialist,
             "query": query,
-            "student_strategy": done_payload.get("student_strategy", {}),
-            "student_operating_model": done_payload.get("student_operating_model", {}),
-            "recommendation_labels": recommendation_labels,
-            "assumptions": list(decision_payload.get("assumptions", []) or [])[:6],
-            "next_best_action": str(decision_payload.get("next_best_action", "") or ""),
-            "recommendation_paths": list(decision_payload.get("recommendation_paths", []) or [])[:3],
-            "source_refs": source_refs,
+            "tool_names": tool_names,
+            "provenance": provenance[:8],
+            "citation_count": len(citations),
+            "memory_patch": memory_patch,
             "session_id": session_id,
             "student_id": student_id,
             "confidence": float(done_payload.get("confidence", 0.0) or 0.0),

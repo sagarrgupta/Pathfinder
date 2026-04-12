@@ -48,7 +48,13 @@ async def light_validator(state: PathfinderState) -> PathfinderState:
     step_progress = list(state.get("step_progress", []))
     step_progress.append("Validated response structure and tool provenance")
 
-    confidence = 0.82 if any(item.get("status") == "ok" for item in tool_call_log if isinstance(item, dict)) else 0.62
+    stop_reason = str(output.get("stop_reason", "") or "")
+    if any(item.get("status") == "ok" for item in tool_call_log if isinstance(item, dict)):
+        confidence = 0.82
+    elif stop_reason == "stop":
+        confidence = 0.9
+    else:
+        confidence = 0.62
     return {
         **state,
         "draft_answer": message,
@@ -57,12 +63,12 @@ async def light_validator(state: PathfinderState) -> PathfinderState:
             "message": message,
             "memory_patch": output.get("memory_patch"),
             "provenance": output.get("provenance", []),
-            "stop_reason": output.get("stop_reason", ""),
+            "stop_reason": stop_reason,
         },
         "citations": citations,
         "confidence_score": confidence,
         "is_grounded": bool(citations) or not tool_call_log,
-        "stop_reason": str(output.get("stop_reason", "") or ""),
+        "stop_reason": stop_reason,
         "step_progress": step_progress,
         "next_node": "responder",
     }

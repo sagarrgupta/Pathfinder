@@ -25,13 +25,11 @@ const THEME_OPTIONS = [
   { value: 'system', label: 'System', icon: SunMoon },
 ];
 
-const ADVISOR_MODE_OPTIONS = [
-  { value: 'adaptive', label: 'Adaptive' },
-  { value: 'semester_planning', label: 'Semester Planning' },
-  { value: 'degree_audit', label: 'Degree Audit' },
-  { value: 'resume_review', label: 'Resume Review' },
-  { value: 'internship_targeting', label: 'Internship Targeting' },
-  { value: 'graduate_school_planning', label: 'Graduate School Planning' },
+const REASONING_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
 ];
 
 export default function SettingsPage() {
@@ -82,15 +80,15 @@ export default function SettingsPage() {
     }
   };
 
-  const handleAdvisorMode = async (newValue) => {
-    const previous = state.settings.advisor_mode || 'adaptive';
-    dispatch({ type: 'SET_SETTINGS', payload: { advisor_mode: newValue } });
+  const handleReasoning = async (newValue) => {
+    const previous = state.settings.reasoning || 'medium';
+    dispatch({ type: 'SET_SETTINGS', payload: { reasoning: newValue } });
     try {
-      await updateSettings({ advisor_mode: newValue });
-      toast.success('Advisor mode updated');
+      await updateSettings({ reasoning: newValue });
+      toast.success('Reasoning level updated');
     } catch {
-      dispatch({ type: 'SET_SETTINGS', payload: { advisor_mode: previous } });
-      toast.error('Failed to update advisor mode');
+      dispatch({ type: 'SET_SETTINGS', payload: { reasoning: previous } });
+      toast.error('Failed to update reasoning level');
     }
   };
 
@@ -157,9 +155,9 @@ export default function SettingsPage() {
           </h2>
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium">Topic Guard</p>
+              <p className="text-sm font-medium">Input Guard</p>
               <p className="text-xs text-muted-foreground">
-                When enabled, Pathfinder only responds to academic and career-related questions.
+                When enabled, Pathfinder blocks obviously unsafe SQL-injection-style input patterns.
               </p>
             </div>
             <button
@@ -177,17 +175,17 @@ export default function SettingsPage() {
           </div>
           <div className="flex items-center justify-between mt-4 pt-4 border-t border-border/50">
             <div>
-              <p className="text-sm font-medium">Default Advisor Mode</p>
+              <p className="text-sm font-medium">Reasoning Level</p>
               <p className="text-xs text-muted-foreground">
-                Choose whether Pathfinder should stay adaptive or start from a focused advising workflow.
+                Choose how much reasoning effort Pathfinder should request from the local model.
               </p>
             </div>
             <select
-              value={state.settings.advisor_mode || 'adaptive'}
-              onChange={(e) => handleAdvisorMode(e.target.value)}
+              value={state.settings.reasoning || 'medium'}
+              onChange={(e) => handleReasoning(e.target.value)}
               className="h-10 rounded-lg border border-border bg-background px-3 text-sm"
             >
-              {ADVISOR_MODE_OPTIONS.map((option) => (
+              {REASONING_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -222,7 +220,7 @@ export default function SettingsPage() {
                 <p className="text-xl font-bold">{runtimeReadiness}%</p>
               </div>
               <div className="rounded-lg border bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground mb-1">Active Retrieval</p>
+                <p className="text-xs text-muted-foreground mb-1">Retrieval Mode</p>
                 <p className="text-sm font-medium">{state.settings.models?.retrieval || 'Unknown'}</p>
               </div>
               <div className="rounded-lg border bg-muted/20 p-3">
@@ -309,7 +307,7 @@ export default function SettingsPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Architecture</span>
-              <span className="font-medium">Multi-Agent LangGraph + Neo4j KG</span>
+              <span className="font-medium">Single-Specialist LangGraph + MCP Tools</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Features</span>

@@ -250,7 +250,7 @@ async def startup():
 ## 4. Why You Need a Backend Service
 
 - **Single place to wire services**: Neo4j, Ollama, LM Studio, web tools in one process.
-- **Agent coordination**: Host your LangGraph graph; manage roles (planner, advisor, evaluator).
+- **Agent coordination**: Host your LangGraph graph and route requests through your chosen runtime flow.
 - **API boundary**: Expose HTTP so clients (web UI, CLI, MCP) don’t reimplement logic.
 - **Configuration**: Load `.env` once; share settings across all components.
 
@@ -258,17 +258,37 @@ async def startup():
 
 ## 5. Defining Your Agent Graph
 
-Conceptually:
+Conceptually, build the graph that matches the implementation you actually run.
 
-- **Nodes**: Planner, doc analyst, profile manager, web researcher, advisor, evaluator, responder.
-- **State**: Shared TypedDict (messages, query, retrieved_docs, draft_answer, final_answer, etc.).
-- **Custom agents**: Different system prompts and tools per role.
+For Pathfinder's current live flow, that means a compact 5-node graph:
+
+- **Nodes**: `input_guard`, `orchestrator`, `specialist_runner`, `light_validator`, `responder`
+- **State**: Shared TypedDict such as `messages`, `query`, `files`, `selected_specialist`, `profile_data`, `semantic_memory`, `retrieved_documents`, `tool_call_log`, `draft_answer`, and `final_answer`
+- **Specialist model**: One selected specialist prompt family plus a shared tool surface, instead of many graph branches
 
 Each node:
 
 1. Reads `state`.
 2. Calls tools (Neo4j, web search) and/or the LLM.
 3. Returns a partial state update (only the keys it changes).
+
+In Pathfinder's current implementation:
+
+1. `input_guard` blocks unsafe or off-scope requests.
+2. `orchestrator` picks one specialist family such as `academic`, `career`, or `general`.
+3. `specialist_runner` loads profile context, optionally pre-ingests uploaded files, and lets the specialist call the canonical tool registry.
+4. `light_validator` derives citations and a lightweight confidence score.
+5. `responder` returns the final answer with minimal rewriting.
+
+### 5.1 Keep Side Flows Out Of Your Chat Graph Unless They Are Actually Wired In
+
+Pathfinder's current implementation is a good example:
+
+- profile text ingestion and document upload feed durable memory
+- consolidation cleans up candidate facts in the background
+- long-context notes are edited on the profile page and passed into the specialist at runtime
+
+That split is worth documenting clearly so architecture docs describe the live chat path, not every adjacent profile-management behavior as if it were part of a single turn.
 
 See `agent-orchestration-tools.md` for LangGraph and SqliteSaver details.
 
