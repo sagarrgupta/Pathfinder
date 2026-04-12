@@ -36,6 +36,9 @@ class PathfinderState(TypedDict, total=False):
 
     # ── Orchestrator output ─────────────────────────────────────
     intent: str                               # Classified intent
+    selected_specialist: str                  # Single specialist selected for this turn
+    routing_scores: dict[str, float]          # Raw specialist routing scores
+    routing_reason: str                       # Human-readable routing explanation
     plan: list[str]                           # Ordered list of agent nodes to execute
     next_node: str                            # Next node to route to
     missing_info: list[str]                   # Info the system needs but doesn't have
@@ -57,6 +60,7 @@ class PathfinderState(TypedDict, total=False):
     session_memory: dict[str, Any]            # Session-scoped transcript/carry-forward memory
     short_memory_policy: dict[str, Any]       # Explicit TTL/eviction policy for short-term session memory
     stop_reason: str                          # Why a turn stopped early or partially
+    durable_profile_facts: dict[str, Any]     # Small durable fact snapshot exposed up front
 
     # ── Data gathered by nodes ──────────────────────────────────
     profile_data: dict[str, Any]              # Student profile from Neo4j KG
@@ -74,6 +78,7 @@ class PathfinderState(TypedDict, total=False):
     evidence_records: list[dict[str, Any]]    # Typed evidence extracted from web/profile/doc sources
     decision_payload: dict[str, Any]          # Structured planner output used for final response
     tool_call_log: list[dict[str, Any]]       # Provenance log of tool calls/results used this turn
+    specialist_output: dict[str, Any]         # Structured result from the selected specialist
 
     # ── Evaluation ──────────────────────────────────────────────
     draft_answer: str                         # Answer before evaluation

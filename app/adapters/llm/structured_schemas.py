@@ -71,13 +71,24 @@ def _decision_payload_schema() -> dict[str, Any]:
 _SCHEMA_MAP: dict[str, dict[str, Any]] = {
     "orchestrator": {
         "type": "object",
-        "additionalProperties": False,
+        "additionalProperties": True,
         "properties": {
             "intent": {"type": "string"},
-            "plan": {"type": "array", "items": {"type": "string"}},
-            "missing_info": {"type": "array", "items": {"type": "string"}},
+            "selected_specialist": {"type": "string"},
+            "routing_reason": {"type": "string"},
         },
-        "required": ["intent", "plan", "missing_info"],
+        "required": ["intent"],
+    },
+    "specialist_runner": {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "message": {"type": "string"},
+            "memory_patch": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+            "provenance": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            "stop_reason": {"type": "string"},
+        },
+        "required": ["message", "memory_patch", "provenance", "stop_reason"],
     },
     "evaluator": {
         "type": "object",

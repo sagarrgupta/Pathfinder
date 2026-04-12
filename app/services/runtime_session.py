@@ -83,8 +83,12 @@ class ChatRuntimeSession:
             "plan": [],
             "next_node": "",
             "intent": "",
+            "selected_specialist": "",
+            "routing_scores": {},
+            "routing_reason": "",
             "missing_info": [],
             "session_summary": {},
+            "durable_profile_facts": {},
             "workflow": "",
             "student_strategy": {},
             "student_operating_model": {},
@@ -123,6 +127,8 @@ class ChatRuntimeSession:
             "conflicts": [],
             "evidence_records": [],
             "decision_payload": {},
+            "tool_call_log": [],
+            "specialist_output": {},
         }
 
     def build_graph_config(self) -> dict[str, Any]:
@@ -152,6 +158,9 @@ class ChatRuntimeSession:
             "student_operating_model": final_state.get("student_operating_model", {}),
             "recommendation_outcome_profile": final_state.get("recommendation_outcome_profile", {}),
             "decision_continuity": final_state.get("decision_continuity", {}),
+            "selected_specialist": final_state.get("selected_specialist", ""),
+            "routing_scores": final_state.get("routing_scores", {}),
+            "routing_reason": final_state.get("routing_reason", ""),
             "retrieval_summary": evidence_pack.get("retrieval_summary", {}),
             "retrieval_trace": evidence_pack.get("retrieval_trace", []),
             "retrieval_diagnostics": evidence_pack.get("retrieval_diagnostics", {}),
