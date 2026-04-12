@@ -1,546 +1,523 @@
-# Pathfinder: System Architecture
+# Pathfinder: Current System Architecture
 
-> Single source of truth for the Pathfinder academic guidance agent.
-> Last updated: 2026-02-06
-
----
-
-## 1. Vision & Goals
-
-Pathfinder is a private, always-available AI agent that helps students make informed academic and career decisions. Students upload personal documents (transcripts, resumes), enter free-text profile information, and ask natural-language questions. The system combines personal data with external information to deliver personalized, cited, and reliable guidance.
-
-**Core Principles:**
-- Privacy: student data never leaves their control
-- Personalization: every answer considers the student's unique profile
-- Transparency: the student can see and edit everything the system knows
-- Reliability: answers are grounded in real data, with confidence scores and citations
-- Modularity: multi-agent collaboration with clear separation of concerns
+> Single-source architecture reference for the Pathfinder codebase.
+> Last updated: 2026-04-11
 
 ---
 
-## 2. Architectural Decisions
+## 1. What Pathfinder Is
 
-| # | Decision | Choice | Rationale |
-|---|---|---|---|
-| 1 | Multi-Agent Pattern | Collaborative Swarm (LangGraph StateGraph) | True multi-agent collaboration; native LangGraph paradigm; agents hand off dynamically |
-| 2 | KG Extraction | Hybrid: LLM + Rule-based | Rule-based for structured docs (transcripts); LLM for unstructured text |
-| 3 | Knowledge Store | Neo4j only (graph + vector) | Single DB for graph traversal AND semantic search; drop ChromaDB |
-| 4 | Memory | SqliteSaver (conversations) + Neo4j (profile + KG) | LangGraph-native checkpointer; Neo4j for structured knowledge |
-| 5 | Doc Processing | Adaptive: text-first, vision model fallback | Fast for text PDFs; vision model for scanned/complex docs |
-| 6 | Web Search | Fallback chain: Tavily -> Google CSE -> Brave -> DuckDuckGo | Resilient multi-source; best quality first, free fallback last |
-| 7 | Streaming | Step-by-step progress + token streaming (SSE) | User sees agent progress and words appearing in real-time |
-| 8 | Guardrails | Moderate + topic guardrail toggle (default ON) | Hallucination detection, confidence scoring; topic filter is configurable |
-| 9 | Frontend | React + Vite + Tailwind + shadcn/ui | Existing stack + polished components; no migration cost |
-| 10 | MCP | Real MCP Server for tool serving | Proper MCP protocol; tools usable by external MCP clients |
-| 11 | Node Design | 10+1 nodes | Comprehensive coverage: guard, plan, clarify, process, retrieve, advise, evaluate, respond |
+Pathfinder is a local-first advising system that combines:
 
----
+- a FastAPI backend
+- a LangGraph multi-agent workflow
+- Neo4j for profile, evidence, and graph memory
+- SQLite checkpointers for conversational continuity
+- a React frontend with SSE-based chat streaming
 
-## 3. Models
+The current implementation is broader than the earlier "academic guidance only" framing. It now supports:
 
-| Role | Model | Host | Notes |
-|---|---|---|---|
-| Text LLM | `openai/gpt-oss-20b` | LM Studio (`localhost:1234`) | OpenAI-compatible API; used by all reasoning nodes |
-| Vision LLM | `qwen/qwen3-vl-8b` | LM Studio (`localhost:1234`) | Fallback for scanned/image-based documents |
-| Text Embeddings | `mxbai-embed-large` | Ollama (`localhost:11434`) | 1024-dim embeddings for Neo4j vector index |
+- academic advising
+- course planning
+- program and eligibility reasoning
+- career matching and planning
+- interview preparation
+- document ingestion and profile extraction
+- replay/evaluation workflows
+- saved recommendations with outcome tracking
 
 ---
 
-## 4. Infrastructure
+## 2. Current Architectural Shape
 
-```
-┌──────────────────────────────────────────────────────┐
-│                    Client Browser                     │
-│            React + Vite + Tailwind + shadcn/ui        │
-│         Pages: Chat | My Profile | Settings           │
-└───────────────────────┬──────────────────────────────┘
-                        │ HTTP / SSE
-                        ▼
-┌──────────────────────────────────────────────────────┐
-│                   FastAPI Backend                      │
-│                  (port 8001)                           │
-│                                                        │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐ │
-│  │  API Routes  │  │  MCP Server  │  │  SSE Stream  │ │
-│  └──────┬──────┘  └──────┬───────┘  └──────┬───────┘ │
-│         └────────────────┼─────────────────┘          │
-│                          ▼                             │
-│         ┌────────────────────────────┐                │
-│         │   LangGraph StateGraph      │                │
-│         │   (10+1 Agent Nodes)        │                │
-│         └─────────┬──────────────────┘                │
-│                   │                                    │
-│    ┌──────────────┼──────────────┐                    │
-│    ▼              ▼              ▼                     │
-│ ┌───────┐  ┌──────────┐  ┌──────────┐               │
-│ │Neo4j  │  │ SQLite   │  │ Web      │               │
-│ │Graph+ │  │ Memory   │  │ Search   │               │
-│ │Vector │  │(SqliteSvr)│ │ Chain    │               │
-│ └───┬───┘  └──────────┘  └──────────┘               │
-└─────┼────────────────────────────────────────────────┘
-      │
-      ▼
-┌──────────┐   ┌──────────┐   ┌──────────┐
-│  Neo4j   │   │ LM Studio│   │  Ollama  │
-│ (Docker) │   │ gpt-oss  │   │ mxbai-   │
-│ port 7687│   │ qwen3-vl │   │ embed    │
-│ bolt     │   │ port 1234│   │ port     │
-│ port 7474│   │          │   │ 11434    │
-│ browser  │   │          │   │          │
-└──────────┘   └──────────┘   └──────────┘
+### Core runtime
+
+1. The frontend sends chat, profile, settings, and replay requests to FastAPI.
+2. The backend builds a `PathfinderState` object for the request.
+3. LangGraph routes the request through a multi-step agent workflow.
+4. Agents retrieve profile memory, semantic evidence, and web results as needed.
+5. An evaluator checks groundedness and quality before response synthesis.
+6. The responder streams progress and answer tokens back over SSE.
+
+### Main storage layers
+
+- `Neo4j`: long-lived student profile, document evidence, graph entities, recommendation state
+- `SQLite` via LangGraph `SqliteSaver`: per-session conversational checkpointing
+- local filesystem: replay artifacts, logs, uploaded files, eval fixtures
+
+### Main integration points
+
+- LM Studio text model
+- LM Studio vision model
+- Ollama embeddings
+- web search provider chain
+- MCP server for external tool access
+
+---
+
+## 3. High-Level Diagram
+
+```text
+Browser UI
+  -> FastAPI routes
+  -> LangGraph StateGraph
+  -> agent nodes
+  -> retrieval / memory / web tools
+  -> evaluator
+  -> responder
+  -> SSE stream back to UI
+
+FastAPI / LangGraph depend on:
+  - Neo4j graph + vector memory
+  - SQLite conversation checkpoints
+  - LM Studio text + vision inference
+  - Ollama embeddings
+  - web search adapters
 ```
 
 ---
 
-## 5. LangGraph Agent Nodes (10+1)
+## 4. Runtime Decisions In The Current Code
 
-### Node Diagram
-
-```
-User Input
-    │
-    ▼
-┌─────────────┐
-│ INPUT GUARD  │──blocked──► RESPONDER ──► Output
-└──────┬──────┘
-       │ safe
-       ▼
-┌─────────────┐
-│ ORCHESTRATOR │──missing info──► CLARIFIER ──► Output
-└──────┬──────┘
-       │ routes to one or more nodes
-       ├──► DOC ANALYST ──► PROFILE MANAGER ──► EVALUATOR
-       ├──► PROFILE MANAGER ──► WEB RESEARCHER ──► ACADEMIC ADVISOR ──► EVALUATOR
-       ├──► PROFILE MANAGER ──► WEB RESEARCHER ──► CAREER PLANNER ──► EVALUATOR
-       ├──► PROFILE MANAGER ──► WEB RESEARCHER ──► INTERVIEW PREP ──► EVALUATOR
-       ├──► WEB RESEARCHER ──► EVALUATOR
-       └──► RESPONDER (direct/simple questions)
-                │
-                ▼
-          EVALUATOR
-           │    │
-           │    └── profile updates ──► PROFILE MANAGER
-           │    └── not grounded ──► ORCHESTRATOR (retry)
-           ▼
-        RESPONDER ──► Streamed Output (SSE)
-```
-
-### Node Specifications
-
-| # | Node | Module | Responsibility | LangChain Components |
-|---|---|---|---|---|
-| 1 | Input Guard | `app/agents/input_guard.py` | Validate input; topic filter (toggle); prompt injection detection | -- |
-| 2 | Orchestrator | `app/agents/orchestrator.py` | Classify intent; check available data; create plan; route | `ChatOpenAI`, `JsonOutputParser` |
-| 3 | Clarifier | `app/agents/clarifier.py` | Identify missing info; ask user; suggest uploads | `ChatOpenAI` |
-| 4 | Doc Analyst | `app/agents/doc_analyst.py` | Adaptive doc processing; chunk + embed; entity extraction | `PyPDFLoader`, `RecursiveCharacterTextSplitter`, `OllamaEmbeddings`, `ChatOpenAI` |
-| 5 | Profile Manager | `app/agents/profile_manager.py` | Neo4j KG CRUD; vector search; profile queries | `Neo4jGraph`, `Neo4jVector`, `GraphCypherQAChain` |
-| 6 | Web Researcher | `app/agents/web_researcher.py` | Fallback search chain; extract info; cite sources | `TavilySearchResults`, `GoogleSerperAPIWrapper`, `BraveSearchWrapper`, `DuckDuckGoSearchResults` |
-| 7 | Academic Advisor | `app/agents/academic_advisor.py` | Major/university/course guidance; compare profile vs requirements | `ChatOpenAI` |
-| 8 | Career Planner | `app/agents/career_planner.py` | Job matching; skill gap analysis; career paths; course scheduling | `ChatOpenAI` |
-| 9 | Interview Prep | `app/agents/interview_prep.py` | Mock interviews; personalized Q generation; answer feedback | `ChatOpenAI` |
-| 10 | Evaluator | `app/agents/evaluator.py` | Groundedness check; confidence scoring; hallucination detection; passive profile learning | `ChatOpenAI` |
-| 11 | Responder | `app/agents/responder.py` | Format answer; stream via SSE; add citations; step progress | `ChatOpenAI` (for synthesis) |
-
----
-
-## 6. Shared State Schema
-
-All nodes read from and write to a shared `TypedDict` state that flows through the graph:
-
-```python
-class PathfinderState(TypedDict):
-    # Input
-    messages: Annotated[list, add_messages]  # Conversation history (LangGraph managed)
-    query: str                                # Current user query
-    files: list[UploadedFile]                 # Files uploaded in this turn
-    session_id: str                           # Chat session ID
-    is_global_upload: bool                    # Whether uploaded docs go to global profile
-
-    # Orchestrator output
-    intent: str                               # Classified intent (academic, career, interview, document, general, etc.)
-    plan: list[str]                           # Ordered list of agent nodes to execute
-    next_node: str                            # Next node to route to
-    missing_info: list[str]                   # Info the system needs but doesn't have
-
-    # Data gathered by nodes
-    profile_data: dict                        # Student profile from Neo4j KG
-    retrieved_documents: list[dict]           # Chunks from Neo4j vector search
-    graph_results: list[dict]                 # Structured results from Neo4j graph queries
-    web_results: list[dict]                   # Results from web search
-    extracted_entities: list[dict]            # Entities extracted from documents
-
-    # Evaluation
-    draft_answer: str                         # Answer before evaluation
-    confidence_score: float                   # 0.0 to 1.0
-    is_grounded: bool                         # Whether answer is grounded in sources
-    profile_updates: list[dict]               # Profile updates detected from conversation
-    citations: list[dict]                     # Sources for the answer
-
-    # Output
-    final_answer: str                         # Final formatted answer
-    step_progress: list[str]                  # Progress messages for SSE streaming
-
-    # Guard
-    is_blocked: bool                          # Whether input was blocked by guard
-    block_reason: str                         # Why input was blocked
-    topic_guard_enabled: bool                 # Whether topic filtering is active
-```
-
----
-
-## 7. Neo4j Graph Schema
-
-### Node Types
-
-| Label | Properties | Purpose |
-|---|---|---|
-| `Student` | `id`, `name`, `email`, `gpa`, `university`, `program`, `semester`, `created_at`, `updated_at` | Central student node |
-| `Course` | `code`, `name`, `grade`, `credits`, `semester`, `year` | Academic course |
-| `Skill` | `name`, `proficiency`, `years_experience` | Technical/soft skill |
-| `Department` | `name` | Academic department |
-| `Document` | `id`, `filename`, `type` (transcript/resume/other), `scope` (global/session), `session_id`, `uploaded_at` | Uploaded document metadata |
-| `Chunk` | `id`, `text`, `embedding` (vector), `page_number`, `chunk_index` | Document chunk with embedding |
-| `Company` | `name`, `role`, `start_date`, `end_date` | Work experience |
-| `Goal` | `type` (phd/masters/job/etc), `field`, `description` | Student goals |
-| `Interest` | `name`, `category` | Academic/career interests |
-| `Project` | `name`, `description`, `technologies` | Student projects |
-
-### Relationship Types
-
-| Relationship | From | To | Properties |
-|---|---|---|---|
-| `TOOK` | Student | Course | `semester`, `year` |
-| `HAS_SKILL` | Student | Skill | `source` (resume/manual/inferred) |
-| `IN_DEPARTMENT` | Course | Department | -- |
-| `UPLOADED` | Student | Document | `timestamp` |
-| `FROM_DOCUMENT` | Chunk | Document | `page_number` |
-| `HAS_GOAL` | Student | Goal | `priority` |
-| `INTERESTED_IN` | Student | Interest | `source` |
-| `WORKED_AT` | Student | Company | `role`, `duration` |
-| `COMPLETED` | Student | Project | -- |
-| `STRENGTH_IN` | Student | Department | `avg_grade` |
-| `WEAKNESS_IN` | Student | Department | `avg_grade` |
-| `ENROLLED_AT` | Student | University | `program`, `start_year` |
-
-### Vector Index
-
-```cypher
-CREATE VECTOR INDEX chunk_embeddings IF NOT EXISTS
-FOR (c:Chunk) ON (c.embedding)
-OPTIONS {indexConfig: {
-  `vector.dimensions`: 1024,
-  `vector.similarity_function`: 'cosine'
-}}
-```
-
----
-
-## 8. Document Processing Pipeline
-
-```
-Document Upload
-    │
-    ├── PDF File
-    │     │
-    │     ▼
-    │   pypdf text extraction
-    │     │
-    │     ├── text OK ──► chunk text ──► embed chunks ──► Neo4j Chunk nodes
-    │     │                                                     │
-    │     │                                                     ▼
-    │     │                                            entity extraction
-    │     │                                            (rule-based for transcripts,
-    │     │                                             LLM for unstructured)
-    │     │                                                     │
-    │     │                                                     ▼
-    │     │                                            Neo4j graph nodes
-    │     │                                            (Course, Skill, Company, etc.)
-    │     │
-    │     └── text empty/garbage (scanned)
-    │           │
-    │           ▼
-    │         convert pages to images
-    │           │
-    │           ▼
-    │         vision model (qwen3-vl-8b)
-    │           │
-    │           ▼
-    │         structured text output ──► chunk ──► embed ──► Neo4j
-    │
-    └── Free Text Input (from profile page)
-          │
-          ▼
-        LLM entity extraction
-          │
-          ▼
-        Neo4j graph nodes
-```
-
-### Document Scoping
-
-- **Global documents** (uploaded in My Profile): entities stored with `scope: 'global'`; available in ALL chat sessions
-- **Session documents** (uploaded in a chat): entities stored with `scope: 'session'`, `session_id: '<id>'`; only available in that session
-- **Promote to global**: user toggle in chat → changes scope from session to global, merges into global KG
-
----
-
-## 9. Web Search Fallback Chain
-
-```
-Search Request
-    │
-    ▼
-┌──────────┐  fail/rate-limited  ┌──────────┐  fail  ┌──────────┐  fail  ┌──────────┐
-│  Tavily  │ ──────────────────► │ Google   │ ─────► │  Brave   │ ─────► │DuckDuckGo│
-│ (AI-opt) │                     │   CSE    │        │ Search   │        │(unlimited)│
-└──────────┘                     └──────────┘        └──────────┘        └──────────┘
-```
-
-Each adapter implements the same interface: `async search(query: str, max_results: int) -> list[SearchResult]`
-
----
-
-## 10. Memory Architecture
-
-### Layer 1: Conversation Memory (Short-term)
-- **Store**: SQLite via LangGraph `SqliteSaver`
-- **Scope**: per chat session (thread_id = session_id)
-- **Contains**: message history (user + assistant + tool calls)
-- **Persistence**: survives server restarts (SQLite file)
-
-### Layer 2: Student Profile (Long-term)
-- **Store**: Neo4j knowledge graph
-- **Scope**: global (shared across all sessions)
-- **Contains**: structured student data (GPA, skills, courses, goals, etc.)
-- **Updated by**: Doc Analyst (document processing), Evaluator (passive learning), Profile Manager (explicit edits)
-
-### Layer 3: Session Knowledge Graph
-- **Store**: Neo4j (tagged with session_id)
-- **Scope**: per chat session
-- **Contains**: entities from session-scoped documents
-- **Promotable**: user can toggle to move to global scope
-
----
-
-## 11. API Endpoints
-
-| Method | Path | Purpose | Response |
-|---|---|---|---|
-| `POST` | `/api/v1/chat` | Main chat (SSE streaming) | SSE stream: progress events + token stream |
-| `POST` | `/api/v1/documents` | Upload document (global or session) | `{document_id, entities_extracted, scope}` |
-| `GET` | `/api/v1/profile` | Get student profile | `{profile_data, documents, graph_summary}` |
-| `PUT` | `/api/v1/profile` | Update profile field | `{updated_fields}` |
-| `DELETE` | `/api/v1/profile/entity/{id}` | Delete a profile entity | `{deleted}` |
-| `POST` | `/api/v1/profile/text` | Add free text info to profile | `{entities_extracted, graph_updated}` |
-| `GET` | `/api/v1/profile/graph` | Get KG data for visualization | `{nodes, relationships}` |
-| `GET` | `/api/v1/sessions` | List chat sessions | `[{session_id, title, last_message, created_at}]` |
-| `DELETE` | `/api/v1/sessions/{id}` | Delete a chat session | `{deleted}` |
-| `PUT` | `/api/v1/sessions/{id}/promote-doc` | Promote session doc to global | `{promoted, graph_updated}` |
-| `GET` | `/api/v1/settings` | Get current settings | `{topic_guard_enabled, ...}` |
-| `PUT` | `/api/v1/settings` | Update settings | `{updated}` |
-| `GET` | `/api/v1/health` | Health check | `{status, neo4j, lm_studio, ollama}` |
-
----
-
-## 12. Frontend Pages
-
-### Page 1: Chat
-- Chat message list with SSE streaming (step progress + token stream)
-- File upload with toggle: "Add to global profile"
-- Sidebar: session list, new chat, switch sessions
-- Method/confidence badges on messages
-- Expandable source citations
-
-### Page 2: My Profile
-- **Input methods**: document upload + free text input box
-- **Profile viewer** (tabs): Personal Info, Academic, Skills, Courses, Goals, Documents
-- **Edit/Delete** on each section → updates Neo4j graph in real-time
-- **Knowledge graph** data display
-
-### Page 3: Settings
-- Topic guardrail toggle (ON/OFF)
-- Model info display (read-only)
-- Session management
-
----
-
-## 13. Project Structure
-
-```
-pathfinder/
-├── app/
-│   ├── __init__.py
-│   ├── main.py                          # FastAPI app entry point
-│   ├── config/
-│   │   ├── __init__.py
-│   │   └── settings.py                  # Pydantic settings (Neo4j, LLM, search keys, etc.)
-│   ├── api/
-│   │   ├── __init__.py
-│   │   └── routes.py                    # All API endpoints
-│   ├── agents/
-│   │   ├── __init__.py
-│   │   ├── input_guard.py               # Node 1: Input validation + topic filter
-│   │   ├── orchestrator.py              # Node 2: Intent classification + planning
-│   │   ├── clarifier.py                 # Node 3: Ask for missing info
-│   │   ├── doc_analyst.py               # Node 4: Document processing pipeline
-│   │   ├── profile_manager.py           # Node 5: Neo4j KG CRUD + queries
-│   │   ├── web_researcher.py            # Node 6: Web search fallback chain
-│   │   ├── academic_advisor.py          # Node 7: Academic guidance
-│   │   ├── career_planner.py            # Node 8: Career + job guidance
-│   │   ├── interview_prep.py            # Node 9: Interview preparation
-│   │   ├── evaluator.py                 # Node 10: Quality + groundedness check
-│   │   └── responder.py                 # Node 11: Format + stream response
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── graph.py                     # LangGraph StateGraph assembly
-│   │   ├── state.py                     # Shared state TypedDict
-│   │   └── memory.py                    # SqliteSaver checkpointer
-│   ├── adapters/
-│   │   ├── __init__.py
-│   │   ├── llm/
-│   │   │   ├── __init__.py
-│   │   │   └── lmstudio.py             # ChatOpenAI wrapper for LM Studio
-│   │   ├── embeddings/
-│   │   │   ├── __init__.py
-│   │   │   └── ollama.py               # OllamaEmbeddings wrapper
-│   │   ├── neo4j/
-│   │   │   ├── __init__.py
-│   │   │   ├── graph_store.py           # Neo4j graph operations (Cypher CRUD)
-│   │   │   └── vector_store.py          # Neo4j vector index operations
-│   │   ├── pdf/
-│   │   │   ├── __init__.py
-│   │   │   └── extractor.py             # PDF text + vision extraction
-│   │   └── web_search/
-│   │       ├── __init__.py
-│   │       ├── tavily.py                # Tavily search adapter
-│   │       ├── google_cse.py            # Google Custom Search adapter
-│   │       ├── brave.py                 # Brave Search adapter
-│   │       ├── duckduckgo.py            # DuckDuckGo adapter
-│   │       └── fallback_chain.py        # Orchestrates fallback chain
-│   ├── mcp_server.py                    # Real MCP server (tool serving)
-│   ├── schemas/
-│   │   ├── __init__.py
-│   │   └── models.py                    # Pydantic models (API request/response)
-│   └── utils/
-│       ├── __init__.py
-│       └── ids.py                       # ID generation utilities
-├── frontend/
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.js
-│   ├── tailwind.config.js
-│   ├── postcss.config.js
-│   ├── components.json                  # shadcn/ui config
-│   └── src/
-│       ├── main.jsx
-│       ├── App.jsx                      # React Router setup
-│       ├── index.css
-│       ├── lib/
-│       │   └── utils.js                 # shadcn/ui utility (cn function)
-│       ├── components/
-│       │   ├── ui/                      # shadcn/ui components
-│       │   ├── chat/
-│       │   │   ├── ChatInterface.jsx
-│       │   │   ├── MessageList.jsx
-│       │   │   ├── Message.jsx
-│       │   │   ├── InputArea.jsx
-│       │   │   └── StreamingMessage.jsx
-│       │   ├── profile/
-│       │   │   ├── ProfilePage.jsx
-│       │   │   ├── ProfileViewer.jsx
-│       │   │   ├── DocumentUpload.jsx
-│       │   │   └── TextInput.jsx
-│       │   ├── settings/
-│       │   │   └── SettingsPage.jsx
-│       │   ├── layout/
-│       │   │   ├── Sidebar.jsx
-│       │   │   └── Header.jsx
-│       │   └── shared/
-│       │       └── ErrorBoundary.jsx
-│       ├── context/
-│       │   └── AppContext.jsx           # Global state (sessions, profile, settings)
-│       ├── services/
-│       │   └── api.js                   # API client (HTTP + SSE)
-│       └── pages/
-│           ├── ChatPage.jsx
-│           ├── ProfilePage.jsx
-│           └── SettingsPage.jsx
-├── docker/
-│   ├── docker-compose.yml               # Neo4j + app services
-│   └── Dockerfile
-├── data/
-│   └── pathfinder.db                    # SQLite memory (auto-created)
-├── requirements.txt
-├── start.sh
-├── PATHFINDER_ARCHITECTURE.md           # This file
-└── .env.example                         # Environment variable template
-```
-
----
-
-## 14. Guardrails
-
-### Input Guard
-- **Topic filter** (toggleable): Reject queries unrelated to academics/career when enabled
-- **Prompt injection detection**: Block attempts to override system prompts
-- **Input validation**: Max length, empty query check
-
-### Evaluator
-- **Groundedness check**: Compare answer against retrieved sources; flag unsupported claims
-- **Confidence scoring**: 0.0-1.0 based on source quality and coverage
-- **Hallucination detection**: If answer contains specific facts not in any source, add disclaimer
-- **Passive profile learning**: Extract preferences/facts mentioned in conversation, update KG
-
----
-
-## 15. MCP Server
-
-Exposes Pathfinder tools via the Model Context Protocol standard:
-
-| Tool Name | Description |
+| Area | Current implementation |
 |---|---|
-| `search_knowledge_graph` | Query the student's Neo4j knowledge graph |
-| `search_documents` | Semantic search over document chunks |
-| `search_web` | Search external sources via fallback chain |
-| `get_student_profile` | Get structured student profile |
-| `analyze_document` | Process and extract entities from a document |
+| Workflow engine | `langgraph.graph.StateGraph` |
+| Shared state | `app/core/state.py::PathfinderState` |
+| Checkpointing | LangGraph SQLite checkpointer in `app/core/memory.py` |
+| Profile + evidence store | Neo4j via `app/adapters/neo4j/graph_store.py` |
+| Semantic retrieval | Neo4j-backed retrieval / memory pack flow |
+| Web search | Tavily -> Google CSE -> Brave -> DuckDuckGo |
+| Document ingestion | PDF/image/DOCX extraction via `app/adapters/pdf/extractor.py` |
+| Streaming | Server-Sent Events from `/api/v1/chat` |
+| External tool exposure | MCP server in `app/mcp_server.py` |
 
-Any MCP-compatible client (Claude Desktop, Cursor, etc.) can connect to the Pathfinder MCP server and use these tools.
+Two important changes from the older document:
+
+- the active retrieval model is now best described as a `memory_pack` pipeline rather than a simple "vector search plus graph query" design
+- the active agent graph has 16 nodes, not the older 10+1 layout
 
 ---
 
-## 16. SSE Streaming Protocol
+## 5. LangGraph Workflow
 
-The `/api/v1/chat` endpoint returns an SSE stream with typed events:
+### Registered nodes
 
+The compiled graph in [`app/core/graph.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/core/graph.py) currently registers these nodes:
+
+1. `input_guard`
+2. `orchestrator`
+3. `clarifier`
+4. `doc_analyst`
+5. `profile_manager`
+6. `web_researcher`
+7. `fact_extractor`
+8. `course_planner`
+9. `program_advisor`
+10. `career_matcher`
+11. `eligibility_reasoner`
+12. `academic_advisor`
+13. `career_planner`
+14. `interview_prep`
+15. `evaluator`
+16. `responder`
+
+### Routing pattern
+
+```text
+input_guard
+  -> responder        if blocked
+  -> orchestrator     otherwise
+
+orchestrator
+  -> clarifier
+  -> doc_analyst
+  -> profile_manager
+  -> web_researcher
+  -> fact_extractor
+  -> course_planner
+  -> program_advisor
+  -> career_matcher
+  -> eligibility_reasoner
+  -> academic_advisor
+  -> career_planner
+  -> interview_prep
+  -> evaluator
+  -> responder
+
+clarifier -> responder
+
+doc_analyst / profile_manager / web_researcher / fact_extractor
+  -> next planned node
+
+advisor/planner/reasoner nodes
+  -> evaluator
+
+evaluator
+  -> responder
+
+responder
+  -> END
 ```
-event: progress
-data: {"node": "orchestrator", "message": "Analyzing your question..."}
 
-event: progress
-data: {"node": "profile_manager", "message": "Checking your academic profile..."}
+### Design intent in the current code
 
-event: progress
-data: {"node": "web_researcher", "message": "Searching for university requirements..."}
+- `input_guard` blocks unsafe or off-scope requests
+- `orchestrator` decides the workflow and next node
+- retrieval and evidence gathering happen before advice-heavy nodes when needed
+- `fact_extractor` converts mixed evidence into structured records
+- planning/advising nodes generate a structured decision payload
+- `evaluator` checks support, issues, and groundedness
+- `responder` turns the result into user-facing streamed output
 
-event: progress
-data: {"node": "academic_advisor", "message": "Comparing your profile with requirements..."}
+---
 
-event: progress
-data: {"node": "evaluator", "message": "Verifying answer quality..."}
+## 6. Shared State Model
 
-event: token
-data: {"content": "Based"}
+The shared state has grown well beyond the earlier minimal schema. The current `PathfinderState` includes:
 
-event: token
-data: {"content": " on"}
+### Inputs and runtime controls
 
-event: token
-data: {"content": " your"}
+- `messages`
+- `query`
+- `files`
+- `session_id`
+- `student_id`
+- `is_global_upload`
+- `advisor_mode`
+- `request_plan`
+- `runtime_policy`
 
-...
+### Orchestration and planning
 
-event: done
-data: {"confidence": 0.85, "citations": [...], "method": "rag+web", "profile_updates": [...]}
+- `intent`
+- `plan`
+- `next_node`
+- `missing_info`
+- `workflow`
+- `target_entity`
+- `source_policy`
+- `task_graph`
+- `working_memory`
+- `dependency_status`
+- `trace_summary`
+- `stop_reason`
+
+### Student and session continuity
+
+- `session_summary`
+- `student_strategy`
+- `student_operating_model`
+- `recommendation_outcome_profile`
+- `decision_continuity`
+- `compacted_session`
+- `session_memory`
+- `short_memory_policy`
+
+### Retrieved and extracted evidence
+
+- `profile_data`
+- `retrieved_documents`
+- `web_results`
+- `semantic_memory`
+- `memory_pack`
+- `evidence_pack`
+- `latest_ingestion_result`
+- `conflicts`
+- `extracted_entities`
+- `document_roles`
+- `transcript_states`
+- `targeted_web_questions`
+- `evidence_records`
+- `decision_payload`
+- `tool_call_log`
+
+### Evaluation and output
+
+- `draft_answer`
+- `confidence_score`
+- `is_grounded`
+- `profile_updates`
+- `citations`
+- `final_answer`
+- `step_progress`
+
+### Guardrails
+
+- `is_blocked`
+- `block_reason`
+- `topic_guard_enabled`
+- `blocked_reasons`
+- `recovery_events`
+
+This is now a workflow-and-evidence state model, not just a chat state plus a few retrieval fields.
+
+---
+
+## 7. Memory And Retrieval
+
+### Conversation memory
+
+- Implemented with LangGraph checkpointing
+- Backed by SQLite
+- Scoped to session/thread continuity
+
+### Long-lived student memory
+
+- Stored in Neo4j
+- Includes personal info, academics, skills, projects, documents, profile facts, candidate facts, recommendation outcomes, and evidence links
+
+### Retrieval model
+
+The active retrieval strategy is exposed as `memory_pack` in [`app/services/execution_registry.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/execution_registry.py).
+
+In practice this means downstream nodes work from a normalized evidence envelope instead of directly consuming raw vector search results alone.
+
+Key supporting modules:
+
+- [`app/services/retrieval.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/retrieval.py)
+- [`app/services/memory_ingestion.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/memory_ingestion.py)
+- [`app/services/consolidation.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/consolidation.py)
+- [`app/core/quality.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/core/quality.py)
+
+---
+
+## 8. Neo4j Responsibilities
+
+Neo4j is doing more than "knowledge graph only" in the current code. It now acts as the durable structured memory backbone.
+
+Major responsibilities handled by [`app/adapters/neo4j/graph_store.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/adapters/neo4j/graph_store.py):
+
+- student creation and resolution
+- profile reads and profile completeness summaries
+- entity CRUD
+- document storage and promotion
+- candidate fact storage and conflict resolution
+- memory item persistence and evidence linking
+- recommendation persistence and outcome updates
+- graph data export for visualization
+
+The architecture should therefore be described as:
+
+- `Neo4j = profile store + evidence graph + memory ledger + recommendation state`
+
+not just:
+
+- `Neo4j = course/skill/project graph`
+
+---
+
+## 9. Document Ingestion
+
+Pathfinder currently supports:
+
+- PDF
+- image
+- DOCX
+- free-text profile input
+
+The ingestion path is split across:
+
+- [`app/adapters/pdf/extractor.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/adapters/pdf/extractor.py)
+- [`app/services/memory_ingestion.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/services/memory_ingestion.py)
+- [`app/agents/doc_analyst.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/agents/doc_analyst.py)
+
+Current behavior:
+
+- uploaded files are classified and ingested
+- chunks and extracted entities become memory/evidence
+- document role inference is tracked
+- transcript-specific state can be derived
+- session documents can later be promoted to global scope
+
+---
+
+## 10. Web Search
+
+The configured provider chain is:
+
+1. Tavily
+2. Google CSE
+3. Brave
+4. DuckDuckGo
+
+This is implemented through the execution registry and adapter modules:
+
+- [`app/adapters/web_search/tavily.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/adapters/web_search/tavily.py)
+- [`app/adapters/web_search/google_cse.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/adapters/web_search/google_cse.py)
+- [`app/adapters/web_search/brave.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/adapters/web_search/brave.py)
+- [`app/adapters/web_search/duckduckgo.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/adapters/web_search/duckduckgo.py)
+
+---
+
+## 11. API Surface
+
+The active API in [`app/api/routes.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/api/routes.py) is broader than the previous architecture doc.
+
+### Chat and ingestion
+
+- `POST /api/v1/chat`
+- `GET /api/v1/documents/check`
+- `POST /api/v1/documents`
+- `POST /api/v1/profile/text`
+
+### Profiles and graph memory
+
+- `GET /api/v1/profiles`
+- `POST /api/v1/profiles`
+- `GET /api/v1/profile`
+- `PUT /api/v1/profile`
+- `DELETE /api/v1/profile/entity/{entity_label}/{entity_name}`
+- `PUT /api/v1/profile/entity`
+- `DELETE /api/v1/profile/reset`
+- `GET /api/v1/profile/conflicts`
+- `POST /api/v1/profile/conflicts/self-resolve`
+- `POST /api/v1/profile/conflicts/resolve`
+- `GET /api/v1/profile/graph`
+
+### Recommendations and outcomes
+
+- `GET /api/v1/recommendations`
+- `POST /api/v1/recommendations`
+- `PUT /api/v1/recommendations/{recommendation_id}/outcome`
+
+### Sessions, replay, and eval
+
+- `GET /api/v1/sessions`
+- `DELETE /api/v1/sessions/{session_id}`
+- `PUT /api/v1/sessions/{session_id}/promote-doc`
+- `GET /api/v1/replays`
+- `GET /api/v1/replays/{replay_id}`
+- `GET /api/v1/replays/{replay_id}/evaluate`
+- `GET /api/v1/replays/evaluate/recent`
+- `GET /api/v1/eval/benchmarks`
+- `GET /api/v1/eval/analytics`
+
+### Settings and ops
+
+- `GET /api/v1/settings`
+- `PUT /api/v1/settings`
+- `DELETE /api/v1/settings/delete-all-data`
+- `GET /api/v1/health`
+- `GET /api/v1/background/status`
+
+This means Pathfinder should now be thought of as:
+
+- an advising runtime
+- a profile/memory management backend
+- a replay/evaluation system
+- a recommendation tracking system
+
+---
+
+## 12. Frontend
+
+The current router in [`frontend/src/App.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/App.jsx) exposes these pages:
+
+- `/chat`
+- `/profile`
+- `/profile/conflicts`
+- `/replays`
+- `/settings`
+
+So the frontend is no longer just "Chat / My Profile / Settings". It also includes:
+
+- conflict resolution UX
+- replay inspection/evaluation UX
+
+Key current page files:
+
+- [`frontend/src/pages/ChatPage.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/pages/ChatPage.jsx)
+- [`frontend/src/pages/ProfilePage.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/pages/ProfilePage.jsx)
+- [`frontend/src/pages/ProfileConflictsPage.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/pages/ProfileConflictsPage.jsx)
+- [`frontend/src/pages/ReplayPage.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/pages/ReplayPage.jsx)
+- [`frontend/src/pages/SettingsPage.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/pages/SettingsPage.jsx)
+
+---
+
+## 13. MCP Server
+
+Pathfinder exposes an MCP server through [`app/mcp_server.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/mcp_server.py).
+
+At a high level it provides tools for:
+
+- searching the student knowledge graph
+- semantic document search
+- getting the structured profile
+- document analysis / ingestion
+
+This is still an important architectural feature and remains consistent with the earlier design.
+
+---
+
+## 14. Quality And Guardrails
+
+Guardrails are now distributed across several layers rather than living only in a single "guardrail node" concept.
+
+### Current quality layers
+
+- `input_guard` for blocking and scope checks
+- `orchestrator` for planning discipline
+- `fact_extractor` for structured evidence extraction
+- `evaluator` for answer review and repair
+- `app/core/quality.py` for evidence normalization, task-graph logic, source audits, and scoring helpers
+
+This makes the current system closer to:
+
+- `guard + plan + extract + evaluate + respond`
+
+than the earlier simpler:
+
+- `guard + answer + check`
+
+---
+
+## 15. Current Project Structure
+
+```text
+app/
+  api/                 FastAPI routes
+  agents/              LangGraph node implementations
+  adapters/            Neo4j, LLM, embeddings, PDF, web search adapters
+  config/              runtime settings
+  core/                graph assembly, shared state, memory, quality
+  schemas/             API request/response models
+  services/            retrieval, ingestion, consolidation, replay/eval, runtime helpers
+  utils/               ids and misc helpers
+  mcp_server.py        MCP tool server
+  main.py              FastAPI entrypoint
+
+frontend/
+  src/pages/           chat, profile, conflicts, replays, settings
+  src/components/      chat/layout/shared UI
+  src/services/api.js  HTTP + SSE client
+
+tests/
+  replay and benchmark fixtures
+
+data/
+  local profile/document artifacts
+
+graphify-out/
+  generated repo-understanding graph artifacts
 ```
 
+---
+
+## 16. What This Document Now Assumes
+
+This architecture document intentionally describes the code as it exists now, not the original proposal-only design.
+
+That means:
+
+- the graph has 16 workflow nodes
+- replay/eval and recommendation tracking are first-class parts of the system
+- the state model is significantly richer than a basic RAG chatbot state
+- Neo4j acts as durable memory infrastructure, not just a visualization graph
+- the frontend includes conflicts and replay pages
+
+If the code changes again, this file should be updated alongside:
+
+- [`app/core/graph.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/core/graph.py)
+- [`app/core/state.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/core/state.py)
+- [`app/api/routes.py`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/app/api/routes.py)
+- [`frontend/src/App.jsx`](/Users/sagargupta/Library/CloudStorage/OneDrive-CaliforniaStateUniversity,Sacramento/Courses/CSC-500-Master's Project/Pathfinder/frontend/src/App.jsx)
