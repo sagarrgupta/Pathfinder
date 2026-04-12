@@ -1,7 +1,7 @@
 """Node 4: Doc Analyst.
 
 Processes uploaded documents through the adaptive pipeline:
-  1. Extract text (pypdf → vision fallback)
+  1. Extract text (pypdf -> vision fallback)
   2. Chunk the text
   3. Generate embeddings and store in Neo4j vector index
   4. Extract entities and store in Neo4j knowledge graph
@@ -16,7 +16,7 @@ from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from app.adapters.embeddings.ollama import get_embeddings
+from app.adapters.embeddings.ollama import EmbeddingServiceError, aembed_documents
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import (
     store_document_node,
@@ -74,7 +74,6 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         chunk_overlap=settings.CHUNK_OVERLAP,
         separators=["\n\n", "\n", ". ", " ", ""],
     )
-    embeddings_model = get_embeddings()
     llm = get_text_llm()
 
     for file_info in files:
@@ -172,26 +171,35 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
 
         # Step 3: Chunk and embed
         text_chunks = text_splitter.split_text(full_text)
-        chunk_texts = [c for c in text_chunks if c.strip()]
+        chunk_specs = [
+            {
+                "text": text,
+                "chunk_index": i,
+                "page_number": _page_for_chunk(text, pages),
+            }
+            for i, text in enumerate(text_chunks)
+            if text.strip()
+        ]
 
-        if chunk_texts:
+        if chunk_specs:
             try:
-                chunk_embeddings = embeddings_model.embed_documents(chunk_texts)
+                chunk_texts = [chunk["text"] for chunk in chunk_specs]
+                chunk_embeddings = await aembed_documents(chunk_texts)
 
                 chunks_to_store = []
-                for i, (text, embedding) in enumerate(zip(chunk_texts, chunk_embeddings)):
+                for chunk_spec, embedding in zip(chunk_specs, chunk_embeddings):
                     chunks_to_store.append({
-                        "id": generate_chunk_id(doc_id, i),
-                        "text": text,
+                        "id": generate_chunk_id(doc_id, int(chunk_spec["chunk_index"])),
+                        "text": chunk_spec["text"],
                         "embedding": embedding,
-                        "chunk_index": i,
-                        "page_number": _page_for_chunk(text, pages),
+                        "chunk_index": int(chunk_spec["chunk_index"]),
+                        "page_number": chunk_spec.get("page_number"),
                     })
 
                 stored = await store_chunks(chunks_to_store, doc_id)
                 total_chunks += stored
                 step_progress.append(f"Stored {stored} text chunks from {filename}")
-            except Exception as exc:
+            except EmbeddingServiceError as exc:
                 log.warning("Chunk embedding/storage failed for %s: %s", filename, exc)
                 step_progress.append(f"Stored document metadata for {filename}, but chunk retrieval failed")
                 recovery_events.append(

@@ -179,7 +179,7 @@ async def _prepare_retrieval_context(
         {"memory_items": [], "candidate_facts": [], "evidence": []}
     )
     docs_task = _noop(documents_override) if documents_override is not None else (
-        hybrid_search(query, k=5, student_id=student_id) if sources["documents"] else _noop([])
+        hybrid_search(query, k=max(1, int(settings.TOP_K)), student_id=student_id) if sources["documents"] else _noop([])
     )
     web_task = _search_web(query) if sources["web"] else _noop({"results": [], "recovery_events": []})
     plans_task = get_due_saved_recommendations(student_id) if sources["memory"] else _noop([])

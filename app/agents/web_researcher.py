@@ -230,6 +230,12 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
     fetched_results = list(all_results)
     candidates = sorted(all_results, key=lambda r: r.get("score", 0), reverse=True)
     fetch_budget = int(source_policy.get("fetch_budget", 8 if intent in {"academic", "research"} else 5))
+    fetch_candidate_count = int(
+        source_policy.get(
+            "fetch_candidate_count",
+            max(fetch_budget + 3, 10 if intent in {"academic", "research"} else 7),
+        )
+    )
 
     strict_official = bool(source_policy.get("strict_primary_only")) and query_focus.get("primary") == "academic"
     require_institution_match = bool(source_policy.get("require_institution_match")) and query_focus.get("primary") == "academic"
@@ -283,7 +289,7 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
         candidates = filtered_candidates
 
     if query_focus.get("primary") == "academic" and rejected_during_filter > 0:
-        desired_pool = max(fetch_budget, 6)
+        desired_pool = max(fetch_candidate_count, 6)
         if len(candidates) < desired_pool:
             backfill = await _backfill_results_from_accepted_domains(
                 query=query,
@@ -304,7 +310,7 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                     candidates.append(item)
                     all_results.append(item)
 
-    for candidate in candidates[:fetch_budget]:
+    for candidate in candidates[:fetch_candidate_count]:
         url = candidate.get("url", "")
         if not url or candidate.get("source") == "direct_url":
             continue
@@ -321,14 +327,11 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                 },
             })
             tool_call_log = _trim_tool_log(tool_call_log)
-            fetched["score"] = max(candidate.get("score", 0.0), 0.0) + 0.35
             source_type, time_scope = classify_web_source(
                 fetched.get("url", ""),
                 fetched.get("title", ""),
                 fetched.get("content", ""),
             )
-            if source_policy.get("primary_source_types") and source_type in source_policy.get("primary_source_types", []):
-                fetched["score"] += 0.5
             trust_tier, fit_tier, freshness_tier = infer_evidence_tiers(
                 fetched.get("url", ""),
                 source_type,
@@ -349,6 +352,17 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                 "fit_tier": fit_tier,
                 "freshness_tier": freshness_tier,
             }
+            fetched["score"] = _fetched_result_score(
+                fetched=fetched,
+                candidate=candidate,
+                query=query,
+                preferred_domains=preferred_domains,
+                query_focus=query_focus,
+                target_program=target_program,
+                target_level=target_level,
+                source_policy=source_policy,
+                target_institution=target_institution,
+            )
             fetched_results.append(fetched)
             working_memory = record_source_audit(working_memory, {
                 "url": fetched.get("url", ""),
@@ -395,8 +409,17 @@ async def web_researcher(state: PathfinderState) -> PathfinderState:
                 "freshness_tier": freshness_tier,
             })
 
-    # Sort by score (highest first) and keep a deeper evidence pool
-    fetched_results.sort(key=lambda r: r.get("score", 0), reverse=True)
+    # Sort by second-stage score (highest first) and keep a deeper evidence pool
+    fetched_results = _rerank_fetched_results(
+        fetched_results,
+        query=query,
+        preferred_domains=preferred_domains,
+        query_focus=query_focus,
+        target_program=target_program,
+        target_level=target_level,
+        source_policy=source_policy,
+        target_institution=target_institution,
+    )
     results = _dedupe_results(fetched_results)[:8]
 
     if query_focus.get("primary") == "academic":
@@ -891,6 +914,79 @@ def _result_score(
     score -= _source_type_penalty(source_type, query_focus)
 
     return score
+
+
+def _fetched_result_score(
+    *,
+    fetched: dict[str, Any],
+    candidate: dict[str, Any],
+    query: str,
+    preferred_domains: list[str],
+    query_focus: dict[str, Any],
+    target_program: str = "",
+    target_level: str = "unknown",
+    source_policy: dict[str, Any] | None = None,
+    target_institution: str = "",
+) -> float:
+    """Rank a fetched page using full-page content rather than just snippets."""
+    base_candidate_score = float(candidate.get("score", 0.0) or 0.0)
+    content_score = _result_score(
+        fetched,
+        query,
+        preferred_domains,
+        query_focus,
+        target_program,
+        target_level,
+        source_policy,
+        target_institution,
+    )
+    content = str(fetched.get("content", "") or "")
+    content_bonus = 0.0
+    if len(content) >= 400:
+        content_bonus += 0.25
+    if len(content) >= 1200:
+        content_bonus += 0.2
+    if query_focus.get("primary") == "academic" and any(
+        token in content.lower()
+        for token in ("prerequisite", "catalog", "requirement", "tuition", "enrollment", "units")
+    ):
+        content_bonus += 0.35
+    if query_focus.get("primary") == "career" and any(
+        token in content.lower()
+        for token in ("responsibilities", "qualifications", "requirements", "skills", "experience")
+    ):
+        content_bonus += 0.3
+    return max(base_candidate_score * 0.35, 0.0) + (content_score * 0.9) + content_bonus
+
+
+def _rerank_fetched_results(
+    results: list[dict[str, Any]],
+    *,
+    query: str,
+    preferred_domains: list[str],
+    query_focus: dict[str, Any],
+    target_program: str = "",
+    target_level: str = "unknown",
+    source_policy: dict[str, Any] | None = None,
+    target_institution: str = "",
+) -> list[dict[str, Any]]:
+    reranked: list[dict[str, Any]] = []
+    for item in results:
+        candidate = dict(item)
+        if candidate.get("metadata", {}).get("fetched_from_search") or candidate.get("source") == "direct_url":
+            candidate["score"] = _result_score(
+                candidate,
+                query,
+                preferred_domains,
+                query_focus,
+                target_program,
+                target_level,
+                source_policy,
+                target_institution,
+            ) + 0.4
+        reranked.append(candidate)
+    reranked.sort(key=lambda r: r.get("score", 0), reverse=True)
+    return reranked
 
 
 def _source_type_bonus(source_type: str, time_scope: str, query_focus: dict[str, Any]) -> float:

@@ -11,6 +11,7 @@ import logging
 from typing import Any, Callable, Coroutine
 
 from app.adapters.web_search import tavily, google_cse, brave, duckduckgo
+from app.adapters.web_search._common import clamp_max_results, dedupe_results, normalize_query
 
 log = logging.getLogger("pathfinder.search.fallback")
 
@@ -30,6 +31,10 @@ async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
     ``max_results`` have been collected. If all providers fail or
     return nothing, returns an empty list.
     """
+    query = normalize_query(query)
+    max_results = clamp_max_results(max_results)
+    if not query:
+        return []
     errors: list[str] = []
     aggregated: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
@@ -60,7 +65,7 @@ async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
             log.info("Web search via %s failed: %s — trying next provider", name, exc)
 
     if aggregated:
-        return aggregated[:max_results]
+        return dedupe_results(aggregated, max_results)
 
     log.warning("All web search providers failed: %s", errors)
     return []

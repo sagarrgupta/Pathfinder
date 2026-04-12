@@ -1,38 +1,27 @@
-"""LM Studio LLM adapter.
-
-Provides singleton ChatOpenAI instances for text and vision models
-running on LM Studio's OpenAI-compatible API.
-
-Includes a post-generation repetition guard that detects and truncates
-outputs where the model gets stuck in a loop.
-
-Debug logging: every LLM call is written to data/llm_debug.log with
-timestamps, prompts (truncated), full responses, and elapsed time.
-"""
+"""LM Studio LLM adapter and structured-output policy helpers."""
 
 from __future__ import annotations
 
-import json
-import os
 import re
 import logging
 import time
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Optional
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import BaseMessage, AIMessage
+from langchain_core.messages import BaseMessage
 
 from app.config.settings import settings
+from app.adapters.llm.structured_schemas import get_structured_output_schema
 
 log = logging.getLogger("pathfinder.llm")
 
 _text_llm: Optional["LoggingChatOpenAI"] = None
 _vision_llm: Optional["LoggingChatOpenAI"] = None
-_json_llm: Optional["LoggingChatOpenAI"] = None
-
-# Debug log file path
-_DEBUG_LOG_PATH = Path("data/llm_debug.log")
+_structured_llms: dict[str, "LoggingChatOpenAI"] = {}
+_STRUCTURED_OUTPUT_MODES = {"off", "loose", "strict"}
+_REASONING_KEYS = ("reasoning_content", "thinking", "reasoning", "refusal")
+_DEBUG_LOG_PATH = Path(settings.LLM_DEBUG_LOG_PATH)
 
 
 # ── Logging wrapper ─────────────────────────────────────────────────
@@ -53,51 +42,68 @@ class LoggingChatOpenAI(ChatOpenAI):
         label = object.__getattribute__(self, "_llm_label")
         start = time.time()
 
-        # Extract prompt info for logging
-        prompt_summary = _summarize_input(input)
-
-        _write_debug(f"[{label.upper()}] ── REQUEST ──\n{prompt_summary}\n")
+        if settings.LLM_DEBUG_LOG_ENABLED:
+            _log_request(label, input)
 
         try:
             result = await super().ainvoke(input, config=config, **kwargs)
-            elapsed = time.time() - start
-
-            content = result.content if isinstance(result.content, str) else str(result.content)
-
-            # Log full response structure to diagnose empty content
-            extra_info = []
-            if hasattr(result, "additional_kwargs") and result.additional_kwargs:
-                extra_info.append(f"additional_kwargs keys: {list(result.additional_kwargs.keys())}")
-                # Check for thinking/reasoning content
-                for key in ("reasoning_content", "thinking", "reasoning", "refusal"):
-                    if key in result.additional_kwargs:
-                        val = result.additional_kwargs[key]
-                        extra_info.append(f"  {key} ({type(val).__name__}): {_trunc(str(val), 1500)}")
-            if hasattr(result, "response_metadata") and result.response_metadata:
-                extra_info.append(f"response_metadata: {_trunc(str(result.response_metadata), 500)}")
-            if hasattr(result, "tool_calls") and result.tool_calls:
-                extra_info.append(f"tool_calls: {result.tool_calls}")
-            extra_info.append(f"content type: {type(result.content).__name__}")
-            if isinstance(result.content, list):
-                extra_info.append(f"content list: {_trunc(str(result.content), 1000)}")
-            extra_str = "\n".join(extra_info)
-
-            _write_debug(
-                f"[{label.upper()}] ── RESPONSE ({elapsed:.1f}s, {len(content)} chars) ──\n"
-                f"content: {_trunc(content, 2000)}\n"
-                f"{extra_str}\n"
-                f"{'─' * 60}\n"
-            )
+            if settings.LLM_DEBUG_LOG_ENABLED:
+                _log_response(label, result, elapsed=time.time() - start)
             return result
 
         except Exception as exc:
-            elapsed = time.time() - start
-            _write_debug(
-                f"[{label.upper()}] ── ERROR ({elapsed:.1f}s) ──\n"
-                f"{type(exc).__name__}: {exc}\n"
-                f"{'─' * 60}\n"
-            )
+            if settings.LLM_DEBUG_LOG_ENABLED:
+                _log_error(label, exc, elapsed=time.time() - start)
             raise
+
+
+def _log_request(label: str, input_val: Any) -> None:
+    """Write a request trace entry for one LLM call."""
+    prompt_summary = _summarize_input(input_val)
+    _write_debug(f"[{label.upper()}] ── REQUEST ──\n{prompt_summary}\n")
+
+
+def _log_response(label: str, result: BaseMessage, *, elapsed: float) -> None:
+    """Write a response trace entry including useful metadata."""
+    content = result.content if isinstance(result.content, str) else str(result.content)
+    extra_str = "\n".join(_response_debug_lines(result))
+    _write_debug(
+        f"[{label.upper()}] ── RESPONSE ({elapsed:.1f}s, {len(content)} chars) ──\n"
+        f"content: {_trunc(content, 2000)}\n"
+        f"{extra_str}\n"
+        f"{'─' * 60}\n"
+    )
+
+
+def _log_error(label: str, exc: Exception, *, elapsed: float) -> None:
+    """Write an error trace entry for one failed LLM call."""
+    _write_debug(
+        f"[{label.upper()}] ── ERROR ({elapsed:.1f}s) ──\n"
+        f"{type(exc).__name__}: {exc}\n"
+        f"{'─' * 60}\n"
+    )
+
+
+def _response_debug_lines(result: BaseMessage) -> list[str]:
+    """Return compact debug lines describing one model response."""
+    lines: list[str] = []
+    additional_kwargs = getattr(result, "additional_kwargs", None)
+    if additional_kwargs:
+        lines.append(f"additional_kwargs keys: {list(additional_kwargs.keys())}")
+        for key in _REASONING_KEYS:
+            if key in additional_kwargs:
+                value = additional_kwargs[key]
+                lines.append(f"  {key} ({type(value).__name__}): {_trunc(str(value), 1500)}")
+    response_metadata = getattr(result, "response_metadata", None)
+    if response_metadata:
+        lines.append(f"response_metadata: {_trunc(str(response_metadata), 500)}")
+    tool_calls = getattr(result, "tool_calls", None)
+    if tool_calls:
+        lines.append(f"tool_calls: {tool_calls}")
+    lines.append(f"content type: {type(result.content).__name__}")
+    if isinstance(result.content, list):
+        lines.append(f"content list: {_trunc(str(result.content), 1000)}")
+    return lines
 
 
 def _summarize_input(input_val: Any) -> str:
@@ -109,9 +115,7 @@ def _summarize_input(input_val: Any) -> str:
             role = msg.get("role", "?")
             content = msg.get("content", "")
             if isinstance(content, list):
-                # Multimodal content (vision)
-                text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
-                content = " ".join(text_parts) + " [+image]" if any(p.get("type") == "image_url" for p in content if isinstance(p, dict)) else " ".join(text_parts)
+                content = _summarize_multimodal_content(content)
             lines.append(f"  {role}: {_trunc(str(content), 500)}")
         elif isinstance(msg, BaseMessage):
             role = msg.type
@@ -122,6 +126,24 @@ def _summarize_input(input_val: Any) -> str:
         else:
             lines.append(f"  ?: {_trunc(str(msg), 300)}")
     return "\n".join(lines)
+
+
+def _summarize_multimodal_content(parts: list[Any]) -> str:
+    """Summarize multimodal content for log readability without dumping payloads."""
+    text_parts = [
+        part.get("text", "")
+        for part in parts
+        if isinstance(part, dict) and part.get("type") == "text"
+    ]
+    has_image = any(
+        part.get("type") == "image_url"
+        for part in parts
+        if isinstance(part, dict)
+    )
+    text_summary = " ".join(text_parts).strip()
+    if has_image:
+        return f"{text_summary} [+image]".strip()
+    return text_summary
 
 
 def _trunc(text: str, max_len: int) -> str:
@@ -143,73 +165,97 @@ def _write_debug(text: str) -> None:
 
 
 # ── LLM Singletons ─────────────────────────────────────────────────
+def _build_llm(*, label: str, model: str, model_kwargs: dict[str, Any] | None = None) -> LoggingChatOpenAI:
+    """Build one LM Studio client with the shared connection settings."""
+    kwargs: dict[str, Any] = {
+        "llm_label": label,
+        "model": model,
+        "base_url": settings.LLM_BASE_URL,
+        "api_key": settings.LLM_API_KEY,
+    }
+    if model_kwargs:
+        kwargs["model_kwargs"] = model_kwargs
+    return LoggingChatOpenAI(**kwargs)
 
 
 def get_text_llm() -> LoggingChatOpenAI:
-    """Return the singleton text LLM (gpt-oss-20b)."""
+    """Return the singleton text LLM."""
     global _text_llm
     if _text_llm is None:
-        _text_llm = LoggingChatOpenAI(
-            llm_label="text",
-            model=settings.LLM_MODEL,
-            base_url=settings.LLM_BASE_URL,
-            api_key=settings.LLM_API_KEY,
-            temperature=settings.LLM_TEMPERATURE,
-            max_tokens=settings.LLM_MAX_TOKENS,
-            request_timeout=settings.LLM_REQUEST_TIMEOUT,
-            frequency_penalty=settings.LLM_FREQUENCY_PENALTY,
-            presence_penalty=settings.LLM_PRESENCE_PENALTY,
-        )
+        _text_llm = _build_llm(label="text", model=settings.LLM_MODEL)
     return _text_llm
 
 
 def get_vision_llm() -> LoggingChatOpenAI:
-    """Return the singleton vision LLM (qwen3-vl-8b)."""
+    """Return the singleton vision LLM."""
     global _vision_llm
     if _vision_llm is None:
-        _vision_llm = LoggingChatOpenAI(
-            llm_label="vision",
-            model=settings.VISION_MODEL,
-            base_url=settings.LLM_BASE_URL,
-            api_key=settings.LLM_API_KEY,
-            temperature=0.1,
-            max_tokens=settings.LLM_MAX_TOKENS,
-            request_timeout=settings.LLM_REQUEST_TIMEOUT,
-            frequency_penalty=settings.LLM_FREQUENCY_PENALTY,
-            presence_penalty=settings.LLM_PRESENCE_PENALTY,
-        )
+        _vision_llm = _build_llm(label="vision", model=settings.VISION_MODEL)
     return _vision_llm
 
 
-def get_json_llm() -> LoggingChatOpenAI:
-    """Return a text LLM configured for strict JSON-object outputs."""
-    global _json_llm
-    if _json_llm is None:
-        model_kwargs = {}
-        if settings.LLM_JSON_RESPONSE_FORMAT:
-            # LM Studio's OpenAI-compatible API on this project accepts
-            # "json_schema" or "text", not the older "json_object" mode.
-            # We keep transport in text mode and rely on prompt guidance plus
-            # parse_json_object(...) to recover structured payloads.
-            model_kwargs["response_format"] = {"type": "text"}
-        _json_llm = LoggingChatOpenAI(
-            llm_label="json",
-            model=settings.LLM_MODEL,
-            base_url=settings.LLM_BASE_URL,
-            api_key=settings.LLM_API_KEY,
-            temperature=0.0,
-            max_tokens=settings.LLM_MAX_TOKENS,
-            request_timeout=settings.LLM_REQUEST_TIMEOUT,
-            frequency_penalty=settings.LLM_FREQUENCY_PENALTY,
-            presence_penalty=settings.LLM_PRESENCE_PENALTY,
-            model_kwargs=model_kwargs,
-        )
-    return _json_llm
+def get_structured_llm(node_name: str) -> LoggingChatOpenAI:
+    """Return an LLM configured by the central structured-output policy."""
+    mode = _structured_output_mode_for(node_name)
+    cache_key = f"{node_name}:{mode}"
+    llm = _structured_llms.get(cache_key)
+    if llm is not None:
+        return llm
+
+    llm = _build_llm(
+        label=f"structured:{node_name}:{mode}",
+        model=settings.LLM_MODEL,
+        model_kwargs=_structured_model_kwargs(node_name=node_name, mode=mode),
+    )
+    _structured_llms[cache_key] = llm
+    return llm
+
+
+def _structured_output_mode_for(node_name: str) -> str:
+    """Resolve the effective structured-output mode for one node."""
+    configured = str(settings.LLM_STRUCTURED_OUTPUT_MODE or "loose").strip().lower()
+    if configured not in _STRUCTURED_OUTPUT_MODES:
+        log.warning("Unknown LLM_STRUCTURED_OUTPUT_MODE=%r; falling back to loose", configured)
+        configured = "loose"
+    strict_nodes = {
+        item.strip().lower()
+        for item in str(settings.LLM_STRICT_STRUCTURED_NODES or "").split(",")
+        if item.strip()
+    }
+    if configured == "strict":
+        return "strict"
+    if node_name.strip().lower() in strict_nodes:
+        return "strict"
+    return configured
+
+
+def _structured_model_kwargs(*, node_name: str, mode: str) -> dict[str, Any]:
+    """Build provider kwargs for the configured structured-output mode."""
+    if mode == "off":
+        return {}
+    if mode == "strict":
+        schema = get_structured_output_schema(node_name)
+        if schema:
+            return {
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": f"pathfinder_{node_name}_response",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                }
+            }
+        log.warning("No strict schema registered for %s; falling back to loose mode", node_name)
+    if settings.LLM_JSON_RESPONSE_FORMAT:
+        # LM Studio accepts "json_schema" or "text" on this stack. Loose mode
+        # keeps transport in text so prompts plus parse_json_object(...) can
+        # recover from imperfect local-model formatting.
+        return {"response_format": {"type": "text"}}
+    return {}
 
 
 # ── Output Quality Guards ───────────────────────────────────────────
-
-
 # Control-token patterns that indicate the model hallucinated tool use
 # or produced internal formatting instead of a real answer.
 _GARBAGE_PATTERNS = (
@@ -239,8 +285,6 @@ def is_garbage_output(text: str) -> bool:
 
 
 # ── Repetition Guard ────────────────────────────────────────────────
-
-
 def strip_repetition(text: str, min_phrase_len: int = 20, max_repeats: int = 2) -> str:
     """Detect and truncate text where the model fell into a repetition loop.
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.adapters.llm.lmstudio import get_text_llm
+from app.adapters.llm.lmstudio import get_structured_llm
 from app.agents.tool_calling import run_advisor_tool_loop
 from app.core.quality import (
     DecisionPayload,
@@ -75,7 +75,7 @@ async def run_structured_advisor_loop(
     if not any(evidence_groups.values()):
         return {}, list(state.get("tool_call_log", []))
 
-    llm = get_text_llm()
+    llm = get_structured_llm("advisor_runtime")
     json_contract = (
         "Return ONLY valid JSON matching this schema keys: decision_type, answer_outline, "
         "recommended_items, blocked_or_uncertain_items, assumptions, next_best_action, source_refs."

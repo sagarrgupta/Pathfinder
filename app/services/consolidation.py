@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from app.adapters.neo4j.graph_store import get_student, run_cypher
+from app.adapters.neo4j.graph_store import execute_cypher, get_student, run_cypher
 from app.services.conflict_semantics import are_semantic_duplicates, normalize_fact_value, split_conflict_groups
 
 log = logging.getLogger("pathfinder.consolidation")
@@ -51,7 +51,7 @@ def _rank_candidate(item: dict[str, object]) -> tuple[float, float, float, str]:
 
 
 async def _fetch_candidate_facts(student_id: str) -> list[dict[str, object]]:
-    rows = await run_cypher(
+    rows = await execute_cypher(
         """
         MATCH (s:Student {id: $sid})-[:HAS_CANDIDATE_FACT]->(c:CandidateFact)
         WHERE coalesce(c.status, 'candidate') <> 'archived'
@@ -79,7 +79,7 @@ async def _update_statuses(ids: list[str], status: str) -> int:
 
 async def maybe_consolidate_memory(student_id: str, reason: str) -> dict[str, int | str]:
     """Run a bounded consolidation pass over candidate facts and memories."""
-    promoted = await run_cypher(
+    promoted = await execute_cypher(
         """
         MATCH (s:Student {id: $sid})-[:HAS_CANDIDATE_FACT]->(c:CandidateFact)
         WHERE c.status = 'candidate'
@@ -99,7 +99,7 @@ async def maybe_consolidate_memory(student_id: str, reason: str) -> dict[str, in
         """,
         {"sid": student_id},
     )
-    archived = await run_cypher(
+    archived = await execute_cypher(
         """
         MATCH (s:Student {id: $sid})-[:HAS_MEMORY]->(m:MemoryItem)
         WHERE m.status = 'candidate' AND coalesce(m.confidence, 0) < 0.35 AND coalesce(m.salience, 0) < 0.35
@@ -179,7 +179,7 @@ async def maybe_consolidate_memory(student_id: str, reason: str) -> dict[str, in
     restored_candidate = await _update_statuses(sorted(restore_candidate_ids), "candidate")
     conflicted = await _update_statuses(sorted(conflict_ids), "conflicted")
 
-    merged_duplicates = await run_cypher(
+    merged_duplicates = await execute_cypher(
         """
         MATCH (s:Student {id: $sid})-[:HAS_MEMORY]->(m1:MemoryItem),
               (s)-[:HAS_MEMORY]->(m2:MemoryItem)

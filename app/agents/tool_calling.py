@@ -26,6 +26,7 @@ def advisor_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "get_student_profile",
                 "description": "Load the student's current academic and career profile.",
+                "strict": True,
                 "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
             },
         },
@@ -34,6 +35,7 @@ def advisor_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "search_web",
                 "description": "Search the web for official pages, catalogs, requirements, or market data.",
+                "strict": True,
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -50,6 +52,7 @@ def advisor_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "fetch_url",
                 "description": "Fetch and read a specific webpage URL.",
+                "strict": True,
                 "parameters": {
                     "type": "object",
                     "properties": {"url": {"type": "string"}},
@@ -63,6 +66,7 @@ def advisor_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "search_student_documents",
                 "description": "Search uploaded student documents for matching text snippets.",
+                "strict": True,
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -79,6 +83,7 @@ def advisor_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "update_student_profile",
                 "description": "Persist a small set of student profile fields when user shares new facts.",
+                "strict": True,
                 "parameters": {
                     "type": "object",
                     "properties": {
