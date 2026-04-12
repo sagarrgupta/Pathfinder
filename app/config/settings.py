@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     # ---------- Neo4j ----------
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"
-    NEO4J_PASSWORD: str = ""
+    # Matches the repo's local docker-compose Neo4j setup. Real env vars still override this.
+    NEO4J_PASSWORD: str = "pathfinder123"
 
     # ---------- SQLite (LangGraph Memory) ----------
     SQLITE_DB_PATH: str = "data/pathfinder.db"

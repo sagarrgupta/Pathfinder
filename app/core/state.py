@@ -33,6 +33,7 @@ class PathfinderState(TypedDict, total=False):
     advisor_mode: str                         # User-selected focused advisor mode
     request_plan: dict[str, Any]              # Deterministic request-planning hints for this turn
     runtime_policy: dict[str, Any]            # Explicit runtime policy decisions for this turn
+    runtime_snapshot: dict[str, Any]          # Runtime capability snapshot for this turn
 
     # ── Orchestrator output ─────────────────────────────────────
     intent: str                               # Classified intent
@@ -74,6 +75,7 @@ class PathfinderState(TypedDict, total=False):
     evidence_records: list[dict[str, Any]]    # Typed evidence extracted from web/profile/doc sources
     decision_payload: dict[str, Any]          # Structured planner output used for final response
     tool_call_log: list[dict[str, Any]]       # Provenance log of tool calls/results used this turn
+    mcp_tool_calls: list[dict[str, Any]]      # MCP tool call trace for the current turn
 
     # ── Evaluation ──────────────────────────────────────────────
     draft_answer: str                         # Answer before evaluation
