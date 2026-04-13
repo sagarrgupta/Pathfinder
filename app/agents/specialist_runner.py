@@ -297,12 +297,16 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
                 if not web_retry_used and _should_retry_web_search(final_payload, tool_call_log):
                     web_retry_used = True
                     nudge = (
-                        "Your answer says you could not find the information, but you "
-                        "have not exhausted web search options. Try a different "
-                        "search_web query (rephrase, broaden, or use different "
-                        "keywords from the student's profile) and fetch_url on the "
-                        "most relevant result. Then respond again with whatever you "
-                        "find — even partial information is better than none."
+                        "Your answer says you could not find the information, but "
+                        "you have not exhausted web search options. Do NOT repeat "
+                        "the same search. Change your strategy:\n"
+                        "- Rephrase: broaden beyond specific names or codes — "
+                        "search for the general process or policy instead.\n"
+                        "- Pick a result whose title most closely matches what "
+                        "the student is actually asking for.\n"
+                        "- Fetch at least one URL you have not fetched yet.\n"
+                        "Respond again with whatever you find — even partial "
+                        "information is better than none. Include source URLs."
                     )
                     messages.append(HumanMessage(content=nudge))
                     final_payload = {}

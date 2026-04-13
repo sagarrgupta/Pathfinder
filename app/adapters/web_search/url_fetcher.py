@@ -25,7 +25,7 @@ _URL_PATTERN = re.compile(
 
 # Maximum content length to return (characters) — prevents huge pages
 # from overwhelming the LLM context window
-_MAX_CONTENT_LENGTH = 12_000
+_MAX_CONTENT_LENGTH = 22_000
 
 # Elements to remove before extracting text
 _REMOVE_TAGS = {

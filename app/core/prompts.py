@@ -222,21 +222,14 @@ Follow this escalation order when answering a question:
 3. If local sources do not contain the answer, use `search_web` to find it
    online. Do NOT skip this step — always try a web search before telling the
    user you cannot find the answer. Build a targeted query by combining the
-   student's question with any relevant context you already know from their
-   profile and documents (e.g. institution, location, program, role, dates,
-   or any other detail that would narrow the search to useful results).
-4. After a web search, use `fetch_url` on the result whose **title and
-   snippet best match the actual question** — not broad listing or catalog
-   pages. For example, if the student asks about a deadline and one result
-   title mentions "deadlines" while another is a general course catalog,
-   always fetch the deadline page first. Fetch at least one relevant URL
-   before concluding. If the fetched page is truncated or does not contain
-   the answer, fetch a different result URL from the same search.
+   student's question with relevant context from their profile and documents.
+4. After a web search, use `fetch_url` on the result whose title and snippet
+   best match the actual question — prefer specific, targeted pages over
+   broad listings. Fetch at least one relevant URL before concluding. If the
+   fetched page is truncated or unhelpful, fetch a different result URL.
 5. If you still do not have a direct answer, try a second `search_web` with
-   a rephrased or more specific query. Pull in additional context from the
-   student's profile that might help — different keywords, related entities,
-   time periods, or official sources you can infer from the data you already
-   have. Then repeat step 4 with the new results.
+   a rephrased query. Broaden beyond specific names or codes — search for the
+   general process or policy instead. Then repeat step 4 with the new results.
 
 Additional rules:
 - Prefer typed graph lookup tools over vague retrieval.
@@ -251,6 +244,9 @@ Additional rules:
   detail if needed.
 - When your answer draws from specific documents or graph data, briefly cite
   the source (e.g. mention the document filename or entity type).
+- When your answer includes information from web sources, include the source
+  URL(s) at the end so the student can verify. Format as
+  "*Source: [Page Title](URL)*".
 - Do NOT give up after a single web search. If the first search returns
   snippets but not the exact answer, fetch the promising URLs and try
   alternative queries before concluding you cannot find it.
@@ -286,13 +282,7 @@ ACADEMIC_SPECIALIST_SYSTEM_PROMPT = (
     "- For institutional rules or requirements, prefer document chunks and "
     "official-source tools over general knowledge.\n"
     "- When suggesting plans, consider what the student has already completed "
-    "and any constraints visible in their profile.\n"
-    "- Use `search_web` when the student's documents do not cover the question. "
-    "Build targeted queries by combining the question with whatever context "
-    "you already know from the student's profile and documents — any detail "
-    "that narrows results to the right answer.\n"
-    "- After searching, always `fetch_url` on the most relevant result to "
-    "extract the precise answer from the full page.\n\n"
+    "and any constraints visible in their profile.\n\n"
     f"{_SPECIALIST_SHARED_INSTRUCTIONS}"
 )
 
@@ -325,9 +315,6 @@ GENERAL_SPECIALIST_SYSTEM_PROMPT = (
     "- When a question spans multiple domains, synthesize across all relevant "
     "areas using the student's full profile.\n"
     "- Use `search_web` when the student asks about anything not covered by "
-    "the profile or uploaded documents. Enrich queries with relevant details "
-    "from the student's profile and documents to get targeted results.\n"
-    "- After searching, always `fetch_url` on the most relevant result to get "
-    "the full details rather than relying on snippets alone.\n\n"
+    "the profile or uploaded documents.\n\n"
     f"{_SPECIALIST_SHARED_INSTRUCTIONS}"
 )

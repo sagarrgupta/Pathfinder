@@ -1,6 +1,6 @@
 # Pathfinder Architecture Flow
 
-This document describes the current live implementation of Pathfinder from request entry through final SSE output.
+This document describes the current live implementation of Pathfinder from request entry through final SSE output in a single detailed diagram.
 
 Key implementation entry points:
 
@@ -10,313 +10,242 @@ Key implementation entry points:
 - Graph assembly: `app/core/graph.py`
 - Shared state: `app/core/state.py`
 - Specialist execution: `app/agents/specialist_runner.py`
+- Tool registry: `app/tools/registry.py`
 
-## 1. End-to-End Chat Flow
+---
 
-```mermaid
-flowchart TD
-    U["User sends chat query<br/>optional files, session_id, student_id"] --> API["FastAPI app<br/>app/main.py"]
-    API --> ROUTE["POST /api/v1/chat<br/>app/api/routes.py::chat()"]
-
-    ROUTE --> SID["Resolve student_id<br/>Create session_id if missing"]
-    SID --> REPLACE{"replace_filenames provided?"}
-    REPLACE -- Yes --> DELDOC["Find matching documents<br/>Cascade delete old document graph"]
-    REPLACE -- No --> FILES["Continue"]
-    DELDOC --> FILES["Validate and read uploads"]
-
-    FILES --> RUNTIME["Build ChatRuntimeSession"]
-    RUNTIME --> SNAP["Capture dependency snapshot<br/>neo4j / llm / embeddings / web_search"]
-    SNAP --> INIT["Build initial PathfinderState"]
-    INIT --> GRAPH["Compile 5-node LangGraph with SQLite checkpointer"]
-    GRAPH --> STREAM["Run graph.astream(initial_state, config)"]
-
-    STREAM --> IG["input_guard"]
-    IG -->|blocked| RESPBLOCK["responder returns block_reason"]
-    IG -->|passed| ORCH["orchestrator"]
-    ORCH --> SPEC["specialist_runner"]
-    SPEC --> VALID["light_validator"]
-    VALID --> RESP["responder"]
-
-    RESP --> FINALSTATE["Accumulate final_state"]
-    RESPBLOCK --> FINALSTATE
-    FINALSTATE --> TOKENS["Split final_answer into words<br/>emit SSE token events"]
-    TOKENS --> DONE["Build done payload"]
-    DONE --> DECISION["Best-effort persist decision record"]
-    DECISION --> REPLAY["Best-effort persist replay artifact"]
-    REPLAY --> SSE["Send SSE done event"]
-```
-
-## 2. Runtime Layers
-
-```mermaid
-flowchart LR
-    subgraph Client
-        UI["Frontend / caller"]
-    end
-
-    subgraph API
-        MAIN["FastAPI app"]
-        ROUTER["app/api/routes.py"]
-    end
-
-    subgraph Runtime
-        SESSION["runtime_session.py"]
-        GRAPH["core/graph.py"]
-        STATE["core/state.py"]
-    end
-
-    subgraph Graph
-        G["input_guard"]
-        O["orchestrator"]
-        S["specialist_runner"]
-        V["light_validator"]
-        R["responder"]
-    end
-
-    subgraph Data_and_Tools
-        NEO["Neo4j profile + memory store"]
-        VEC["Neo4j vector search"]
-        LLM["LM Studio text / vision"]
-        EMB["Ollama embeddings"]
-        TOOLS["Canonical tool registry"]
-        WEB["Web search adapters"]
-        SQLITE["SQLite checkpointer"]
-        REPLAY["Decision + replay persistence"]
-    end
-
-    UI --> MAIN --> ROUTER --> SESSION --> GRAPH
-    GRAPH --> SQLITE
-    GRAPH --> G --> O --> S --> V --> R
-    S --> NEO
-    S --> VEC
-    S --> LLM
-    S --> EMB
-    S --> TOOLS
-    TOOLS --> WEB
-    R --> REPLAY
-```
-
-## 3. Current LangGraph Execution Flow
-
-This is the runtime graph defined in `app/core/graph.py`.
+## Complete Architecture and Decision Flow
 
 ```mermaid
 flowchart TD
-    START["Graph entry"] --> IG["input_guard"]
-    IG -->|blocked| RESP["responder"]
-    IG -->|passed| ORCH["orchestrator"]
+    %% ── Request Entry ──────────────────────────────────────────
+    USER["fa:fa-user User<br/>query + optional files<br/>session_id, student_id<br/>reasoning level, replace_filenames"]
 
-    ORCH -->|normal path| SPEC["specialist_runner"]
-    ORCH -->|short-circuit| RESP
+    USER --> FASTAPI["fa:fa-server FastAPI<br/>POST /api/v1/chat<br/>app/api/routes.py::chat()"]
 
-    SPEC -->|normal path| VALID["light_validator"]
-    SPEC -->|short-circuit| RESP
+    FASTAPI --> RESOLVE_ID["Resolve student_id<br/>create profile if missing<br/>generate session_id if missing"]
 
-    VALID --> RESP
-    RESP --> END["END"]
+    RESOLVE_ID --> REPLACE{"replace_filenames<br/>provided?"}
+    REPLACE -- Yes --> DEL_DOC["Find matching documents in Neo4j<br/>cascade delete old doc + chunks"]
+    REPLACE -- No --> READ_FILES
+    DEL_DOC --> READ_FILES["Validate uploads<br/>check extension against ALLOWED_FILE_TYPES<br/>enforce MAX_FILE_SIZE_MB<br/>read file bytes"]
+
+    %% ── Runtime Session Assembly ───────────────────────────────
+    READ_FILES --> RUNTIME["build_chat_runtime_session()<br/>app/services/runtime_session.py"]
+
+    RUNTIME --> DEP_CHECK["Dependency health check"]
+    DEP_CHECK --> NEO4J_HEALTH["Neo4j<br/>RETURN 1 ping"]
+    DEP_CHECK --> LLM_HEALTH["LM Studio<br/>/v1/models check"]
+    DEP_CHECK --> EMB_HEALTH["Ollama<br/>/api/tags check"]
+    DEP_CHECK --> WEB_HEALTH["Web search<br/>API key presence check"]
+    NEO4J_HEALTH & LLM_HEALTH & EMB_HEALTH & WEB_HEALTH --> SNAPSHOT["DependencySnapshot<br/>+ RuntimeSnapshot<br/>text model, reasoning, retrieval mode,<br/>web provider chain, document ingestors"]
+
+    SNAPSHOT --> INIT_STATE["Build initial PathfinderState<br/>messages, query, files, session_id,<br/>student_id, request_plan,<br/>topic_guard_enabled, reasoning"]
+
+    INIT_STATE --> COMPILE["Compile 5-node LangGraph StateGraph<br/>with SqliteSaver checkpointer<br/>thread_id = student_id:session_id<br/>recursion_limit = 15"]
+
+    COMPILE --> STREAM["graph.astream(initial_state, config)<br/>SSE event_stream generator"]
+
+    %% ── LangGraph Node 1: Input Guard ──────────────────────────
+    STREAM --> IG["NODE 1: input_guard<br/>app/agents/input_guard.py"]
+
+    IG --> IG_EMPTY{"Query empty?"}
+    IG_EMPTY -- Yes --> BLOCKED["is_blocked = True<br/>block_reason set"]
+    IG_EMPTY -- No --> IG_LEN{"Query > 4000 chars?"}
+    IG_LEN -- Yes --> BLOCKED
+    IG_LEN -- No --> IG_SQLI{"SQL injection<br/>pattern match?<br/>(9 regex patterns,<br/>topic_guard_enabled)"}
+    IG_SQLI -- Yes --> BLOCKED
+
+    BLOCKED --> ROUTE_GUARD_BLOCK["route_after_guard<br/>→ responder"]
+
+    IG_SQLI -- No --> PASSED["is_blocked = False"]
+    PASSED --> ROUTE_GUARD_OK["route_after_guard<br/>→ orchestrator"]
+
+    %% ── LangGraph Node 2: Orchestrator ─────────────────────────
+    ROUTE_GUARD_OK --> ORCH["NODE 2: orchestrator<br/>app/agents/orchestrator.py"]
+
+    ORCH --> ORCH_PROFILE["get_full_profile(student_id)<br/>from Neo4j"]
+    ORCH_PROFILE --> ORCH_SESSION["build_session_summary()<br/>profile + messages + query"]
+    ORCH_SESSION --> ORCH_CONTEXT["Build context hint<br/>file count + profile root fields"]
+
+    ORCH_CONTEXT --> ORCH_LLM{"LLM routing<br/>available?"}
+    ORCH_LLM -- Yes --> LLM_ROUTE["LLM classifier via LM Studio<br/>Score each specialist 0-10<br/>reasoning='none' for speed"]
+    ORCH_LLM -- No --> HEURISTIC["Heuristic fallback<br/>files → boost general +4<br/>URLs → boost academic/career +1<br/>greeting regex → general +5"]
+
+    LLM_ROUTE --> BOOSTS
+    HEURISTIC --> BOOSTS["Apply signal boosts<br/>files attached → general +4<br/>workflow_hint=student_state_update → general +2"]
+
+    BOOSTS --> PICK_SPECIALIST["Pick highest scoring specialist<br/>tiebreak favors 'general'"]
+
+    PICK_SPECIALIST --> SPEC_ACADEMIC["academic<br/>courses, grades, degree,<br/>enrollment, policies"]
+    PICK_SPECIALIST --> SPEC_CAREER["career<br/>jobs, skills, resume,<br/>interviews, market advice"]
+    PICK_SPECIALIST --> SPEC_GENERAL["general<br/>profile mgmt, documents,<br/>cross-domain, greetings,<br/>follow-ups, memory-aware"]
+
+    SPEC_ACADEMIC & SPEC_CAREER & SPEC_GENERAL --> ROUTE_ORCH["route_after_orchestrator<br/>→ specialist_runner"]
+
+    %% ── LangGraph Node 3: Specialist Runner ────────────────────
+    ROUTE_ORCH --> SPEC["NODE 3: specialist_runner<br/>app/agents/specialist_runner.py"]
+
+    SPEC --> FILES_CHECK{"Uploaded files<br/>present?"}
+    FILES_CHECK -- Yes --> DOC_INGEST["Pre-ingest via doc_analyst<br/>PDF/image/DOCX extraction<br/>entity extraction, chunking,<br/>Neo4j storage"]
+    FILES_CHECK -- No --> CONTEXT_LOAD
+    DOC_INGEST --> CONTEXT_LOAD["Context loading phase"]
+
+    CONTEXT_LOAD --> CL1["get_full_profile()<br/>reload from Neo4j"]
+    CL1 --> CL2["build_session_summary()<br/>profile + messages + query"]
+    CL2 --> CL3["get_relevant_memories()<br/>semantic memory search<br/>limit=6"]
+    CL3 --> CL4["hybrid_search()<br/>Neo4j vector + keyword<br/>k=5 document chunks"]
+
+    CL4 --> BUILD_CTX["Assemble context payloads"]
+    BUILD_CTX --> SHORT_CTX["Short-term context<br/>recent 8 messages<br/>session summary<br/>profile schema<br/>document ingestion patches"]
+    BUILD_CTX --> LONG_CTX["Long-term context<br/>long_context_payload<br/>manifest of entity types<br/>memory bucket counts<br/>small durable facts<br/>recent document highlights<br/>long_context_notes"]
+
+    SHORT_CTX & LONG_CTX --> BIND_TOOLS["Bind 30 MCP-style tools to LLM<br/>get_text_llm(reasoning).bind_tools()"]
+
+    BIND_TOOLS --> SPEC_PROMPT["Assemble specialist prompt<br/>SystemMessage: specialist system prompt<br/>HumanMessage: query + short context +<br/>long context + tool contract reminder"]
+
+    SPEC_PROMPT --> AGENTIC_LOOP["Agentic tool-calling loop<br/>max 12 iterations<br/>max 6 tool calls per iteration"]
+
+    AGENTIC_LOOP --> TOOL_DECISION{"LLM response<br/>type?"}
+
+    TOOL_DECISION -- "tool_calls" --> TOOL_EXEC["Execute tools through<br/>canonical registry"]
+    TOOL_EXEC --> TOOL_TYPES["Tool categories available"]
+
+    TOOL_TYPES --> T_PROFILE["Profile & Graph tools<br/>get_profile_summary<br/>list_entity_types<br/>typed_node_lookup<br/>typed_relation_lookup<br/>fetch_node_by_id<br/>fetch_relation_detail<br/>upsert_graph_node<br/>graph_add_node<br/>graph_update_node<br/>graph_add_relation<br/>upsert_graph_relation<br/>graph_update_relation<br/>graph_soft_delete_node<br/>graph_soft_delete_relation<br/>update_student_profile<br/>upsert_profile_schema_section<br/>get_profile_schema"]
+
+    TOOL_TYPES --> T_DOC["Document tools<br/>list_document_groups<br/>search_documents_semantic<br/>fetch_document_snippet"]
+
+    TOOL_TYPES --> T_MEMORY["Memory tools<br/>search_memory_semantic<br/>view_durable_memory_summary<br/>add_or_update_fact<br/>add_or_update_goal<br/>add_or_update_preference<br/>supersede_outdated_fact"]
+
+    TOOL_TYPES --> T_WEB["Web tools<br/>search_web<br/>fetch_url<br/>find_official_sources"]
+
+    TOOL_TYPES --> T_SESSION["Session tools<br/>get_recent_conversation_window<br/>get_session_summary<br/>list_context_categories"]
+
+    TOOL_TYPES --> T_RESPOND["respond tool<br/>signals final answer ready"]
+
+    T_PROFILE & T_DOC & T_MEMORY & T_WEB & T_SESSION --> TOOL_LOG["Append to tool_call_log<br/>call_id, tool, input, status,<br/>output, result_summary"]
+    TOOL_LOG --> AGENTIC_LOOP
+
+    T_RESPOND --> RESPOND_CHECK{"respond tool called<br/>+ 'not found' phrases<br/>+ < 2 search_web or<br/>< 2 fetch_url calls?"}
+    RESPOND_CHECK -- "Yes, first time" --> WEB_RETRY["Inject web-search retry nudge<br/>ask LLM to rephrase/broaden<br/>clear final_payload"]
+    WEB_RETRY --> AGENTIC_LOOP
+    RESPOND_CHECK -- No --> LOOP_DONE["Extract message from payload<br/>clean special tokens"]
+
+    TOOL_DECISION -- "text content<br/>(no tool calls)" --> PARSE_JSON["Parse JSON from text response<br/>or wrap raw text as message"]
+    PARSE_JSON --> LOOP_DONE
+
+    LOOP_DONE --> SPEC_OUT["Set state:<br/>draft_answer = cleaned message<br/>specialist_output = message +<br/>memory_patch + provenance + stop_reason<br/>tool_call_log, long_context_payload<br/>next_node = light_validator"]
+
+    %% ── LangGraph Node 4: Light Validator ──────────────────────
+    SPEC_OUT --> ROUTE_SPEC["route_after_specialist<br/>→ light_validator"]
+    ROUTE_SPEC --> VALID["NODE 4: light_validator<br/>app/agents/light_validator.py"]
+
+    VALID --> VALID_SHAPE["Normalize specialist_output<br/>fallback to draft_answer"]
+    VALID_SHAPE --> CITE["Extract citations from<br/>tool_call_log (status=ok)<br/>deduplicate, limit to 8"]
+
+    CITE --> CONF{"Confidence scoring"}
+    CONF --> CONF_TOOL["Any successful tool calls?<br/>→ confidence = 0.82"]
+    CONF --> CONF_STOP["stop_reason == 'stop'<br/>(no tools used)?<br/>→ confidence = 0.90"]
+    CONF --> CONF_LOW["Otherwise<br/>→ confidence = 0.62"]
+
+    CONF_TOOL & CONF_STOP & CONF_LOW --> VALID_OUT["Set state:<br/>citations, confidence_score,<br/>is_grounded, next_node = responder"]
+
+    %% ── LangGraph Node 5: Responder ───────────────────────────
+    VALID_OUT --> ROUTE_VALID["route_after_validator<br/>→ responder"]
+    ROUTE_VALID --> RESP["NODE 5: responder<br/>app/agents/responder.py"]
+    ROUTE_GUARD_BLOCK --> RESP
+
+    RESP --> RESP_CHECK{"is_blocked?"}
+    RESP_CHECK -- Yes --> RESP_BLOCK["final_answer = block_reason"]
+    RESP_CHECK -- No --> RESP_OK["final_answer = draft_answer<br/>minimal rewriting,<br/>fallback 'could not generate'"]
+
+    RESP_BLOCK & RESP_OK --> RESP_OUT["Append AIMessage<br/>to conversation history"]
+
+    %% ── Post-Graph: SSE Output & Persistence ───────────────────
+    RESP_OUT --> SSE_PROGRESS["Emit SSE progress events<br/>per-node step_progress messages"]
+
+    SSE_PROGRESS --> SSE_TOKENS["Emit SSE token events<br/>split final_answer into words<br/>word-by-word streaming for UX"]
+
+    SSE_TOKENS --> DONE_PAYLOAD["build_done_payload()<br/>session_id, student_id, confidence,<br/>citations, method (direct|rag|graph|web),<br/>quality_path, dependency_status,<br/>selected_specialist, routing_scores,<br/>tool_call_log, specialist_output,<br/>long_context_payload, runtime_snapshot"]
+
+    DONE_PAYLOAD --> PERSIST_DECISION["Best-effort:<br/>persist_decision_record()<br/>query + final_state + done_payload"]
+    PERSIST_DECISION --> PERSIST_REPLAY["Best-effort:<br/>build_replay_artifact()<br/>save_replay_artifact()<br/>attach replay_id to done_payload"]
+    PERSIST_REPLAY --> SSE_DONE["Emit SSE done event<br/>with full done_payload"]
+
+    SSE_DONE --> USER_FINAL["fa:fa-user Response delivered to user"]
+
+    %% ── External Dependencies ──────────────────────────────────
+    subgraph ext ["External Dependencies"]
+        direction TB
+        NEO4J_DB[("fa:fa-database Neo4j<br/>Profile store<br/>Evidence graph<br/>Memory ledger<br/>Recommendation state<br/>Document + chunk storage<br/>Vector index for hybrid search")]
+        SQLITE_DB[("fa:fa-database SQLite<br/>LangGraph checkpointer<br/>Per-session message continuity<br/>thread_id = student_id:session_id")]
+        LM_STUDIO["fa:fa-brain LM Studio<br/>Text model (reasoning: low/medium/high)<br/>Vision model (document images)"]
+        OLLAMA["fa:fa-cog Ollama<br/>Embedding model<br/>nomic-embed-text / mxbai-embed-large"]
+        WEB_PROVIDERS["fa:fa-globe Web Search Chain<br/>1. Tavily<br/>2. Google CSE<br/>3. Brave<br/>4. DuckDuckGo (fallback)"]
+        FILESYSTEM["fa:fa-folder Filesystem<br/>Replay artifacts (JSON)<br/>Eval fixtures<br/>Generated data"]
+    end
+
+    ORCH_PROFILE -.-> NEO4J_DB
+    CL1 -.-> NEO4J_DB
+    CL3 -.-> NEO4J_DB
+    CL4 -.-> NEO4J_DB
+    DOC_INGEST -.-> NEO4J_DB
+    DOC_INGEST -.-> LM_STUDIO
+    DOC_INGEST -.-> OLLAMA
+    COMPILE -.-> SQLITE_DB
+    LLM_ROUTE -.-> LM_STUDIO
+    BIND_TOOLS -.-> LM_STUDIO
+    AGENTIC_LOOP -.-> LM_STUDIO
+    T_WEB -.-> WEB_PROVIDERS
+    T_PROFILE -.-> NEO4J_DB
+    T_DOC -.-> NEO4J_DB
+    T_MEMORY -.-> NEO4J_DB
+    CL4 -.-> OLLAMA
+    PERSIST_REPLAY -.-> FILESYSTEM
+
+    %% ── Styling ────────────────────────────────────────────────
+    classDef node1 fill:#4a90d9,color:#fff,stroke:#2c5f8a
+    classDef node2 fill:#7b68ee,color:#fff,stroke:#5a4cb5
+    classDef node3 fill:#e67e22,color:#fff,stroke:#a85c18
+    classDef node4 fill:#27ae60,color:#fff,stroke:#1e8449
+    classDef node5 fill:#8e44ad,color:#fff,stroke:#6c3483
+    classDef decision fill:#f39c12,color:#000,stroke:#d68910
+    classDef external fill:#34495e,color:#fff,stroke:#2c3e50
+    classDef blocked fill:#e74c3c,color:#fff,stroke:#c0392b
+    classDef tool fill:#1abc9c,color:#fff,stroke:#16a085
+
+    class IG,IG_EMPTY,IG_LEN,IG_SQLI node1
+    class ORCH,ORCH_PROFILE,ORCH_SESSION,ORCH_CONTEXT,ORCH_LLM,LLM_ROUTE,HEURISTIC,BOOSTS,PICK_SPECIALIST node2
+    class SPEC,FILES_CHECK,DOC_INGEST,CONTEXT_LOAD,CL1,CL2,CL3,CL4,BUILD_CTX,SHORT_CTX,LONG_CTX,BIND_TOOLS,SPEC_PROMPT,AGENTIC_LOOP,TOOL_DECISION,TOOL_EXEC,PARSE_JSON,LOOP_DONE,SPEC_OUT,RESPOND_CHECK,WEB_RETRY node3
+    class VALID,VALID_SHAPE,CITE,CONF,CONF_TOOL,CONF_STOP,CONF_LOW,VALID_OUT node4
+    class RESP,RESP_CHECK,RESP_BLOCK,RESP_OK,RESP_OUT node5
+    class REPLACE,RESPOND_CHECK,FILES_CHECK,ORCH_LLM,IG_EMPTY,IG_LEN,IG_SQLI,RESP_CHECK,CONF decision
+    class NEO4J_DB,SQLITE_DB,LM_STUDIO,OLLAMA,WEB_PROVIDERS,FILESYSTEM external
+    class BLOCKED,ROUTE_GUARD_BLOCK blocked
+    class T_PROFILE,T_DOC,T_MEMORY,T_WEB,T_SESSION,T_RESPOND,TOOL_LOG,TOOL_TYPES tool
 ```
 
-### What each node does
+### Color legend
 
-- `input_guard`
-  - blocks unsafe or out-of-scope requests
-  - sets `is_blocked` and `block_reason` when needed
+| Color | Meaning |
+|---|---|
+| Blue | Node 1: input_guard |
+| Purple/Indigo | Node 2: orchestrator |
+| Orange | Node 3: specialist_runner |
+| Green | Node 4: light_validator |
+| Violet | Node 5: responder |
+| Teal | Tool registry |
+| Red | Blocked path |
+| Dark gray | External dependencies |
 
-- `orchestrator`
-  - loads the current profile
-  - builds a session summary
-  - scores the query against `academic`, `career`, and `general`
-  - stores the selected specialist and routing explanation
+### Key architectural decisions
 
-- `specialist_runner`
-  - pre-ingests uploaded files by calling `doc_analyst` when files are present
-  - refreshes profile context with `get_full_profile(...)`
-  - loads semantic memories with `get_relevant_memories(...)`
-  - runs vector retrieval with `hybrid_search(...)`
-  - invokes the selected specialist prompt with shared MCP-style tools
-  - records tool provenance in `tool_call_log`
-
-- `light_validator`
-  - normalizes the specialist output
-  - derives citations from successful tool calls
-  - assigns a lightweight confidence score
-
-- `responder`
-  - returns the block reason for blocked turns
-  - otherwise returns `draft_answer` as `final_answer` with minimal rewriting
-
-## 4. Request Assembly Before The Graph Starts
-
-`build_chat_runtime_session()` does the pre-graph setup:
-
-- records dependency status for:
-  - Neo4j
-  - text LLM
-  - embeddings
-  - web search configuration
-- stores the selected retrieval strategy label as `memory_pack`
-- builds the initial request plan:
-  - `reasoning`
-  - `has_files`
-  - `has_url`
-- builds the initial state consumed by the graph
-
-This is intentionally deterministic and lightweight. Most of the actual reasoning happens inside the selected specialist.
-
-## 5. Specialist Selection Flow
-
-```mermaid
-flowchart TD
-    Q["Query + files + request_plan"] --> P["Load full profile"]
-    P --> S["Build session_summary"]
-    S --> SCORE["Score query against keyword families"]
-    SCORE --> FILES{"Files attached?"}
-    FILES -- Yes --> ADDG["Boost general score"]
-    FILES -- No --> URLS{"URL in query?"}
-    ADDG --> URLS
-    URLS -- Yes --> ADDA["Boost academic and career scores"]
-    URLS -- No --> PROFILE{"Profile signal present?"}
-    ADDA --> PROFILE
-    PROFILE -- Yes --> ADDP["Boost general score"]
-    PROFILE -- No --> PICK["Pick highest score"]
-    ADDP --> PICK
-    PICK --> OUT["Store selected_specialist<br/>routing_scores<br/>routing_reason"]
-```
-
-The current specialist families are:
-
-- `academic`
-- `career`
-- `general`
-
-There is no longer a live graph branch that routes across many advisor nodes such as `profile_manager`, `web_researcher`, `academic_advisor`, or `evaluator`.
-
-## 6. Specialist Execution Flow
-
-```mermaid
-flowchart TD
-    S0["specialist_runner"] --> F{"Uploaded files present?"}
-    F -- Yes --> D["Call doc_analyst first"]
-    F -- No --> P["Skip doc pre-ingestion"]
-    D --> P
-
-    P --> P1["Reload full profile"]
-    P1 --> P2["Build session_summary"]
-    P2 --> P3["Load relevant semantic memories"]
-    P3 --> P4["Run hybrid_search() for retrieved_documents"]
-    P4 --> P5["Assemble short_context and long_context"]
-    P5 --> P6["Bind shared tool schemas to LLM"]
-    P6 --> P7["Run selected specialist prompt"]
-    P7 --> TOOLS{"Tool calls returned?"}
-
-    TOOLS -- Yes --> T1["Execute tool through canonical registry"]
-    T1 --> T2["Append compact tool result to tool_call_log"]
-    T2 --> P7
-
-    TOOLS -- No --> OUT["Parse final payload<br/>store draft_answer and specialist_output"]
-```
-
-Important implementation details:
-
-- the specialist gets compact profile/session context, not the entire raw database payload
-- the specialist can call tools for graph, memory, document, and web access
-- retrieved documents and semantic memories are loaded before tool use begins
-- uploaded file processing happens inside this node, not as a separate graph branch
-
-## 7. Validation And Response Flow
-
-```mermaid
-flowchart TD
-    V0["light_validator"] --> V1["Read specialist_output or draft_answer"]
-    V1 --> V2["Extract citations from successful tool_call_log items"]
-    V2 --> V3{"Any successful tools?"}
-    V3 -- Yes --> V4["confidence = 0.82"]
-    V3 -- No --> V5{"stop_reason == stop?"}
-    V5 -- Yes --> V6["confidence = 0.9"]
-    V5 -- No --> V7["confidence = 0.62"]
-    V4 --> V8["Set is_grounded and next_node=responder"]
-    V6 --> V8
-    V7 --> V8
-    V8 --> R0["responder"]
-    R0 --> R1{"Blocked?"}
-    R1 -- Yes --> R2["Return block_reason"]
-    R1 -- No --> R3["Return final_answer from draft_answer"]
-```
-
-## 8. Persistence After The Graph Finishes
-
-After graph execution finishes inside `app/api/routes.py::chat()`:
-
-1. progress messages are emitted as SSE `progress` events
-2. the final answer is split into word-level SSE `token` events
-3. `build_done_payload(...)` creates the terminal metadata payload
-4. `persist_decision_record(...)` runs on a best-effort basis
-5. a replay artifact is built and saved on a best-effort basis
-6. the route emits a final SSE `done` event
-
-Failures in decision-record or replay persistence are logged, but they do not fail the user-facing answer after the turn has already completed.
-
-## 9. Long Context And Profile Memory
-
-The profile/runtime bridge now centers on a shared long-context payload.
-
-### What is included
-
-The payload built by `app/services/long_context.py` includes:
-
-- a manifest of graph entity types and document groups
-- compact durable profile facts such as institution, program, semester, goals, and preferences
-- editable `long_context_notes`
-
-### Where it is used
-
-- `specialist_runner` passes this payload into the selected specialist
-- the replay artifact stores the payload so a turn can be inspected later
-- the profile page shows a preview of the payload and lets the user edit `long_context_notes`
-
-### Consolidation behavior
-
-Consolidation still runs after:
-
-- `POST /api/v1/profile/text`
-- `POST /api/v1/documents`
-- background consolidation scans
-
-But the current implementation no longer exposes a separate profile-conflict API/UI flow. Instead, consolidation prefers the strongest supported fact and supersedes weaker conflicting candidates.
-
-## 10. API Surface Relevant To Flow
-
-### Chat runtime
-
-- `POST /api/v1/chat`
-
-### Direct ingestion
-
-- `GET /api/v1/documents/check`
-- `POST /api/v1/documents`
-- `POST /api/v1/profile/text`
-
-### Replay and evaluation
-
-- `GET /api/v1/replays`
-- `GET /api/v1/replays/{replay_id}`
-- `GET /api/v1/replays/{replay_id}/evaluate`
-- `GET /api/v1/replays/evaluate/recent`
-- `GET /api/v1/eval/benchmarks`
-- `GET /api/v1/eval/analytics`
-
-## 11. Source Files To Read Next
-
-For the current live implementation, start here:
-
-- `app/api/routes.py`
-- `app/services/runtime_session.py`
-- `app/core/graph.py`
-- `app/core/state.py`
-- `app/agents/input_guard.py`
-- `app/agents/orchestrator.py`
-- `app/agents/specialist_runner.py`
-- `app/agents/light_validator.py`
-- `app/agents/responder.py`
-- `app/services/consolidation.py`
-- `app/services/long_context.py`
+- **5-node linear graph** with conditional short-circuit edges at every stage; any node can jump to `responder` to end the turn early.
+- **LLM-first routing** in the orchestrator uses the text LLM as a lightweight classifier (reasoning=none for speed), falling back to a heuristic scorer when the LLM is unavailable.
+- **Single specialist per turn** — the orchestrator picks exactly one of `academic`, `career`, or `general`; there is no multi-advisor fan-out.
+- **Agentic tool loop** caps at 12 LLM iterations with up to 6 tool calls per iteration; 30 canonical MCP-style tools span graph, document, memory, web, session, and response categories.
+- **Web-search retry nudge** automatically fires once if the LLM produces a "not found" answer without exhausting search/fetch capacity.
+- **Confidence scoring** is deterministic and tool-provenance-based (0.82 with tools, 0.90 with clean stop, 0.62 otherwise) — no LLM-based evaluation.
+- **SSE streaming** delivers progress, word-level tokens, and a done payload; decision records and replay artifacts are persisted on a best-effort basis after the answer is already emitted.
+- **SQLite checkpointer** keyed by `student_id:session_id` provides per-session conversation continuity across turns.
+- **Neo4j** serves as the unified durable store for profiles, entities, documents, chunks, candidate facts, memory items, evidence links, and recommendations.
