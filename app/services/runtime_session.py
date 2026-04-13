@@ -231,23 +231,24 @@ async def get_dependency_status() -> dict[str, str]:
         import httpx
 
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.LLM_BASE_URL.replace('/v1', '')}/v1/models")
-            if resp.status_code == 200:
-                payload = resp.json() if resp.content else {}
-                models = payload.get("data", []) if isinstance(payload, dict) else []
-                llm_status = "connected" if models else "no_model_loaded"
-            else:
-                llm_status = "error"
+            try:
+                resp = await client.get(f"{settings.LLM_BASE_URL.replace('/v1', '')}/v1/models")
+                if resp.status_code == 200:
+                    payload = resp.json() if resp.content else {}
+                    models = payload.get("data", []) if isinstance(payload, dict) else []
+                    llm_status = "connected" if models else "no_model_loaded"
+                else:
+                    llm_status = "error"
+            except Exception:
+                llm_status = "disconnected"
+
+            try:
+                resp = await client.get(f"{settings.OLLAMA_URL}/api/tags")
+                embeddings_status = "connected" if resp.status_code == 200 else "error"
+            except Exception:
+                embeddings_status = "disconnected"
     except Exception:
         llm_status = "disconnected"
-
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.OLLAMA_URL}/api/tags")
-            embeddings_status = "connected" if resp.status_code == 200 else "error"
-    except Exception:
         embeddings_status = "disconnected"
 
     web_search_status = "configured" if any(

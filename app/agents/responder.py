@@ -15,12 +15,14 @@ async def responder(state: PathfinderState) -> PathfinderState:
     """Render the final answer with minimal changes."""
     step_progress = list(state.get("step_progress", []))
 
+    prior_messages = list(state.get("messages", []) or [])
+
     if state.get("is_blocked"):
         block_reason = str(state.get("block_reason", "") or "Your request was blocked.")
         return {
             **state,
             "final_answer": block_reason,
-            "messages": [AIMessage(content=block_reason)],
+            "messages": [*prior_messages, AIMessage(content=block_reason)],
             "step_progress": step_progress,
         }
 
@@ -32,6 +34,6 @@ async def responder(state: PathfinderState) -> PathfinderState:
     return {
         **state,
         "final_answer": final_answer,
-        "messages": [AIMessage(content=final_answer)],
+        "messages": [*prior_messages, AIMessage(content=final_answer)],
         "step_progress": step_progress,
     }
