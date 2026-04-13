@@ -30,3 +30,24 @@ async def get_checkpointer() -> AsyncSqliteSaver:
         _checkpointer = AsyncSqliteSaver(conn)
         await _checkpointer.setup()
     return _checkpointer
+
+
+async def reset_checkpointer_storage() -> None:
+    """Close checkpointer connection and remove persisted chat storage."""
+    global _checkpointer
+    if _checkpointer is not None:
+        try:
+            conn = getattr(_checkpointer, "conn", None)
+            if conn is not None:
+                await conn.close()
+        except Exception:
+            pass
+        _checkpointer = None
+
+    for suffix in ("", "-wal", "-shm"):
+        path = f"{settings.SQLITE_DB_PATH}{suffix}"
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass

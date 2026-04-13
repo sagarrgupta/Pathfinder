@@ -3,6 +3,11 @@
 import uuid
 
 
+def generate_student_id() -> str:
+    """Generate a unique local student/profile ID."""
+    return f"student_{uuid.uuid4().hex[:12]}"
+
+
 def generate_session_id() -> str:
     """Generate a unique session ID."""
     return f"session_{uuid.uuid4().hex[:12]}"
@@ -16,3 +21,18 @@ def generate_document_id() -> str:
 def generate_chunk_id(document_id: str, index: int) -> str:
     """Generate a unique chunk ID for a document."""
     return f"{document_id}_chunk_{index}"
+
+
+def generate_evidence_id() -> str:
+    """Generate a unique evidence ID."""
+    return f"evidence_{uuid.uuid4().hex[:12]}"
+
+
+def generate_memory_id(prefix: str = "memory") -> str:
+    """Generate a unique layered-memory ID."""
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def generate_replay_id() -> str:
+    """Generate a unique replay artifact ID."""
+    return f"replay_{uuid.uuid4().hex[:12]}"

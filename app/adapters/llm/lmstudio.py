@@ -1,37 +1,32 @@
-"""LM Studio LLM adapter.
-
-Provides singleton ChatOpenAI instances for text and vision models
-running on LM Studio's OpenAI-compatible API.
-
-Includes a post-generation repetition guard that detects and truncates
-outputs where the model gets stuck in a loop.
-
-Debug logging: every LLM call is written to data/llm_debug.log with
-timestamps, prompts (truncated), full responses, and elapsed time.
-"""
+"""LM Studio LLM adapter and output quality helpers."""
 
 from __future__ import annotations
 
-import json
-import os
 import re
 import logging
 import time
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Optional
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import BaseMessage, AIMessage
+from langchain_core.messages import BaseMessage
 
 from app.config.settings import settings
-
 log = logging.getLogger("pathfinder.llm")
 
-_text_llm: Optional["LoggingChatOpenAI"] = None
+_text_llms: dict[str, "LoggingChatOpenAI"] = {}
 _vision_llm: Optional["LoggingChatOpenAI"] = None
-
-# Debug log file path
-_DEBUG_LOG_PATH = Path("data/llm_debug.log")
+_REASONING_KEYS = ("reasoning_content", "thinking", "reasoning", "refusal")
+_DEBUG_LOG_PATH = Path(settings.LLM_DEBUG_LOG_PATH)
+_SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+_REASONING_ALIASES = {
+    "off": "none",
+    "false": "none",
+    "0": "none",
+    "on": "medium",
+    "true": "medium",
+    "1": "medium",
+}
 
 
 # ── Logging wrapper ─────────────────────────────────────────────────
@@ -52,51 +47,68 @@ class LoggingChatOpenAI(ChatOpenAI):
         label = object.__getattribute__(self, "_llm_label")
         start = time.time()
 
-        # Extract prompt info for logging
-        prompt_summary = _summarize_input(input)
-
-        _write_debug(f"[{label.upper()}] ── REQUEST ──\n{prompt_summary}\n")
+        if settings.LLM_DEBUG_LOG_ENABLED:
+            _log_request(label, input)
 
         try:
             result = await super().ainvoke(input, config=config, **kwargs)
-            elapsed = time.time() - start
-
-            content = result.content if isinstance(result.content, str) else str(result.content)
-
-            # Log full response structure to diagnose empty content
-            extra_info = []
-            if hasattr(result, "additional_kwargs") and result.additional_kwargs:
-                extra_info.append(f"additional_kwargs keys: {list(result.additional_kwargs.keys())}")
-                # Check for thinking/reasoning content
-                for key in ("reasoning_content", "thinking", "reasoning", "refusal"):
-                    if key in result.additional_kwargs:
-                        val = result.additional_kwargs[key]
-                        extra_info.append(f"  {key} ({type(val).__name__}): {_trunc(str(val), 1500)}")
-            if hasattr(result, "response_metadata") and result.response_metadata:
-                extra_info.append(f"response_metadata: {_trunc(str(result.response_metadata), 500)}")
-            if hasattr(result, "tool_calls") and result.tool_calls:
-                extra_info.append(f"tool_calls: {result.tool_calls}")
-            extra_info.append(f"content type: {type(result.content).__name__}")
-            if isinstance(result.content, list):
-                extra_info.append(f"content list: {_trunc(str(result.content), 1000)}")
-            extra_str = "\n".join(extra_info)
-
-            _write_debug(
-                f"[{label.upper()}] ── RESPONSE ({elapsed:.1f}s, {len(content)} chars) ──\n"
-                f"content: {_trunc(content, 2000)}\n"
-                f"{extra_str}\n"
-                f"{'─' * 60}\n"
-            )
+            if settings.LLM_DEBUG_LOG_ENABLED:
+                _log_response(label, result, elapsed=time.time() - start)
             return result
 
         except Exception as exc:
-            elapsed = time.time() - start
-            _write_debug(
-                f"[{label.upper()}] ── ERROR ({elapsed:.1f}s) ──\n"
-                f"{type(exc).__name__}: {exc}\n"
-                f"{'─' * 60}\n"
-            )
+            if settings.LLM_DEBUG_LOG_ENABLED:
+                _log_error(label, exc, elapsed=time.time() - start)
             raise
+
+
+def _log_request(label: str, input_val: Any) -> None:
+    """Write a request trace entry for one LLM call."""
+    prompt_summary = _summarize_input(input_val)
+    _write_debug(f"[{label.upper()}] ── REQUEST ──\n{prompt_summary}\n")
+
+
+def _log_response(label: str, result: BaseMessage, *, elapsed: float) -> None:
+    """Write a response trace entry including useful metadata."""
+    content = result.content if isinstance(result.content, str) else str(result.content)
+    extra_str = "\n".join(_response_debug_lines(result))
+    _write_debug(
+        f"[{label.upper()}] ── RESPONSE ({elapsed:.1f}s, {len(content)} chars) ──\n"
+        f"content: {_trunc(content, 2000)}\n"
+        f"{extra_str}\n"
+        f"{'─' * 60}\n"
+    )
+
+
+def _log_error(label: str, exc: Exception, *, elapsed: float) -> None:
+    """Write an error trace entry for one failed LLM call."""
+    _write_debug(
+        f"[{label.upper()}] ── ERROR ({elapsed:.1f}s) ──\n"
+        f"{type(exc).__name__}: {exc}\n"
+        f"{'─' * 60}\n"
+    )
+
+
+def _response_debug_lines(result: BaseMessage) -> list[str]:
+    """Return compact debug lines describing one model response."""
+    lines: list[str] = []
+    additional_kwargs = getattr(result, "additional_kwargs", None)
+    if additional_kwargs:
+        lines.append(f"additional_kwargs keys: {list(additional_kwargs.keys())}")
+        for key in _REASONING_KEYS:
+            if key in additional_kwargs:
+                value = additional_kwargs[key]
+                lines.append(f"  {key} ({type(value).__name__}): {_trunc(str(value), 1500)}")
+    response_metadata = getattr(result, "response_metadata", None)
+    if response_metadata:
+        lines.append(f"response_metadata: {_trunc(str(response_metadata), 500)}")
+    tool_calls = getattr(result, "tool_calls", None)
+    if tool_calls:
+        lines.append(f"tool_calls: {tool_calls}")
+    lines.append(f"content type: {type(result.content).__name__}")
+    if isinstance(result.content, list):
+        lines.append(f"content list: {_trunc(str(result.content), 1000)}")
+    return lines
 
 
 def _summarize_input(input_val: Any) -> str:
@@ -108,9 +120,7 @@ def _summarize_input(input_val: Any) -> str:
             role = msg.get("role", "?")
             content = msg.get("content", "")
             if isinstance(content, list):
-                # Multimodal content (vision)
-                text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
-                content = " ".join(text_parts) + " [+image]" if any(p.get("type") == "image_url" for p in content if isinstance(p, dict)) else " ".join(text_parts)
+                content = _summarize_multimodal_content(content)
             lines.append(f"  {role}: {_trunc(str(content), 500)}")
         elif isinstance(msg, BaseMessage):
             role = msg.type
@@ -121,6 +131,24 @@ def _summarize_input(input_val: Any) -> str:
         else:
             lines.append(f"  ?: {_trunc(str(msg), 300)}")
     return "\n".join(lines)
+
+
+def _summarize_multimodal_content(parts: list[Any]) -> str:
+    """Summarize multimodal content for log readability without dumping payloads."""
+    text_parts = [
+        part.get("text", "")
+        for part in parts
+        if isinstance(part, dict) and part.get("type") == "text"
+    ]
+    has_image = any(
+        part.get("type") == "image_url"
+        for part in parts
+        if isinstance(part, dict)
+    )
+    text_summary = " ".join(text_parts).strip()
+    if has_image:
+        return f"{text_summary} [+image]".strip()
+    return text_summary
 
 
 def _trunc(text: str, max_len: int) -> str:
@@ -142,51 +170,102 @@ def _write_debug(text: str) -> None:
 
 
 # ── LLM Singletons ─────────────────────────────────────────────────
+def _build_llm(
+    *,
+    label: str,
+    model: str,
+    model_kwargs: dict[str, Any] | None = None,
+    extra_body: dict[str, Any] | None = None,
+) -> LoggingChatOpenAI:
+    """Build one LM Studio client with the shared connection settings."""
+    kwargs: dict[str, Any] = {
+        "llm_label": label,
+        "model": model,
+        "base_url": settings.LLM_BASE_URL,
+        "api_key": settings.LLM_API_KEY,
+    }
+    if model_kwargs:
+        kwargs["model_kwargs"] = model_kwargs
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+    return LoggingChatOpenAI(**kwargs)
 
 
-def get_text_llm() -> LoggingChatOpenAI:
-    """Return the singleton text LLM (gpt-oss-20b)."""
-    global _text_llm
-    if _text_llm is None:
-        _text_llm = LoggingChatOpenAI(
-            llm_label="text",
-            model=settings.LLM_MODEL,
-            base_url=settings.LLM_BASE_URL,
-            api_key=settings.LLM_API_KEY,
-            temperature=settings.LLM_TEMPERATURE,
-            max_tokens=settings.LLM_MAX_TOKENS,
-            request_timeout=settings.LLM_REQUEST_TIMEOUT,
-            model_kwargs={
-                "frequency_penalty": settings.LLM_FREQUENCY_PENALTY,
-                "presence_penalty": settings.LLM_PRESENCE_PENALTY,
+def _normalize_reasoning_effort(model: str, reasoning: str | None) -> str:
+    """Map app-level reasoning labels to what the configured model accepts."""
+    reasoning_key = str(reasoning or "medium").strip().lower() or "medium"
+
+    # Older LM Studio/Gemma flows sometimes used a binary on/off toggle.
+    # The current OpenAI-compatible API only accepts the standard effort enum.
+    if reasoning_key in _REASONING_ALIASES:
+        return _REASONING_ALIASES[reasoning_key]
+
+    if reasoning_key in _SUPPORTED_REASONING_EFFORTS:
+        return reasoning_key
+
+    log.warning(
+        "Unsupported reasoning value %r for model %r; falling back to 'medium'.",
+        reasoning_key,
+        model,
+    )
+    return "medium"
+
+
+def _is_gemma_4_model(model: str) -> bool:
+    """Return True when the configured text model is from the Gemma 4 family."""
+    lowered_model = str(model or "").strip().lower()
+    return "gemma-4" in lowered_model
+
+
+def _build_reasoning_config(model: str, reasoning: str | None) -> dict[str, Any]:
+    """Build model-specific reasoning settings for the current text model."""
+    reasoning_key = _normalize_reasoning_effort(model, reasoning)
+
+    if _is_gemma_4_model(model):
+        # Gemma 4 exposes thinking as a boolean prompt-template toggle rather
+        # than an OpenAI-style reasoning_effort enum.
+        enable_thinking = reasoning_key != "none"
+        return {
+            "cache_key": f"gemma4:{'thinking' if enable_thinking else 'no-thinking'}",
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": enable_thinking},
             },
+        }
+
+    return {
+        "cache_key": reasoning_key,
+        "model_kwargs": {"reasoning_effort": reasoning_key},
+    }
+
+
+def get_text_llm(reasoning: str | None = None) -> LoggingChatOpenAI:
+    """Return a cached text LLM for the requested reasoning setting."""
+    config = _build_reasoning_config(settings.LLM_MODEL, reasoning)
+    cache_key = str(config["cache_key"])
+    build_kwargs: dict[str, Any] = {}
+    if "model_kwargs" in config:
+        build_kwargs["model_kwargs"] = config["model_kwargs"]
+    if "extra_body" in config:
+        build_kwargs["extra_body"] = config["extra_body"]
+
+    if cache_key not in _text_llms:
+        _text_llms[cache_key] = _build_llm(
+            label=f"text:{cache_key}",
+            model=settings.LLM_MODEL,
+            **build_kwargs,
         )
-    return _text_llm
+    return _text_llms[cache_key]
 
 
 def get_vision_llm() -> LoggingChatOpenAI:
-    """Return the singleton vision LLM (qwen3-vl-8b)."""
+    """Return the singleton vision LLM."""
     global _vision_llm
     if _vision_llm is None:
-        _vision_llm = LoggingChatOpenAI(
-            llm_label="vision",
-            model=settings.VISION_MODEL,
-            base_url=settings.LLM_BASE_URL,
-            api_key=settings.LLM_API_KEY,
-            temperature=0.1,
-            max_tokens=settings.LLM_MAX_TOKENS,
-            request_timeout=settings.LLM_REQUEST_TIMEOUT,
-            model_kwargs={
-                "frequency_penalty": settings.LLM_FREQUENCY_PENALTY,
-                "presence_penalty": settings.LLM_PRESENCE_PENALTY,
-            },
-        )
+        _vision_llm = _build_llm(label="vision", model=settings.VISION_MODEL)
     return _vision_llm
 
 
 # ── Output Quality Guards ───────────────────────────────────────────
-
-
 # Control-token patterns that indicate the model hallucinated tool use
 # or produced internal formatting instead of a real answer.
 _GARBAGE_PATTERNS = (
@@ -195,36 +274,27 @@ _GARBAGE_PATTERNS = (
     "```json",  # Sometimes the model wraps its entire answer in a code block
 )
 
-# Minimum length for a "real" prose answer from an advisory agent
-_MIN_ANSWER_LEN = 80
-
-
 def is_garbage_output(text: str) -> bool:
     """Return True if the LLM output looks like garbage rather than a real answer.
 
     Detects:
     - Model control tokens (``<|channel|>``, ``<|im_end|>``, etc.)
-    - Extremely short outputs (< 80 chars) that are not valid prose
     - Outputs that are entirely JSON when prose was expected
     """
     if not text or not text.strip():
         return True
     stripped = text.strip()
-    if len(stripped) < _MIN_ANSWER_LEN:
-        # Very short — could still be valid for JSON-only agents, but
-        # advisory agents should produce longer answers.
-        log.debug("Output too short (%d chars): %s", len(stripped), stripped[:100])
-        return True
     for pattern in _GARBAGE_PATTERNS:
         if pattern in stripped:
             log.warning("Garbage pattern %r detected in output: %s", pattern, stripped[:120])
             return True
+    if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
+        log.debug("Output appears to be raw structured data, not prose: %s", stripped[:120])
+        return True
     return False
 
 
 # ── Repetition Guard ────────────────────────────────────────────────
-
-
 def strip_repetition(text: str, min_phrase_len: int = 20, max_repeats: int = 2) -> str:
     """Detect and truncate text where the model fell into a repetition loop.
 

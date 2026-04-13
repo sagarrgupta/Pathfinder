@@ -46,7 +46,6 @@ function generateSmartTitle(query) {
 export default function ChatPage() {
   const { state, dispatch, createSession } = useApp();
   const [files, setFiles] = useState([]);
-  const [isGlobalUpload, setIsGlobalUpload] = useState(false);
   const [replaceFlags, setReplaceFlags] = useState({});  // filename -> true if user chose to replace
   const abortRef = useRef(null);
 
@@ -76,7 +75,7 @@ export default function ChatPage() {
     // Check each newly added file for duplicates in the profile
     for (const file of justAdded) {
       try {
-        const { exists } = await checkDocumentExists(file.name);
+        const { exists } = await checkDocumentExists(file.name, state.activeStudentId);
         if (exists) {
           setDupDialog({ open: true, filename: file.name, pendingFile: file });
           // Remove this file from the list until user decides
@@ -147,7 +146,14 @@ export default function ChatPage() {
     let tokenBuffer = '';
 
     abortRef.current = chatSSE(
-      { query, sessionId: sid, files: pendingFiles, isGlobalUpload, replaceFilenames: pendingReplaceNames },
+      {
+        query,
+        sessionId: sid,
+        studentId: state.activeStudentId,
+        files: pendingFiles,
+        replaceFilenames: pendingReplaceNames,
+        reasoning: state.settings.reasoning || 'medium',
+      },
       {
         onProgress: (data) => {
           dispatch({
@@ -172,6 +178,19 @@ export default function ChatPage() {
                   confidence: data.confidence,
                   citations: data.citations,
                   method: data.method,
+                  qualityPath: data.quality_path,
+                  replayId: data.replay_id,
+                  dependencyStatus: data.dependency_status,
+                  stopReason: data.stop_reason,
+                  runtimeSnapshot: data.runtime_snapshot,
+                  selectedSpecialist: data.selected_specialist,
+                  routingScores: data.routing_scores,
+                  routingReason: data.routing_reason,
+                  toolCallLog: data.tool_call_log,
+                  specialistOutput: data.specialist_output,
+                  documentRoles: data.document_roles,
+                  transcriptStates: data.transcript_states,
+                  reasoning: state.settings.reasoning || 'medium',
                 },
               },
             },
@@ -371,8 +390,8 @@ export default function ChatPage() {
         isStreaming={state.isStreaming}
         files={files}
         onFilesChange={handleFilesChange}
-        isGlobalUpload={isGlobalUpload}
-        onGlobalUploadChange={setIsGlobalUpload}
+        reasoning={state.settings.reasoning || 'medium'}
+        onReasoningChange={(value) => dispatch({ type: 'SET_SETTINGS', payload: { reasoning: value } })}
       />
     </div>
   );

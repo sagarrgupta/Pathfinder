@@ -12,10 +12,10 @@ const ICONS = {
 };
 
 const STYLES = {
-  success: 'border-green-200 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-200',
-  error: 'border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200',
-  warning: 'border-yellow-200 bg-yellow-50 text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200',
-  info: 'border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200',
+  success: 'border border-emerald-200/70 bg-card text-foreground dark:border-emerald-900/50',
+  error: 'border border-red-200/70 bg-card text-foreground dark:border-red-900/50',
+  warning: 'border border-amber-200/70 bg-card text-foreground dark:border-amber-900/50',
+  info: 'border border-border bg-card text-foreground',
 };
 
 const ICON_STYLES = {
@@ -59,22 +59,24 @@ export function ToastProvider({ children }) {
       {children}
 
       {/* Toast Container */}
-      <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none max-w-sm w-full">
+      <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-full max-w-sm flex-col gap-2">
         {toasts.map((t) => {
           const Icon = ICONS[t.type];
           return (
             <div
               key={t.id}
               className={cn(
-                'pointer-events-auto flex items-start gap-3 px-4 py-3 rounded-lg border shadow-lg animate-fade-in-up',
+                'pointer-events-auto flex items-start gap-3 rounded-2xl px-4 py-3 shadow-[0_12px_32px_rgba(15,23,42,0.08)] animate-fade-in-up backdrop-blur-sm',
                 STYLES[t.type]
               )}
             >
               <Icon className={cn('h-5 w-5 flex-shrink-0 mt-0.5', ICON_STYLES[t.type])} />
-              <p className="text-sm flex-1 leading-relaxed">{t.message}</p>
+              <p className="flex-1 text-sm leading-relaxed">{t.message}</p>
               <button
+                type="button"
+                aria-label="Dismiss notification"
                 onClick={() => removeToast(t.id)}
-                className="flex-shrink-0 opacity-60 hover:opacity-100 transition-opacity"
+                className="flex-shrink-0 rounded-md p-1 opacity-60 transition-opacity hover:bg-muted hover:opacity-100"
               >
                 <X className="h-4 w-4" />
               </button>

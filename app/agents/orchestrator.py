@@ -1,255 +1,188 @@
-"""Node 2: Orchestrator.
+"""LLM-powered specialist selector for the Pathfinder flow.
 
-Classifies user intent, checks what data is available, and creates an
-execution plan (ordered list of nodes to invoke).
+Uses the text LLM as a lightweight classifier to semantically rank
+specialists instead of relying on brittle keyword lists.
 """
 
 from __future__ import annotations
 
-import json
 import logging
+import re
 from typing import Any
 
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import get_full_profile
+from app.core.quality import build_session_summary
 from app.core.state import PathfinderState
+from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.orchestrator")
 
-_SYSTEM_PROMPT = """You are the Orchestrator of Pathfinder, an AI academic and career guidance system for students.
+_SPECIALIST_DESCRIPTIONS: dict[str, str] = {
+    "academic": (
+        "Academic records, degree progress, institutional policies, "
+        "academic deadlines, courses, grades, graduation requirements, "
+        "enrollment, and eligibility."
+    ),
+    "career": (
+        "Career planning, job search, professional development, "
+        "skill assessment, market-oriented advice, resume and interview help."
+    ),
+    "general": (
+        "Profile management, uploaded documents, cross-domain requests, "
+        "greetings, follow-ups, memory-aware questions, and anything "
+        "that does not clearly belong to a single specialist."
+    ),
+}
 
-Your job is to analyze the user's query and decide which specialist agents should handle it.
+_ROUTING_PROMPT = """You are a query classifier. Given a student's query and optional context, score how relevant each specialist is on a scale of 0 to 10.
 
-Available agents:
-- clarifier: Ask the user for more information when the query is ambiguous or missing key details
-- doc_analyst: Process uploaded documents (PDFs, images, DOCX) — extract text, create chunks, extract entities
-- profile_manager: Query or update the student's knowledge graph profile (courses, skills, GPA, etc.)
-- web_researcher: Search the web for external information (university pages, job postings, reviews, any URL the user provides)
-- academic_advisor: Provide academic guidance (course planning, university comparison, program requirements)
-- career_planner: Provide career guidance (job matching, skill gap analysis, career paths, salary insights)
-- interview_prep: Help with interview preparation (mock questions, STAR answers, company research)
+Specialists:
+{specialists}
 
-Analyze the user's query and respond with a JSON object:
-{{
-    "intent": "academic|career|interview|document|profile|general|greeting|research",
-    "plan": ["agent1", "agent2", ...],
-    "missing_info": [],
-    "reasoning": "brief explanation of your routing decision"
-}}
+Student query: "{query}"
+{context_line}
 
-Rules:
-1. If the user uploaded files, ALWAYS include "doc_analyst" first.
-2. If the query references anything personal (grades, skills, GPA, courses, profile, university, name, "my", "I"), include "profile_manager".
-3. If the query asks about specific courses, programs, universities, job listings, URLs, reviews, or anything external, include "web_researcher".
-4. If the query contains a URL (https://...), ALWAYS include "web_researcher" — it will fetch the page directly.
-5. Only route to "clarifier" if the query is genuinely ambiguous AND profile data cannot help resolve it.
-6. For greetings or simple chat (like "hello", "hi", "thanks"), return intent "greeting" with an empty plan.
-7. Profile_manager MUST come before agents that need profile data (academic_advisor, career_planner, interview_prep).
-8. For academic, career, or interview queries, ALWAYS include profile_manager in the plan.
-9. NEVER return just ["clarifier"] if the student has profile data available.
-10. For course recommendations or university comparisons, ALWAYS include "web_researcher".
-11. A query can have MIXED intents (e.g., "based on my resume, find me jobs" is both profile + career). Pick the PRIMARY intent but include ALL relevant agents.
-12. Use intent "research" when the user asks to read, summarize, or analyze external content (URLs, reviews, articles).
-13. Consider the conversation history — if the user is following up on a previous topic, maintain context.
-"""
+Return ONLY a JSON object with scores, nothing else:
+{{"academic": <0-10>, "career": <0-10>, "general": <0-10>}}"""
+
+_LIGHT_CONVERSATION_RE = re.compile(
+    r"^\s*(hi|hello|hey|yo|good morning|good afternoon|good evening|thanks|thank you|bye|goodbye|see you)\b[!. ]*$",
+    re.IGNORECASE,
+)
+
+
+def _build_context_hint(profile: dict[str, Any], files: list[Any]) -> str:
+    """Build a one-line context hint from the profile and request."""
+    parts: list[str] = []
+    if files:
+        parts.append(f"User attached {len(files)} file(s)")
+    root = profile.get("root_properties", {}) if isinstance(profile.get("root_properties"), dict) else {}
+    if root:
+        fields = [f"{k}={v}" for k, v in list(root.items())[:4] if v]
+        if fields:
+            parts.append(f"Profile: {', '.join(fields)}")
+    return "; ".join(parts)
+
+
+async def _llm_route(query: str, context_hint: str) -> dict[str, float] | None:
+    """Ask the LLM to score specialist relevance. Returns None on failure."""
+    specialists_block = "\n".join(
+        f"- {name}: {desc}" for name, desc in _SPECIALIST_DESCRIPTIONS.items()
+    )
+    context_line = f"Context: {context_hint}" if context_hint else ""
+    prompt = _ROUTING_PROMPT.format(
+        specialists=specialists_block,
+        query=query,
+        context_line=context_line,
+    )
+    try:
+        llm = get_text_llm("none")
+        result = await llm.ainvoke([HumanMessage(content=prompt)])
+        text = result.content if isinstance(result.content, str) else str(result.content)
+        parsed = parse_json_object(text)
+        if isinstance(parsed, dict):
+            scores: dict[str, float] = {}
+            for key in ("academic", "career", "general"):
+                val = parsed.get(key, 0)
+                try:
+                    scores[key] = float(val)
+                except (TypeError, ValueError):
+                    scores[key] = 0.0
+            return scores
+    except Exception as exc:
+        log.warning("LLM routing failed (%s), falling back to heuristic", exc)
+    return None
+
+
+def _heuristic_route(query: str, files: list[Any]) -> dict[str, float]:
+    """Fast keyword-free heuristic as fallback when LLM routing is unavailable."""
+    scores: dict[str, float] = {"academic": 0.0, "career": 0.0, "general": 0.0}
+    if files:
+        scores["general"] += 4.0
+    lowered = query.lower()
+    if "http://" in lowered or "https://" in lowered:
+        scores["academic"] += 1.0
+        scores["career"] += 1.0
+    if _is_light_conversation(query):
+        scores["general"] += 5.0
+    return scores
+
+
+def _durable_context(profile: dict[str, object], session_summary: dict[str, object]) -> dict[str, object]:
+    personal = profile.get("root_properties", {}) if isinstance(profile.get("root_properties", {}), dict) else {}
+    all_entities = profile.get("all_entities", {}) if isinstance(profile.get("all_entities", {}), dict) else {}
+    return {
+        "sections_count": len(profile.get("sections", [])) if isinstance(profile.get("sections", []), list) else 0,
+        "entity_types_count": sum(
+            1
+            for label, items in all_entities.items()
+            if label not in {"CandidateFact", "MemoryItem", "Evidence", "Section", "SchemaSection"} and isinstance(items, list) and items
+        ),
+        "documents_count": len(all_entities.get("Document", [])) if isinstance(all_entities.get("Document", []), list) else 0,
+    }
+
+
+def _is_light_conversation(query: str) -> bool:
+    return bool(_LIGHT_CONVERSATION_RE.match(str(query or "").strip()))
 
 
 async def orchestrator(state: PathfinderState) -> PathfinderState:
-    """Classify intent and create an execution plan."""
-    query = state.get("query", "")
-    files = state.get("files", [])
-    student_id = state.get("student_id", "default")
+    """Score the request against the 3 specialist prompt families using the LLM."""
+    query = str(state.get("query", "") or "")
+    files = list(state.get("files", []))
+    request_plan = state.get("request_plan", {}) if isinstance(state.get("request_plan", {}), dict) else {}
+    student_id = str(state.get("student_id", "") or "")
+
+    profile = await get_full_profile(student_id)
+    session_summary = build_session_summary(profile, list(state.get("messages", [])), query)
+    context_hint = _build_context_hint(profile, files)
+
+    routing_scores = await _llm_route(query, context_hint)
+    routing_method = "llm"
+
+    if routing_scores is None:
+        routing_scores = _heuristic_route(query, files)
+        routing_method = "heuristic"
+
+    if files:
+        routing_scores["general"] = routing_scores.get("general", 0.0) + 4.0
+    if request_plan.get("workflow_hint") == "student_state_update":
+        routing_scores["general"] = routing_scores.get("general", 0.0) + 2.0
+
+    selected_specialist = max(
+        routing_scores.items(),
+        key=lambda item: (item[1], item[0] == "general"),
+    )[0]
+    top_score = float(routing_scores.get(selected_specialist, 0.0) or 0.0)
+
+    if top_score <= 0.0 and _is_light_conversation(query):
+        routing_reason = "Light conversational turn — routed to general."
+    elif top_score <= 0.0:
+        routing_reason = "No strong signal — routed to general as fallback."
+    else:
+        routing_reason = (
+            f"Selected {selected_specialist} via {routing_method} routing "
+            f"(score {top_score:.1f})."
+        )
 
     step_progress = list(state.get("step_progress", []))
-    step_progress.append("Analyzing your question...")
+    step_progress.append(f"Routing ({routing_method}): {selected_specialist}")
 
-    llm = get_text_llm()
-
-    # Pre-check: does the student have profile data in Neo4j?
-    try:
-        existing_profile = await get_full_profile(student_id)
-        has_profile = bool(
-            existing_profile.get("courses")
-            or existing_profile.get("skills")
-            or existing_profile.get("goals")
-            or existing_profile.get("personal", {}).get("name")
-        )
-        if has_profile:
-            profile_summary_parts = []
-            personal = existing_profile.get("personal", {})
-            if personal.get("name"):
-                profile_summary_parts.append(f"Name: {personal['name']}")
-            if personal.get("university"):
-                profile_summary_parts.append(f"University: {personal['university']}")
-            if personal.get("gpa"):
-                profile_summary_parts.append(f"GPA: {personal['gpa']}")
-            courses = existing_profile.get("courses", [])
-            if courses:
-                course_names = ", ".join(c.get("name", c.get("code", "?")) for c in courses[:5])
-                profile_summary_parts.append(f"{len(courses)} course(s): {course_names}")
-            else:
-                profile_summary_parts.append("No courses recorded yet")
-            skills = existing_profile.get("skills", [])
-            if skills:
-                skill_names = ", ".join(s.get("name", "") for s in skills[:5])
-                profile_summary_parts.append(f"Skills: {skill_names}")
-            goals = existing_profile.get("goals", [])
-            if goals:
-                goal_names = ", ".join(g.get("name", "") for g in goals[:3])
-                profile_summary_parts.append(f"Goals: {goal_names}")
-            profile_context = "Student has profile data in database: " + "; ".join(profile_summary_parts)
-        else:
-            profile_context = "Student has no profile data yet — profile_manager will return empty."
-    except Exception:
-        has_profile = False
-        profile_context = "Could not check profile status."
-
-    # Build context about what data we have
-    context_parts = []
-    if files:
-        context_parts.append(f"User uploaded {len(files)} file(s): {[f.get('filename', 'unknown') for f in files]}")
-    context_parts.append(profile_context)
-
-    # Add conversation history for follow-up awareness
-    messages = state.get("messages", [])
-    if len(messages) > 1:
-        # Summarize recent conversation turns (skip current query)
-        history_lines = []
-        for msg in messages[:-1]:  # Everything except the current message
-            if isinstance(msg, tuple):
-                role, content = msg
-                history_lines.append(f"{role}: {content[:150]}")
-            elif hasattr(msg, "content"):
-                role = getattr(msg, "type", "unknown")
-                history_lines.append(f"{role}: {msg.content[:150]}")
-        if history_lines:
-            context_parts.append("Recent conversation:\n" + "\n".join(history_lines[-6:]))
-
-    # Detect URLs in query
-    if "http" in query.lower():
-        context_parts.append("NOTE: The query contains URL(s) — web_researcher can fetch page content directly.")
-
-    context = "\n".join(context_parts)
-
-    response = await llm.ainvoke([
-        SystemMessage(content=_SYSTEM_PROMPT),
-        HumanMessage(content=f"Context:\n{context}\n\nUser query: {query}"),
-    ])
-
-    # Parse the LLM response
-    try:
-        content = response.content
-        # Try to extract JSON from the response
-        json_start = content.find("{")
-        json_end = content.rfind("}") + 1
-        if json_start >= 0 and json_end > json_start:
-            parsed = json.loads(content[json_start:json_end])
-        else:
-            parsed = {"intent": "general", "plan": ["profile_manager"], "missing_info": []}
-    except (json.JSONDecodeError, AttributeError):
-        log.warning("Failed to parse orchestrator response, using defaults")
-        parsed = {"intent": "general", "plan": ["profile_manager"], "missing_info": []}
-
-    intent = parsed.get("intent", "general")
-    plan = parsed.get("plan", [])
-    missing_info = parsed.get("missing_info", [])
-
-    # ── Guardrail: ensure profile_manager is included for personal queries ──
-    personal_intents = {"academic", "career", "interview", "profile"}
-    if intent in personal_intents and "profile_manager" not in plan:
-        plan.insert(0, "profile_manager")
-        log.info("Guardrail: inserted profile_manager for %s intent", intent)
-
-    # ── Guardrail: include web_researcher for recommendation queries ──
-    recommendation_keywords = ["course", "recommend", "next semester", "should i take",
-                               "university", "compare", "job", "position", "available"]
-    query_lower = query.lower()
-    if any(kw in query_lower for kw in recommendation_keywords):
-        if "web_researcher" not in plan:
-            # Insert web_researcher before advisory agents
-            advisory = {"academic_advisor", "career_planner", "interview_prep"}
-            insert_idx = len(plan)
-            for i, node in enumerate(plan):
-                if node in advisory:
-                    insert_idx = i
-                    break
-            plan.insert(insert_idx, "web_researcher")
-            log.info("Guardrail: inserted web_researcher for recommendation query")
-
-    # ── Guardrail: web_researcher must come before advisory agents ──
-    if "web_researcher" in plan:
-        wr_idx = plan.index("web_researcher")
-        advisory_agents_for_order = {"academic_advisor", "career_planner", "interview_prep"}
-        for agent in advisory_agents_for_order:
-            if agent in plan:
-                agent_idx = plan.index(agent)
-                if agent_idx < wr_idx:
-                    # Move web_researcher before this agent
-                    plan.remove("web_researcher")
-                    plan.insert(agent_idx, "web_researcher")
-                    log.info("Guardrail: moved web_researcher before %s", agent)
-                    break
-
-    # ── Guardrail: profile_manager must come before advisory agents ──
-    advisory_agents = {"academic_advisor", "career_planner", "interview_prep"}
-    if "profile_manager" in plan:
-        pm_idx = plan.index("profile_manager")
-        for agent in advisory_agents:
-            if agent in plan:
-                agent_idx = plan.index(agent)
-                if agent_idx < pm_idx:
-                    plan.remove("profile_manager")
-                    plan.insert(agent_idx, "profile_manager")
-                    break
-
-    # ── Guardrail: URL queries must include web_researcher ──
-    if "http" in query_lower and "web_researcher" not in plan:
-        plan.insert(0 if "profile_manager" not in plan else plan.index("profile_manager") + 1, "web_researcher")
-        log.info("Guardrail: inserted web_researcher for URL query")
-
-    # ── Guardrail: intent MUST have a matching advisory agent ──
-    # Without this, the plan can end at web_researcher with no agent
-    # that actually generates a draft_answer.
-    _intent_to_agent = {
-        "career": "career_planner",
-        "academic": "academic_advisor",
-        "interview": "interview_prep",
-        "research": "academic_advisor",  # research queries get academic_advisor to synthesize
-    }
-    if intent in _intent_to_agent:
-        required_agent = _intent_to_agent[intent]
-        if required_agent not in plan:
-            plan.append(required_agent)
-            log.info("Guardrail: inserted %s for %s intent", required_agent, intent)
-
-    # Determine next node
-    if intent == "greeting":
-        next_node = "responder"
-    elif plan:
-        next_node = plan[0]
-    else:
-        next_node = "responder"
-
-    _plan_labels = {
-        "profile_manager": "Profile",
-        "web_researcher": "Research",
-        "academic_advisor": "Academic",
-        "career_planner": "Career",
-        "interview_prep": "Interview",
-        "doc_analyst": "Documents",
-        "clarifier": "Clarify",
-    }
-    plan_display = " → ".join(_plan_labels.get(p, p) for p in plan) if plan else "direct response"
-    step_progress.append(f"Intent: {intent} — Plan: {plan_display}")
-    log.info("Orchestrator: intent=%s plan=%s next=%s", intent, plan, next_node)
-
+    log.info(
+        "Orchestrator selected specialist=%s method=%s scores=%s",
+        selected_specialist, routing_method, routing_scores,
+    )
     return {
         **state,
-        "intent": intent,
-        "plan": plan,
-        "next_node": next_node,
-        "missing_info": missing_info,
+        "selected_specialist": selected_specialist,
+        "routing_scores": routing_scores,
+        "routing_reason": routing_reason,
+        "profile_data": profile,
+        "session_summary": session_summary,
+        "durable_profile_facts": _durable_context(profile, session_summary),
+        "next_node": "specialist_runner",
         "step_progress": step_progress,
     }

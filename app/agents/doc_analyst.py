@@ -1,7 +1,7 @@
 """Node 4: Doc Analyst.
 
 Processes uploaded documents through the adaptive pipeline:
-  1. Extract text (pypdf → vision fallback)
+  1. Extract text (pypdf -> vision fallback)
   2. Chunk the text
   3. Generate embeddings and store in Neo4j vector index
   4. Extract entities and store in Neo4j knowledge graph
@@ -13,60 +13,53 @@ import json
 import logging
 from typing import Any
 
-from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from app.adapters.embeddings.ollama import get_embeddings
-from app.adapters.llm.lmstudio import get_text_llm
+from app.adapters.embeddings.ollama import EmbeddingServiceError, aembed_documents
 from app.adapters.neo4j.graph_store import (
     store_document_node,
-    store_extracted_entities,
+    store_evidence,
 )
 from app.adapters.neo4j.vector_store import store_chunks
-from app.adapters.pdf.extractor import (
-    extract_text_from_pdf,
-    extract_text_from_image,
-    extract_text_from_docx,
-    get_file_type,
-)
+from app.adapters.pdf.extractor import get_file_type
 from app.config.settings import settings
 from app.core.state import PathfinderState
+from app.services.execution_registry import execute_document_ingestion
+from app.services.document_roles import infer_document_role
+from app.services.document_ingestion import execute_document_ingestion_agent
+from app.services.transcript_state import build_transcript_state
+from app.services.runtime_recovery import (
+    recovery_for_document_embedding_failure,
+    recovery_for_document_extraction_failure,
+    recovery_for_empty_document_extraction,
+    recovery_for_entity_extraction_failure,
+)
 from app.utils.ids import generate_document_id, generate_chunk_id
 
 log = logging.getLogger("pathfinder.agents.doc_analyst")
 
-_ENTITY_EXTRACTION_SYSTEM = (
-    "You are a JSON entity extractor. You ALWAYS respond with a single JSON object and NOTHING else. "
-    "No explanations, no markdown, no commentary — ONLY valid JSON."
-)
-
-_ENTITY_EXTRACTION_USER = '''Extract entities from the document below. Return ONLY this JSON structure:
-
-{"entities":[{"label":"LABEL","properties":{"name":"VALUE"},"relationship":"REL"}],"student_properties":{"name":"","gpa":"","university":"","program":""}}
-
-Label must be one of: Skill, Company, Project, Course, Goal, Interest, Department
-Relationship must be one of: HAS_SKILL, WORKED_AT, COMPLETED, TOOK, HAS_GOAL, INTERESTED_IN, IN_DEPARTMENT
-
-Example for a resume:
-{"entities":[{"label":"Skill","properties":{"name":"Python","proficiency":"advanced"},"relationship":"HAS_SKILL"},{"label":"Company","properties":{"name":"Google","role":"Software Engineer","start_date":"2020","end_date":"2023"},"relationship":"WORKED_AT"},{"label":"Project","properties":{"name":"Search Optimizer","description":"Improved search ranking"},"relationship":"COMPLETED"}],"student_properties":{"name":"Jane Doe","university":"Stanford"}}
-
-IMPORTANT: Output ONLY the JSON. No other text before or after it.
-
---- DOCUMENT START ---
-'''
+_EXTRACTED_TEXT_PREVIEW_LIMIT = 12000
 
 
 async def doc_analyst(state: PathfinderState) -> PathfinderState:
     """Process uploaded files: extract, chunk, embed, store."""
     files = state.get("files", [])
-    session_id = state.get("session_id", "")
-    student_id = state.get("student_id", "default")
-    is_global = state.get("is_global_upload", False)
-    scope = "global" if is_global else "session"
+    files = list(files) if isinstance(files, list) else []
+    student_id = state.get("student_id", "")
+    query = str(state.get("query", "") or "")
 
     step_progress = list(state.get("step_progress", []))
     all_entities: list[dict[str, Any]] = []
+    all_relationships: list[dict[str, Any]] = []
+    all_candidate_facts: list[dict[str, Any]] = []
+    all_memory_items: list[dict[str, Any]] = []
+    all_promoted_entities: list[dict[str, Any]] = []
     total_chunks = 0
+    document_roles: list[dict[str, Any]] = []
+    transcript_states: list[dict[str, Any]] = []
+    extracted_documents: list[dict[str, Any]] = []
+    patch_summaries: list[dict[str, Any]] = []
+    recovery_events = list(state.get("recovery_events", []))
 
     if not files:
         step_progress.append("No files to process")
@@ -77,10 +70,10 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         chunk_overlap=settings.CHUNK_OVERLAP,
         separators=["\n\n", "\n", ". ", " ", ""],
     )
-    embeddings_model = get_embeddings()
-    llm = get_text_llm()
 
     for file_info in files:
+        if not isinstance(file_info, dict):
+            continue
         filename = file_info.get("filename", "document.pdf")
         content = file_info.get("content", b"")
 
@@ -89,13 +82,18 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
 
         # Step 1: Extract text (adaptive — route by file type)
         file_type = get_file_type(filename)
-        if file_type == "pdf":
-            pages = await extract_text_from_pdf(content, filename)
-        elif file_type == "image":
-            step_progress.append(f"Analyzing image with vision model...")
-            pages = await extract_text_from_image(content, filename)
-        elif file_type == "docx":
-            pages = await extract_text_from_docx(content, filename)
+        if file_type in {"pdf", "image", "docx"}:
+            try:
+                if file_type == "image":
+                    step_progress.append(f"Analyzing image with vision model...")
+                pages = await execute_document_ingestion(file_type, content, filename)
+            except Exception as exc:
+                log.warning("Document extraction failed for %s: %s", filename, exc)
+                step_progress.append(f"Could not fully extract text from {filename}; skipping this file")
+                recovery_events.append(
+                    recovery_for_document_extraction_failure(filename, file_type, str(exc)).as_dict()
+                )
+                continue
         else:
             step_progress.append(f"Unsupported file type for {filename}, skipping")
             continue
@@ -104,81 +102,221 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
 
         if not full_text.strip():
             step_progress.append(f"Could not extract text from {filename}")
+            recovery_events.append(
+                recovery_for_empty_document_extraction(filename, file_type).as_dict()
+            )
             continue
+
+        inferred_role = infer_document_role(filename, full_text, file_type=file_type)
+        extracted_documents.append({
+            "document_id": doc_id,
+            "filename": filename,
+            "file_type": file_type,
+            "role": inferred_role.get("role", "general_document"),
+            "page_count": len(pages),
+            "text_preview": full_text[:_EXTRACTED_TEXT_PREVIEW_LIMIT],
+        })
+        document_roles.append({
+            "document_id": doc_id,
+            "filename": filename,
+            **inferred_role,
+        })
+        step_progress.append(
+            f"Inferred {inferred_role.get('role', 'general_document')} role for {filename}"
+        )
+
+        if inferred_role.get("role") == "transcript":
+            transcript_state = build_transcript_state(full_text, filename)
+            transcript_states.append({
+                "document_id": doc_id,
+                "filename": filename,
+                "role": "transcript",
+                "state": transcript_state,
+            })
+            step_progress.append(
+                f"Built transcript state for {filename}: "
+                f"{len(transcript_state.get('completed_courses', []))} completed, "
+                f"{len(transcript_state.get('planned_courses', []))} planned, "
+                f"{len(transcript_state.get('milestones', []))} milestones"
+            )
 
         # Step 2: Store document node
         await store_document_node(
             document_id=doc_id,
             filename=filename,
-            scope=scope,
             student_id=student_id,
-            session_id=session_id if scope == "session" else None,
+            doc_type=inferred_role.get("role", "general_document"),
+            file_type=file_type,
+            document_role=inferred_role.get("role", "general_document"),
+            role_confidence=float(inferred_role.get("confidence", 0.0) or 0.0),
+            role_signals=(
+                list(inferred_role.get("signals", []) or [])
+                if isinstance(inferred_role.get("signals", []), list)
+                else []
+            ),
         )
+        if inferred_role.get("role") == "transcript":
+            await store_evidence(
+                student_id=student_id,
+                source_type="transcript_state",
+                content=json.dumps(transcript_states[-1]["state"], ensure_ascii=True),
+                source_ref=f"doc:{doc_id}",
+                session_id=None,
+                metadata={
+                    "document_id": doc_id,
+                    "filename": filename,
+                    "document_role": "transcript",
+                    "summary": transcript_states[-1]["state"].get("summary", {}),
+                },
+            )
 
         # Step 3: Chunk and embed
         text_chunks = text_splitter.split_text(full_text)
-        chunk_texts = [c for c in text_chunks if c.strip()]
+        chunk_specs = [
+            {
+                "text": text,
+                "chunk_index": i,
+                "page_number": _page_for_chunk(text, pages),
+            }
+            for i, text in enumerate(text_chunks)
+            if text.strip()
+        ]
 
-        if chunk_texts:
-            chunk_embeddings = embeddings_model.embed_documents(chunk_texts)
+        if chunk_specs:
+            try:
+                chunk_texts = [chunk["text"] for chunk in chunk_specs]
+                chunk_embeddings = await aembed_documents(chunk_texts)
 
-            chunks_to_store = []
-            for i, (text, embedding) in enumerate(zip(chunk_texts, chunk_embeddings)):
-                chunks_to_store.append({
-                    "id": generate_chunk_id(doc_id, i),
-                    "text": text,
-                    "embedding": embedding,
-                    "chunk_index": i,
-                    "page_number": _page_for_chunk(text, pages),
-                })
+                chunks_to_store = []
+                for chunk_spec, embedding in zip(chunk_specs, chunk_embeddings):
+                    chunks_to_store.append({
+                        "id": generate_chunk_id(doc_id, int(chunk_spec["chunk_index"])),
+                        "text": chunk_spec["text"],
+                        "embedding": embedding,
+                        "chunk_index": int(chunk_spec["chunk_index"]),
+                        "page_number": chunk_spec.get("page_number"),
+                    })
 
-            stored = await store_chunks(chunks_to_store, doc_id)
-            total_chunks += stored
-            step_progress.append(f"Stored {stored} text chunks from {filename}")
+                stored = await store_chunks(chunks_to_store, doc_id)
+                total_chunks += stored
+                step_progress.append(f"Stored {stored} text chunks from {filename}")
+            except EmbeddingServiceError as exc:
+                log.warning("Chunk embedding/storage failed for %s: %s", filename, exc)
+                step_progress.append(f"Stored document metadata for {filename}, but chunk retrieval failed")
+                recovery_events.append(
+                    recovery_for_document_embedding_failure(filename, str(exc)).as_dict()
+                )
 
-        # Step 4: Entity extraction
-        step_progress.append(f"Extracting knowledge from {filename}...")
+        # Step 4: Rich ingestion patch extraction and application
+        step_progress.append(f"Extracting structured knowledge from {filename}...")
         try:
-            # Use string concatenation (NOT .format()) to avoid crashes
-            # when the resume text contains curly braces like {Python, Java}
-            user_content = _ENTITY_EXTRACTION_USER + full_text[:4000] + "\n--- DOCUMENT END ---"
-            response = await llm.ainvoke([
-                SystemMessage(content=_ENTITY_EXTRACTION_SYSTEM),
-                HumanMessage(content=user_content),
-            ])
-
-            content_text = response.content if isinstance(response.content, str) else str(response.content)
-
-            json_start = content_text.find("{")
-            json_end = content_text.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                parsed = json.loads(content_text[json_start:json_end])
-                entities = parsed.get("entities", [])
-                student_props = parsed.get("student_properties", {})
-
-                # Store entities in KG
-                count = await store_extracted_entities(entities, doc_id, student_id)
-                all_entities.extend(entities)
-                step_progress.append(f"Extracted {count} entities from {filename}")
-
-                # Update student properties if found
-                if student_props:
-                    from app.adapters.neo4j.graph_store import update_student
-                    await update_student(student_id, **{k: v for k, v in student_props.items() if v})
-            else:
-                step_progress.append(f"Could not parse entities from {filename}")
-
+            applied = await execute_document_ingestion_agent(
+                student_id=student_id,
+                session_id=None,
+                document_id=doc_id,
+                query=query,
+                filename=filename,
+                document_role=inferred_role.get("role", "general_document"),
+                file_type=file_type,
+                full_text=full_text,
+            )
+            profile_summary = applied.get("profile_summary", {}) if isinstance(applied.get("profile_summary", {}), dict) else {}
+            schema_sections = list((profile_summary.get("profile_schema", {}) or {}).get("sections", []) or [])
+            tool_log = list(applied.get("tool_call_log", []) or [])
+            entity_count = sum(
+                1
+                for item in tool_log
+                if isinstance(item, dict)
+                and item.get("status") == "ok"
+                and item.get("tool") in {"upsert_graph_node", "graph_add_node", "graph_update_node"}
+            )
+            relationship_count = sum(
+                1
+                for item in tool_log
+                if isinstance(item, dict)
+                and item.get("status") == "ok"
+                and item.get("tool") in {"upsert_graph_relation", "graph_add_relation", "graph_update_relation"}
+            )
+            candidate_fact_count = sum(
+                1
+                for item in tool_log
+                if isinstance(item, dict)
+                and item.get("status") == "ok"
+                and item.get("tool") == "add_or_update_fact"
+            )
+            support_record_count = candidate_fact_count
+            schema_section_count = sum(
+                1
+                for item in tool_log
+                if isinstance(item, dict)
+                and item.get("status") == "ok"
+                and item.get("tool") == "upsert_profile_schema_section"
+            )
+            all_entities.extend([{}] * entity_count)
+            all_relationships.extend([{}] * relationship_count)
+            all_candidate_facts.extend([{}] * candidate_fact_count)
+            patch_summaries.append(
+                {
+                    "document_id": doc_id,
+                    "filename": filename,
+                    "tool_calls": tool_log,
+                    "agent_result": applied.get("final_payload", {}),
+                    "saved_items": applied.get("saved_items", []),
+                    "summary": applied.get("summary", ""),
+                    "stop_reason": applied.get("stop_reason", ""),
+                    "profile_snapshot": profile_summary,
+                    "context_updates": applied.get("context_updates", {}),
+                    "schema_sections": schema_sections,
+                    "schema_section_count": schema_section_count or len(schema_sections),
+                    "entity_count": entity_count,
+                    "relationship_count": relationship_count,
+                    "support_record_count": support_record_count,
+                    "candidate_fact_count": candidate_fact_count,
+                    "memory_item_count": 0,
+                    "promoted_entity_count": 0,
+                }
+            )
+            step_progress.append(
+                f"Applied ingestion agent for {filename}: "
+                f"{schema_section_count or len(schema_sections)} schema sections, "
+                f"{entity_count} nodes, {relationship_count} relationships"
+            )
         except Exception as exc:
-            log.warning("Entity extraction failed for %s: %s", filename, exc)
-            step_progress.append(f"Entity extraction partially failed for {filename}")
+            log.warning("Structured ingestion failed for %s: %s", filename, exc)
+            step_progress.append(f"Structured ingestion partially failed for {filename}")
+            recovery_events.append(
+                recovery_for_entity_extraction_failure(filename, str(exc)).as_dict()
+            )
 
-    step_progress.append(f"Document processing complete: {total_chunks} chunks, {len(all_entities)} entities")
-    log.info("Doc analyst: %d chunks, %d entities", total_chunks, len(all_entities))
+    step_progress.append(
+        f"Document processing complete: {total_chunks} chunks, {len(all_entities)} entities, "
+        f"{len(all_relationships)} relationships"
+    )
+    log.info(
+        "Doc analyst: %d chunks, %d entities, %d relationships",
+        total_chunks,
+        len(all_entities),
+        len(all_relationships),
+    )
 
     return {
         **state,
         "files": [],  # Clear binary file data — no longer needed after processing
         "extracted_entities": all_entities,
+        "document_roles": document_roles,
+        "transcript_states": transcript_states,
+        "latest_ingestion_result": {
+            "documents": extracted_documents,
+            "chunk_count": total_chunks,
+            "entity_count": len(all_entities),
+            "relationship_count": len(all_relationships),
+            "support_record_count": len(all_candidate_facts) + len(all_memory_items),
+            "candidate_fact_count": len(all_candidate_facts),
+            "memory_item_count": len(all_memory_items),
+            "promoted_entity_count": len(all_promoted_entities),
+            "patch_summaries": patch_summaries,
+        },
+        "recovery_events": recovery_events,
         "step_progress": step_progress,
         "next_node": _determine_next(state),
     }
@@ -193,12 +331,5 @@ def _page_for_chunk(chunk_text: str, pages: list[dict]) -> int | None:
 
 
 def _determine_next(state: PathfinderState) -> str:
-    """Determine next node after document processing."""
-    plan = state.get("plan", [])
-    try:
-        idx = plan.index("doc_analyst")
-        if idx + 1 < len(plan):
-            return plan[idx + 1]
-    except ValueError:
-        pass
-    return "profile_manager"
+    """Document processing is now a leaf pre-ingestion step."""
+    return "responder"

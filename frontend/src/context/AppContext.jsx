@@ -1,11 +1,31 @@
 import React, { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
-import { getProfile } from '@/services/api';
+import { createProfile as createProfileRequest, getProfile, getProfiles } from '@/services/api';
 
 const AppContext = createContext(null);
 
 // ── LocalStorage helpers ────────────────────────────────────────
 
 const STORAGE_KEY = 'pathfinder_state';
+const RUNTIME_STUDENT_KEY = 'pathfinder_runtime_student_id';
+
+function generateRuntimeStudentId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `student_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  }
+  return `student_${Math.random().toString(16).slice(2, 14)}`;
+}
+
+function getOrCreateRuntimeStudentId() {
+  try {
+    const saved = localStorage.getItem(RUNTIME_STUDENT_KEY);
+    if (saved) return saved;
+    const created = generateRuntimeStudentId();
+    localStorage.setItem(RUNTIME_STUDENT_KEY, created);
+    return created;
+  } catch {
+    return generateRuntimeStudentId();
+  }
+}
 
 function loadPersistedState() {
   try {
@@ -13,10 +33,12 @@ function loadPersistedState() {
     if (raw) {
       const saved = JSON.parse(raw);
       return {
+        profiles: saved.profiles || [],
+        activeStudentId: saved.activeStudentId || null,
         sessions: saved.sessions || [],
         activeSessionId: saved.activeSessionId || null,
         messagesBySession: saved.messagesBySession || {},
-        settings: saved.settings || { topic_guard_enabled: true },
+        settings: saved.settings || { topic_guard_enabled: true, reasoning: 'medium' },
         theme: saved.theme || 'system',
       };
     }
@@ -29,6 +51,8 @@ function loadPersistedState() {
 function persistState(state) {
   try {
     const toSave = {
+      profiles: state.profiles,
+      activeStudentId: state.activeStudentId,
       sessions: state.sessions,
       activeSessionId: state.activeSessionId,
       messagesBySession: state.messagesBySession,
@@ -55,6 +79,8 @@ function applyTheme(theme) {
 const persisted = loadPersistedState();
 
 const initialState = {
+  profiles: persisted?.profiles || [],
+  activeStudentId: persisted?.activeStudentId || getOrCreateRuntimeStudentId(),
   // Sessions (restored from localStorage if available)
   sessions: persisted?.sessions || [],
   activeSessionId: persisted?.activeSessionId || null,
@@ -67,7 +93,7 @@ const initialState = {
   profileLoading: false,
 
   // Settings
-  settings: persisted?.settings || { topic_guard_enabled: true },
+  settings: persisted?.settings || { topic_guard_enabled: true, reasoning: 'medium' },
 
   // Theme
   theme: persisted?.theme || 'system',
@@ -82,8 +108,22 @@ const initialState = {
 
 function appReducer(state, action) {
   switch (action.type) {
+    case 'SET_PROFILES':
+      return { ...state, profiles: action.payload };
+
     case 'SET_SESSIONS':
       return { ...state, sessions: action.payload };
+
+    case 'SET_ACTIVE_STUDENT': {
+      const nextStudentId = action.payload;
+      const nextSessions = state.sessions.filter((s) => s.student_id === nextStudentId);
+      return {
+        ...state,
+        activeStudentId: nextStudentId,
+        activeSessionId: nextSessions[0]?.session_id || null,
+        streamProgress: [],
+      };
+    }
 
     case 'SET_ACTIVE_SESSION':
       return { ...state, activeSessionId: action.payload, streamProgress: [] };
@@ -106,6 +146,42 @@ function appReducer(state, action) {
         sessions: state.sessions.filter((s) => s.session_id !== sid),
         messagesBySession: rest,
         activeSessionId: state.activeSessionId === sid ? null : state.activeSessionId,
+      };
+    }
+
+    case 'CLEAR_STUDENT_DATA': {
+      const targetStudentId = action.payload || state.activeStudentId;
+      const remainingSessions = state.sessions.filter(
+        (session) => session.student_id !== targetStudentId
+      );
+      const remainingSessionIds = new Set(remainingSessions.map((session) => session.session_id));
+      const nextMessagesBySession = Object.fromEntries(
+        Object.entries(state.messagesBySession).filter(([sessionId]) => remainingSessionIds.has(sessionId))
+      );
+      const nextActiveSessionId = remainingSessionIds.has(state.activeSessionId)
+        ? state.activeSessionId
+        : (remainingSessions[0]?.session_id || null);
+      return {
+        ...state,
+        sessions: remainingSessions,
+        messagesBySession: nextMessagesBySession,
+        activeSessionId: nextActiveSessionId,
+        streamProgress: [],
+      };
+    }
+
+    case 'CLEAR_ALL_LOCAL_DATA': {
+      const runtimeId = getOrCreateRuntimeStudentId();
+      return {
+        ...state,
+        profiles: [],
+        activeStudentId: runtimeId,
+        sessions: [],
+        activeSessionId: null,
+        messagesBySession: {},
+        profile: null,
+        profileLoading: false,
+        streamProgress: [],
       };
     }
 
@@ -201,7 +277,7 @@ export function AppProvider({ children }) {
   // Persist to localStorage whenever sessions/messages/settings/theme change
   useEffect(() => {
     persistState(state);
-  }, [state.sessions, state.activeSessionId, state.messagesBySession, state.settings, state.theme]);
+  }, [state.profiles, state.activeStudentId, state.sessions, state.activeSessionId, state.messagesBySession, state.settings, state.theme]);
 
   // Apply theme on change
   useEffect(() => {
@@ -216,32 +292,85 @@ export function AppProvider({ children }) {
     }
   }, [state.theme]);
 
-  // ── Auto-load profile on app start for personalization ──
+  // ── Load profiles list once on mount ──
   const profileLoaded = useRef(false);
   useEffect(() => {
     if (profileLoaded.current) return;
-    profileLoaded.current = true;
+    (async () => {
+      try {
+        const profiles = await getProfiles();
+        dispatch({ type: 'SET_PROFILES', payload: profiles });
+        profileLoaded.current = true;
+
+        const hasActive = profiles.some((p) => p.student_id === state.activeStudentId);
+        const preferredStudentId = hasActive
+          ? state.activeStudentId
+          : (profiles[0]?.student_id || state.activeStudentId || getOrCreateRuntimeStudentId());
+
+        if (preferredStudentId !== state.activeStudentId) {
+          dispatch({ type: 'SET_ACTIVE_STUDENT', payload: preferredStudentId });
+        }
+      } catch {
+        // profiles failed to load; profile effect will surface its own error
+      }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Fetch profile whenever the active student changes ──
+  useEffect(() => {
+    if (!state.activeStudentId) return;
     (async () => {
       try {
         dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
-        const data = await getProfile();
+        const data = await getProfile(state.activeStudentId);
         dispatch({ type: 'SET_PROFILE', payload: data });
       } catch {
         dispatch({ type: 'SET_PROFILE_LOADING', payload: false });
       }
     })();
+  }, [state.activeStudentId]);
+
+  const refreshProfile = useCallback(async (studentId) => {
+    dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
+    const data = await getProfile(studentId);
+    dispatch({ type: 'SET_PROFILE', payload: data });
+    return data;
   }, []);
+
+  const refreshProfiles = useCallback(async () => {
+    const profiles = await getProfiles();
+    dispatch({ type: 'SET_PROFILES', payload: profiles });
+    return profiles;
+  }, []);
+
+  const switchStudent = useCallback((studentId) => {
+    // Dispatching SET_ACTIVE_STUDENT triggers the activeStudentId effect to load the profile.
+    dispatch({ type: 'SET_ACTIVE_STUDENT', payload: studentId });
+  }, []);
+
+  const createProfile = useCallback(async (profileInput) => {
+    const created = await createProfileRequest(profileInput);
+    await refreshProfiles();
+    dispatch({ type: 'SET_ACTIVE_STUDENT', payload: created.student_id });
+    // The activeStudentId effect will load the new profile automatically.
+    return created;
+  }, [refreshProfiles]);
 
   const createSession = useCallback(() => {
     const sessionId = `session_${Date.now().toString(36)}`;
     dispatch({
       type: 'ADD_SESSION',
-      payload: { session_id: sessionId, title: 'New Chat', created_at: new Date().toISOString() },
+      payload: {
+        session_id: sessionId,
+        student_id: state.activeStudentId,
+        title: 'New Chat',
+        created_at: new Date().toISOString(),
+      },
     });
     return sessionId;
-  }, []);
+  }, [state.activeStudentId]);
 
-  const value = { state, dispatch, createSession };
+  const value = { state, dispatch, createSession, refreshProfile, refreshProfiles, switchStudent, createProfile };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

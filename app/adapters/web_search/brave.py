@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from app.adapters.web_search._common import build_search_result, clamp_max_results, dedupe_results, normalize_query
 from app.config.settings import settings
 
 log = logging.getLogger("pathfinder.search.brave")
@@ -16,6 +17,10 @@ _BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 
 async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
     """Search using Brave Search API."""
+    query = normalize_query(query)
+    max_results = clamp_max_results(max_results)
+    if not query:
+        return []
     if not settings.BRAVE_API_KEY:
         raise RuntimeError("BRAVE_API_KEY not configured")
 
@@ -29,15 +34,18 @@ async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
             resp.raise_for_status()
             data = resp.json()
 
-        results = []
+        results: list[dict[str, Any]] = []
         for item in data.get("web", {}).get("results", []):
-            results.append({
-                "title": item.get("title", ""),
-                "url": item.get("url", ""),
-                "content": item.get("description", ""),
-                "score": 0.0,
-                "source": "brave",
-            })
+            normalized = build_search_result(
+                title=item.get("title", ""),
+                url=item.get("url", ""),
+                content=item.get("description", ""),
+                score=0.0,
+                source="brave",
+            )
+            if normalized:
+                results.append(normalized)
+        results = dedupe_results(results, max_results)
         log.info("Brave returned %d results for: %s", len(results), query[:60])
         return results
 

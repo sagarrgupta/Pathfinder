@@ -31,7 +31,9 @@ data/
 *.sqlite3
 
 # ── IDE / Editor ─────────────────────────────────
-.cursor/
+# Cursor: ignore local editor state; allow committed Agent hooks (hooks.json)
+.cursor/*
+!.cursor/hooks.json
 .vscode/
 .idea/
 *.swp
@@ -43,6 +45,13 @@ data/
 *.log
 logs/
 debug.log
+
+# ── Python Tooling Caches ────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # ── Docker volumes ───────────────────────────────
 docker/data/
@@ -56,6 +65,9 @@ Thumbs.db
 *.bak
 *.tmp
 *.orig
+
+# ── Generated Graphify Output ────────────────────
+graphify-out/
 
 # Private local AI sessions and generated reports
 .claw/

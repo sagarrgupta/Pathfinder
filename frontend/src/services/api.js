@@ -5,21 +5,28 @@
 
 const API_BASE = '/api/v1';
 
+function withStudentId(path, studentId) {
+  if (!studentId) return path;
+  const separator = path.includes('?') ? '&' : '?';
+  return `${path}${separator}student_id=${encodeURIComponent(studentId)}`;
+}
+
 // ── SSE Chat ────────────────────────────────────────────────────
 
 /**
  * Send a chat message and receive SSE stream.
- * @param {Object} params - { query, sessionId, files, isGlobalUpload }
+ * @param {Object} params - { query, sessionId, files, reasoning }
  * @param {Object} callbacks - { onProgress, onToken, onDone, onError }
  * @returns {AbortController} - call .abort() to cancel
  */
-export function chatSSE({ query, sessionId, files = [], isGlobalUpload = false, replaceFilenames = [] }, callbacks) {
+export function chatSSE({ query, sessionId, studentId, files = [], replaceFilenames = [], reasoning = 'medium' }, callbacks) {
   const controller = new AbortController();
 
   const formData = new FormData();
   formData.append('query', query);
   if (sessionId) formData.append('session_id', sessionId);
-  formData.append('is_global_upload', isGlobalUpload.toString());
+  if (studentId) formData.append('student_id', studentId);
+  formData.append('reasoning', reasoning);
   if (replaceFilenames.length > 0) {
     formData.append('replace_filenames', replaceFilenames.join(','));
   }
@@ -75,17 +82,16 @@ export function chatSSE({ query, sessionId, files = [], isGlobalUpload = false, 
 
 // ── Document Upload ─────────────────────────────────────────────
 
-export async function checkDocumentExists(filename) {
-  const response = await fetch(`${API_BASE}/documents/check?filename=${encodeURIComponent(filename)}`);
+export async function checkDocumentExists(filename, studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/documents/check?filename=${encodeURIComponent(filename)}`, studentId));
   if (!response.ok) throw new Error(`Check failed: ${response.status}`);
   return response.json();
 }
 
-export async function uploadDocument(file, scope = 'global', sessionId = null, replace = false) {
+export async function uploadDocument(file, replace = false, studentId = null) {
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('scope', scope);
-  if (sessionId) formData.append('session_id', sessionId);
+  if (studentId) formData.append('student_id', studentId);
   if (replace) formData.append('replace', 'true');
 
   const response = await fetch(`${API_BASE}/documents`, {
@@ -98,42 +104,58 @@ export async function uploadDocument(file, scope = 'global', sessionId = null, r
 
 // ── Profile ─────────────────────────────────────────────────────
 
-export async function getProfile() {
-  const response = await fetch(`${API_BASE}/profile`);
+export async function getProfiles() {
+  const response = await fetch(`${API_BASE}/profiles`);
+  if (!response.ok) throw new Error(`Failed to load profiles: ${response.status}`);
+  return response.json();
+}
+
+export async function createProfile(profile) {
+  const response = await fetch(`${API_BASE}/profiles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile),
+  });
+  if (!response.ok) throw new Error(`Failed to create profile: ${response.status}`);
+  return response.json();
+}
+
+export async function getProfile(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile`, studentId));
   if (!response.ok) throw new Error(`Failed to load profile: ${response.status}`);
   return response.json();
 }
 
-export async function updateProfile(field, value) {
+export async function updateProfile(field, value, studentId) {
   const response = await fetch(`${API_BASE}/profile`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ field, value }),
+    body: JSON.stringify({ field, value, student_id: studentId }),
   });
   if (!response.ok) throw new Error(`Failed to update profile: ${response.status}`);
   return response.json();
 }
 
-export async function deleteProfileEntity(label, name) {
-  const response = await fetch(`${API_BASE}/profile/entity/${label}/${name}`, {
+export async function deleteProfileEntity(label, name, studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile/entity/${label}/${name}`, studentId), {
     method: 'DELETE',
   });
   if (!response.ok) throw new Error(`Failed to delete entity: ${response.status}`);
   return response.json();
 }
 
-export async function updateProfileEntity(label, name, properties) {
+export async function updateProfileEntity(label, name, properties, studentId) {
   const response = await fetch(`${API_BASE}/profile/entity`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label, name, properties }),
+    body: JSON.stringify({ label, name, properties, student_id: studentId }),
   });
   if (!response.ok) throw new Error(`Failed to update entity: ${response.status}`);
   return response.json();
 }
 
-export async function addProfileText(text) {
-  const response = await fetch(`${API_BASE}/profile/text`, {
+export async function addProfileText(text, studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile/text`, studentId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
@@ -142,28 +164,34 @@ export async function addProfileText(text) {
   return response.json();
 }
 
-export async function getProfileGraph() {
-  const response = await fetch(`${API_BASE}/profile/graph`);
+export async function getProfileGraph(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile/graph`, studentId));
   if (!response.ok) throw new Error(`Failed to load graph: ${response.status}`);
   return response.json();
 }
 
-export async function resetAllData() {
-  const response = await fetch(`${API_BASE}/profile/reset`, { method: 'DELETE' });
+export async function resetAllData(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/profile/reset`, studentId), { method: 'DELETE' });
   if (!response.ok) throw new Error(`Failed to reset data: ${response.status}`);
+  return response.json();
+}
+
+export async function deleteAllDataEverywhere() {
+  const response = await fetch(`${API_BASE}/settings/delete-all-data`, { method: 'DELETE' });
+  if (!response.ok) throw new Error(`Failed to delete all data: ${response.status}`);
   return response.json();
 }
 
 // ── Sessions ────────────────────────────────────────────────────
 
-export async function getSessions() {
-  const response = await fetch(`${API_BASE}/sessions`);
+export async function getSessions(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/sessions`, studentId));
   if (!response.ok) throw new Error(`Failed to load sessions: ${response.status}`);
   return response.json();
 }
 
-export async function deleteSession(sessionId) {
-  const response = await fetch(`${API_BASE}/sessions/${sessionId}`, { method: 'DELETE' });
+export async function deleteSession(sessionId, studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/sessions/${sessionId}`, studentId), { method: 'DELETE' });
   if (!response.ok) throw new Error(`Failed to delete session: ${response.status}`);
   return response.json();
 }
@@ -191,5 +219,73 @@ export async function updateSettings(updates) {
 export async function getHealth() {
   const response = await fetch(`${API_BASE}/health`);
   if (!response.ok) throw new Error(`Health check failed: ${response.status}`);
+  return response.json();
+}
+
+// ── Replay Artifacts ────────────────────────────────────────────
+
+export async function getReplays(limit = 25) {
+  const response = await fetch(`${API_BASE}/replays?limit=${encodeURIComponent(limit)}`);
+  if (!response.ok) throw new Error(`Failed to load replays: ${response.status}`);
+  return response.json();
+}
+
+export async function getReplay(replayId) {
+  const response = await fetch(`${API_BASE}/replays/${encodeURIComponent(replayId)}`);
+  if (!response.ok) throw new Error(`Failed to load replay: ${response.status}`);
+  return response.json();
+}
+
+export async function evaluateReplay(replayId) {
+  const response = await fetch(`${API_BASE}/replays/${encodeURIComponent(replayId)}/evaluate`);
+  if (!response.ok) throw new Error(`Failed to evaluate replay: ${response.status}`);
+  return response.json();
+}
+
+export async function evaluateRecentReplays(limit = 25, studentId = null) {
+  const base = `${API_BASE}/replays/evaluate/recent?limit=${encodeURIComponent(limit)}`;
+  const response = await fetch(withStudentId(base, studentId));
+  if (!response.ok) throw new Error(`Failed to evaluate recent replays: ${response.status}`);
+  return response.json();
+}
+
+export async function getEvalBenchmarks() {
+  const response = await fetch(`${API_BASE}/eval/benchmarks`);
+  if (!response.ok) throw new Error(`Failed to load benchmark sets: ${response.status}`);
+  return response.json();
+}
+
+export async function getEvalAnalytics(limit = 50, studentId = null) {
+  const base = `${API_BASE}/eval/analytics?limit=${encodeURIComponent(limit)}`;
+  const response = await fetch(withStudentId(base, studentId));
+  if (!response.ok) throw new Error(`Failed to load eval analytics: ${response.status}`);
+  return response.json();
+}
+
+// ── Saved Recommendations ──────────────────────────────────────
+
+export async function getRecommendations(studentId = null) {
+  const response = await fetch(withStudentId(`${API_BASE}/recommendations`, studentId));
+  if (!response.ok) throw new Error(`Failed to load recommendations: ${response.status}`);
+  return response.json();
+}
+
+export async function saveRecommendation(payload) {
+  const response = await fetch(`${API_BASE}/recommendations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(`Failed to save recommendation: ${response.status}`);
+  return response.json();
+}
+
+export async function updateRecommendationOutcome(recommendationId, payload) {
+  const response = await fetch(`${API_BASE}/recommendations/${encodeURIComponent(recommendationId)}/outcome`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(`Failed to update recommendation outcome: ${response.status}`);
   return response.json();
 }
