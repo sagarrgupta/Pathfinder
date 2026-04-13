@@ -73,6 +73,8 @@ export function ToastProvider({ children }) {
               <Icon className={cn('h-5 w-5 flex-shrink-0 mt-0.5', ICON_STYLES[t.type])} />
               <p className="flex-1 text-sm leading-relaxed">{t.message}</p>
               <button
+                type="button"
+                aria-label="Dismiss notification"
                 onClick={() => removeToast(t.id)}
                 className="flex-shrink-0 rounded-md p-1 opacity-60 transition-opacity hover:bg-muted hover:opacity-100"
               >

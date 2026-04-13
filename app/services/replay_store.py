@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from app.config.settings import settings
 from app.utils.ids import generate_replay_id
+
+_REPLAY_ID_RE = re.compile(r"^replay_[a-f0-9]{12}$")
 
 
 def _artifact_dir() -> Path:
@@ -113,6 +116,8 @@ def list_replay_artifacts(limit: int = 50) -> list[dict[str, Any]]:
 
 def get_replay_artifact(replay_id: str) -> dict[str, Any] | None:
     """Load a single replay artifact by ID."""
+    if not _REPLAY_ID_RE.match(replay_id):
+        return None
     path = _artifact_dir() / f"{replay_id}.json"
     if not path.exists():
         return None

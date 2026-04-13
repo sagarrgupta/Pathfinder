@@ -292,29 +292,37 @@ export function AppProvider({ children }) {
     }
   }, [state.theme]);
 
-  // ── Auto-load profile on app start for personalization ──
+  // ── Load profiles list once on mount ──
   const profileLoaded = useRef(false);
   useEffect(() => {
+    if (profileLoaded.current) return;
     (async () => {
       try {
-        dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
         const profiles = await getProfiles();
         dispatch({ type: 'SET_PROFILES', payload: profiles });
+        profileLoaded.current = true;
 
-        const hasActive = profiles.some((profile) => profile.student_id === state.activeStudentId);
+        const hasActive = profiles.some((p) => p.student_id === state.activeStudentId);
         const preferredStudentId = hasActive
           ? state.activeStudentId
           : (profiles[0]?.student_id || state.activeStudentId || getOrCreateRuntimeStudentId());
 
-        if (!profileLoaded.current) {
-          profileLoaded.current = true;
-        }
-
         if (preferredStudentId !== state.activeStudentId) {
           dispatch({ type: 'SET_ACTIVE_STUDENT', payload: preferredStudentId });
         }
+      } catch {
+        // profiles failed to load; profile effect will surface its own error
+      }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-        const data = await getProfile(preferredStudentId);
+  // ── Fetch profile whenever the active student changes ──
+  useEffect(() => {
+    if (!state.activeStudentId) return;
+    (async () => {
+      try {
+        dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
+        const data = await getProfile(state.activeStudentId);
         dispatch({ type: 'SET_PROFILE', payload: data });
       } catch {
         dispatch({ type: 'SET_PROFILE_LOADING', payload: false });
@@ -335,18 +343,18 @@ export function AppProvider({ children }) {
     return profiles;
   }, []);
 
-  const switchStudent = useCallback(async (studentId) => {
+  const switchStudent = useCallback((studentId) => {
+    // Dispatching SET_ACTIVE_STUDENT triggers the activeStudentId effect to load the profile.
     dispatch({ type: 'SET_ACTIVE_STUDENT', payload: studentId });
-    await refreshProfile(studentId);
-  }, [refreshProfile]);
+  }, []);
 
   const createProfile = useCallback(async (profileInput) => {
     const created = await createProfileRequest(profileInput);
     await refreshProfiles();
     dispatch({ type: 'SET_ACTIVE_STUDENT', payload: created.student_id });
-    await refreshProfile(created.student_id);
+    // The activeStudentId effect will load the new profile automatically.
     return created;
-  }, [refreshProfile, refreshProfiles]);
+  }, [refreshProfiles]);
 
   const createSession = useCallback(() => {
     const sessionId = `session_${Date.now().toString(36)}`;
