@@ -101,15 +101,19 @@ def _metadata_dict(value: Any) -> dict[str, Any]:
 
 def _profile_info_from_student(student: dict[str, Any]) -> ProfileInfo:
     """Normalize a raw student record into the API response shape."""
+    extra = {
+        k: v for k, v in student.items()
+        if k not in {"id", "name", "created_at", "updated_at", "completeness",
+                      "long_context_summary", "long_context_notes"}
+        and v is not None and str(v).strip()
+    }
     return ProfileInfo(
         student_id=student.get("id", ""),
-        name=student.get("name", "Student"),
-        email=student.get("email"),
-        university=student.get("university"),
-        program=student.get("program"),
+        name=student.get("name", "Profile"),
         created_at=student.get("created_at"),
         updated_at=student.get("updated_at"),
         completeness=float(student.get("completeness", 0.0) or 0.0),
+        **extra,
     )
 
 
@@ -183,7 +187,7 @@ async def _read_upload_file(file: UploadFile) -> dict[str, Any]:
 
 def _profile_confidence(profile: dict[str, Any]) -> float:
     """Estimate profile confidence from resolved candidate facts first."""
-    candidate_facts = profile.get("candidate_facts", [])
+    candidate_facts = profile.get("candidate_fact_ledger", [])
     resolved_candidates = [item for item in candidate_facts if item.get("status") == "resolved"]
     confidence_values = [float(item.get("confidence", 0.0) or 0.0) for item in resolved_candidates] or [
         float(item.get("confidence", 0.0) or 0.0) for item in candidate_facts
@@ -193,12 +197,18 @@ def _profile_confidence(profile: dict[str, Any]) -> float:
 
 def _profile_memory_overview(profile: dict[str, Any]) -> dict[str, Any]:
     """Build the profile memory summary returned to the frontend."""
-    candidate_facts = profile.get("candidate_facts", [])
+    candidate_facts = profile.get("candidate_fact_ledger", [])
+    memory_items = profile.get("memory_items", [])
+    evidence_items = profile.get("evidence", [])
     fact_summary = profile.get("fact_summary", {})
     return {
-        "candidate_facts": len(candidate_facts),
-        "memory_items": len(profile.get("memory_items", [])),
-        "evidence": len(profile.get("evidence", [])),
+        "support_records": len(candidate_facts) + len(memory_items),
+        "evidence_records": len(evidence_items),
+        "breakdown": {
+            "candidate_facts": len(candidate_facts),
+            "memory_items": len(memory_items),
+            "evidence": len(evidence_items),
+        },
         "confirmed": int(fact_summary.get("confirmed_candidate_facts", 0) or 0),
         "reinforced": int(fact_summary.get("reinforced_candidate_facts", 0) or 0),
         "inferred": int(fact_summary.get("inferred_candidate_facts", 0) or 0),
@@ -323,12 +333,8 @@ async def get_profiles():
 @router.post("/profiles", response_model=ProfileInfo)
 async def create_profile(body: ProfileCreate):
     """Create a new local student profile."""
-    student = await create_student(
-        name=body.name,
-        email=body.email,
-        university=body.university,
-        program=body.program,
-    )
+    extra = body.model_extra or {}
+    student = await create_student(name=body.name, **extra)
     return _profile_info_from_student(student)
 
 
@@ -385,7 +391,7 @@ async def upload_document(
         document_role=first_role.get("role", "general_document"),
         role_confidence=float(first_role.get("confidence", 0.0) or 0.0),
         entities_extracted=len(result.get("extracted_entities", [])),
-        chunks_stored=0,
+        chunks_stored=int(result.get("latest_ingestion_result", {}).get("chunk_count", 0) or 0),
     )
 
 
@@ -399,21 +405,18 @@ async def get_profile(student_id: Optional[str] = Query(default=None)):
     profile = await get_full_profile(resolved_student_id)
     long_context_preview = build_long_context_payload(profile, {})
     return ProfileResponse(
-        personal=profile.get("personal", {}),
-        academic={"courses_count": len(profile.get("courses", []))},
-        skills=profile.get("skills", []),
-        courses=profile.get("courses", []),
-        goals=profile.get("goals", []),
-        documents=profile.get("documents", []),
-        interests=profile.get("interests", []),
-        experience=profile.get("experience", []),
-        projects=profile.get("projects", []),
+        root_properties=profile.get("root_properties", {}),
+        sections=profile.get("sections", []),
+        section_items=profile.get("section_items", {}),
+        unsectioned_items=profile.get("unsectioned_items", []),
+        support_records=profile.get("support_records", {}),
         profile_facts=profile.get("profile_facts", []),
         candidate_fact_ledger=profile.get("candidate_fact_ledger", []),
         completeness_breakdown=profile.get("completeness_breakdown", {}),
         fact_summary=profile.get("fact_summary", {}),
         temporal_profile=profile.get("temporal_profile", {}),
         long_context_preview=long_context_preview,
+        profile_schema=profile.get("profile_schema", {}),
         all_entities=profile.get("all_entities", {}),
         completeness=float(profile.get("completeness", 0.0) or 0.0),
         confidence=_profile_confidence(profile),
@@ -442,7 +445,7 @@ async def delete_profile_entity(entity_label: str, entity_name: str, student_id:
     if entity_label == "Document":
         # Documents use 'filename', not 'name' — also cascade-delete chunks
         records = await run_cypher(
-            "MATCH (s:Student {id: $sid})-[:UPLOADED]->(d:Document {filename: $fname}) RETURN d.id AS doc_id",
+            "MATCH (s:Profile {id: $sid})-[:UPLOADED]->(d:Document {filename: $fname}) RETURN d.id AS doc_id",
             {"fname": entity_name, "sid": resolved_student_id},
         )
         if records and records[0].get("doc_id"):
@@ -456,16 +459,21 @@ async def delete_profile_entity(entity_label: str, entity_name: str, student_id:
 
 @router.put("/profile/entity")
 async def update_profile_entity(body: EntityUpdate):
-    """Update properties on a profile entity (Company, Skill, etc.)."""
+    """Update properties on a profile entity by any identity key(s)."""
     resolved_student_id = await _resolve_student_id(body.student_id)
+    resolved_match = dict(body.match_props) if body.match_props else {}
+    if body.name and "name" not in resolved_match:
+        resolved_match["name"] = body.name
+    if not resolved_match:
+        raise HTTPException(400, "Provide match_props or name to identify the entity")
     result = await update_entity(
         label=body.label,
-        match_props={"name": body.name},
+        match_props=resolved_match,
         new_props=body.properties,
         student_id=resolved_student_id,
     )
     if not result:
-        raise HTTPException(404, f"{body.label} '{body.name}' not found")
+        raise HTTPException(404, f"{body.label} matching {resolved_match} not found")
     return {"updated": True, "data": result}
 
 
@@ -649,7 +657,7 @@ async def delete_session(session_id: str, student_id: Optional[str] = Query(defa
     # Delete session-scoped documents from Neo4j
     await execute_cypher(
         """
-        MATCH (s:Student {id: $student_id})-[:UPLOADED]->(d:Document {session_id: $sid, scope: 'session'})
+        MATCH (s:Profile {id: $student_id})-[:UPLOADED]->(d:Document {session_id: $sid, scope: 'session'})
         OPTIONAL MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d)
         DETACH DELETE c, d
         """,
@@ -700,22 +708,11 @@ async def update_settings(update: SettingsUpdate):
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Check system health: Neo4j, LM Studio, Ollama."""
+    """Check system health for all registered dependencies."""
     statuses = await get_dependency_status()
-    neo4j_status = statuses.get("neo4j", "unknown")
-    lm_studio_status = statuses.get("llm", "unknown")
-    ollama_status = statuses.get("embeddings", "unknown")
-
-    overall = "ok" if all(
-        s == "connected" for s in [neo4j_status, lm_studio_status, ollama_status]
-    ) else "degraded"
-
-    return HealthResponse(
-        status=overall,
-        neo4j=neo4j_status,
-        lm_studio=lm_studio_status,
-        ollama=ollama_status,
-    )
+    services = {name: str(status) for name, status in statuses.items()}
+    overall = "ok" if all(s == "connected" for s in services.values()) else "degraded"
+    return HealthResponse(status=overall, services=services)
 
 
 @router.get("/background/status")

@@ -13,10 +13,14 @@ log = logging.getLogger("pathfinder.agents.orchestrator")
 
 _SPECIALIST_KEYWORDS: dict[str, set[str]] = {
     "academic": {
-        "academic", "admission", "catalog", "class", "classes", "course", "courses",
-        "credit", "credits", "curriculum", "degree", "eligible", "eligibility",
-        "graduate", "graduation", "major", "minor", "plan", "planner", "program",
-        "prereq", "prerequisite", "requirements", "schedule", "semester", "transcript",
+        "academic", "admission", "assignment", "calendar", "catalog", "class",
+        "classes", "course", "courses", "credit", "credits", "curriculum",
+        "deadline", "degree", "due", "eligible", "eligibility", "enroll",
+        "enrollment", "exam", "final", "grade", "grades", "graduate",
+        "graduation", "gpa", "major", "minor", "plan", "planner", "policy",
+        "prereq", "prerequisite", "program", "project", "report",
+        "requirements", "schedule", "semester", "standing", "submit",
+        "submission", "syllabus", "term", "thesis", "transcript",
         "university",
     },
     "career": {
@@ -65,7 +69,8 @@ def _profile_signals(query: str) -> bool:
 
 
 def _durable_context(profile: dict[str, object], session_summary: dict[str, object]) -> dict[str, object]:
-    personal = profile.get("personal", {}) if isinstance(profile.get("personal", {}), dict) else {}
+    personal = profile.get("root_properties", {}) if isinstance(profile.get("root_properties", {}), dict) else {}
+    all_entities = profile.get("all_entities", {}) if isinstance(profile.get("all_entities", {}), dict) else {}
     institution = str(personal.get("university", "") or ((session_summary.get("institution", {}) or {}).get("value", "")))
     program = str(personal.get("program", "") or ((session_summary.get("program", {}) or {}).get("value", "")))
     semester = str(personal.get("semester", "") or ((session_summary.get("standing", {}) or {}).get("value", "")))
@@ -73,9 +78,13 @@ def _durable_context(profile: dict[str, object], session_summary: dict[str, obje
         "institution": institution,
         "program": program,
         "semester": semester,
-        "goals_count": len(profile.get("goals", [])),
-        "skills_count": len(profile.get("skills", [])),
-        "documents_count": len(profile.get("documents", [])),
+        "sections_count": len(profile.get("sections", [])) if isinstance(profile.get("sections", []), list) else 0,
+        "entity_types_count": sum(
+            1
+            for label, items in all_entities.items()
+            if label not in {"CandidateFact", "MemoryItem", "Evidence", "Section", "SchemaSection"} and isinstance(items, list) and items
+        ),
+        "documents_count": len(all_entities.get("Document", [])) if isinstance(all_entities.get("Document", []), list) else 0,
     }
 
 

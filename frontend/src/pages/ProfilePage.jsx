@@ -14,120 +14,50 @@ import {
   User, Upload, FileText, Trash2, Plus, BookOpen,
   Briefcase, Target, Star, GraduationCap, Loader2,
   Pencil, Check, X, AlertTriangle, Heart, Folder,
-  Building2, Circle, ArrowUpDown, Calendar, Sparkles,
+  Building2, Circle, Sparkles, ChevronDown, Settings2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-// ── Configuration for known entity types ────────────────────────
 const ENTITY_CONFIG = {
-  Course:     { label: 'Courses',     icon: BookOpen,   nameKey: 'name', sortKey: 'name',     render: (c) => `${c.code || c.name || '?'} ${c.grade ? `(${c.grade})` : ''}`.trim() },
-  Skill:      { label: 'Skills',      icon: Star,       nameKey: 'name', sortKey: 'name',     render: (s) => `${s.name || '?'} ${s.proficiency ? `— ${s.proficiency}` : ''}`.trim() },
-  Company:    { label: 'Experience',   icon: Briefcase,  nameKey: 'name', sortKey: null,       cardMode: true },
-  Goal:       { label: 'Goals',        icon: Target,     nameKey: 'name', sortKey: null,       render: (g) => g.name || g.description || 'Goal' },
-  Interest:   { label: 'Interests',    icon: Heart,      nameKey: 'name', sortKey: 'name',     render: (i) => i.name || 'Interest' },
-  Project:    { label: 'Projects',     icon: Folder,     nameKey: 'name', sortKey: null,       render: (p) => `${p.name || 'Project'} ${p.status ? `(${p.status})` : ''}`.trim() },
-  Department: { label: 'Departments',  icon: Building2,  nameKey: 'name', sortKey: 'name',     render: (d) => d.name || 'Department' },
-  Document:   { label: 'Documents',    icon: FileText,   nameKey: 'filename', sortKey: null,   render: (d) => `${d.filename || d.name || 'Document'} [${d.scope || 'global'}]` },
+  Course:     { label: 'Courses',      icon: BookOpen },
+  Skill:      { label: 'Skills',       icon: Star },
+  Company:    { label: 'Experience',   icon: Briefcase },
+  Goal:       { label: 'Goals',        icon: Target },
+  Interest:   { label: 'Interests',    icon: Heart },
+  Project:    { label: 'Projects',     icon: Folder },
+  Department: { label: 'Departments',  icon: Building2 },
+  Document:   { label: 'Documents',    icon: FileText },
 };
 
-const HIDDEN_PERSONAL_FIELDS = new Set(['id', 'created_at', 'updated_at', '_relationship', 'long_context_notes', 'long_context_summary']);
+const HIDDEN_FIELDS = new Set(['id', 'created_at', 'updated_at', '_relationship', 'long_context_notes', 'long_context_summary']);
+const HIDDEN_ENTITY_FIELDS = new Set(['id', 'student_id', 'created_at', 'updated_at', '_relationship', '_schema_section']);
+const LABEL_MAP = { gpa: 'GPA', id: 'ID', url: 'URL' };
 
-const LABEL_OVERRIDES = { gpa: 'GPA', id: 'ID', url: 'URL' };
-const LONG_CONTEXT_FIELDS = ['Student', 'Academic', 'Goals', 'Preferences', 'Skills', 'Notes'];
-const LONG_CONTEXT_TEMPLATE = LONG_CONTEXT_FIELDS.map((field) => `${field}: `).join('\n');
-
-function formatFieldLabel(key) {
-  if (LABEL_OVERRIDES[key.toLowerCase()]) return LABEL_OVERRIDES[key.toLowerCase()];
-  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+function fmtLabel(key) {
+  return LABEL_MAP[key.toLowerCase()] || key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function getEntityConfig(label) {
-  return ENTITY_CONFIG[label] || {
-    label: label + 's', icon: Circle, nameKey: 'name', sortKey: null,
-    render: (item) => item.name || item.title || JSON.stringify(item).slice(0, 60),
-  };
+function cfgFor(label) {
+  return ENTITY_CONFIG[label] || { label: label + 's', icon: Circle };
 }
-
-function validateLongContextSummary(text) {
-  const lines = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean);
-  if (lines.length === 0) {
-    return { valid: false, message: 'Use the required template before saving.' };
-  }
-
-  const seen = new Set();
-  for (const line of lines) {
-    const separatorIndex = line.indexOf(':');
-    if (separatorIndex <= 0) {
-      return { valid: false, message: "Each line must follow 'Label: value'." };
-    }
-    const label = line.slice(0, separatorIndex).trim();
-    const value = line.slice(separatorIndex + 1).trim();
-    if (!LONG_CONTEXT_FIELDS.includes(label)) {
-      return { valid: false, message: `Unsupported label '${label}'.` };
-    }
-    if (seen.has(label)) {
-      return { valid: false, message: `Duplicate label '${label}'.` };
-    }
-    if (!value) {
-      return { valid: false, message: `Field '${label}' cannot be empty. Use 'none' if needed.` };
-    }
-    seen.add(label);
-  }
-
-  const missing = LONG_CONTEXT_FIELDS.filter((field) => !seen.has(field));
-  if (missing.length > 0) {
-    return { valid: false, message: `Missing fields: ${missing.join(', ')}.` };
-  }
-
-  return { valid: true, message: '' };
-}
-
-// ── Skeleton component ──────────────────────────────────────────
-function Skeleton({ className }) {
-  return <div className={cn('skeleton', className)} />;
-}
-
-function ProfileSkeleton() {
-  return (
-    <div className="space-y-3">
-      {[...Array(5)].map((_, i) => (
-        <div key={i} className="flex items-center justify-between py-2 px-3">
-          <Skeleton className="h-4 w-24" />
-          <Skeleton className="h-4 w-40" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ── Main Component ──────────────────────────────────────────────
 
 export default function ProfilePage() {
   const { state, dispatch } = useApp();
   const toast = useToast();
-  const [activeTab, setActiveTab] = useState('personal');
   const [freeText, setFreeText] = useState('');
-  const [longContextSummary, setLongContextSummary] = useState('');
-  const [isSavingLongContext, setIsSavingLongContext] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isProcessingText, setIsProcessingText] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const fileInputRef = useRef(null);
   const profile = state.profile;
 
-  // Confirmation dialog state
   const [confirmDialog, setConfirmDialog] = useState({
     open: false, title: '', message: '', onConfirm: null,
     confirmLabel: 'Delete', variant: 'destructive',
   });
 
-  useEffect(() => {
-    loadProfile();
-  }, [state.activeStudentId]);
-
-  useEffect(() => {
-    setLongContextSummary(profile?.long_context_preview?.summary || profile?.personal?.long_context_summary || '');
-  }, [profile]);
+  useEffect(() => { loadProfile(); }, [state.activeStudentId]);
 
   const loadProfile = async () => {
     dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
@@ -142,9 +72,8 @@ export default function ProfilePage() {
 
   const performUpload = async (file, replace = false) => {
     setIsUploading(true);
-    setProcessingStep('Uploading document...');
+    setProcessingStep('Processing and extracting entities...');
     try {
-      setProcessingStep('Processing and extracting entities...');
       const result = await uploadDocument(file, 'global', null, replace, state.activeStudentId);
       toast.success(
         replace
@@ -165,41 +94,29 @@ export default function ProfilePage() {
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    // Check for duplicate
     try {
       const { exists } = await checkDocumentExists(file.name, state.activeStudentId);
       if (exists) {
         setConfirmDialog({
-          open: true,
-          title: 'Duplicate Document',
-          message: `"${file.name}" already exists in your profile. Would you like to replace it with the new version?`,
-          confirmLabel: 'Replace',
-          variant: 'primary',
-          onConfirm: () => {
-            setConfirmDialog((prev) => ({ ...prev, open: false }));
-            performUpload(file, true);
-          },
+          open: true, title: 'Duplicate Document',
+          message: `"${file.name}" already exists. Replace it with the new version?`,
+          confirmLabel: 'Replace', variant: 'primary',
+          onConfirm: () => { setConfirmDialog((p) => ({ ...p, open: false })); performUpload(file, true); },
         });
         return;
       }
-    } catch {
-      // If check fails, proceed with upload anyway
-    }
-
+    } catch { /* proceed */ }
     performUpload(file);
   };
 
   const handleAddText = async () => {
     if (!freeText.trim()) return;
     setIsProcessingText(true);
-    setProcessingStep('Analyzing your text...');
+    setProcessingStep('Extracting entities...');
     try {
-      setProcessingStep('Extracting entities and updating knowledge graph...');
       const result = await addProfileText(freeText, state.activeStudentId);
-      toast.success(`Extracted ${result.entities_extracted} entities from your text`);
+      toast.success(`Extracted ${result.entities_extracted} entities`);
       setFreeText('');
-      setProcessingStep('Refreshing profile...');
       await loadProfile();
       setProcessingStep('');
     } catch (err) {
@@ -212,32 +129,25 @@ export default function ProfilePage() {
 
   const handleDelete = (label, name) => {
     setConfirmDialog({
-      open: true,
-      title: 'Confirm Deletion',
-      message: `Are you sure you want to delete "${name}" from your profile? This action cannot be undone.`,
+      open: true, title: 'Confirm Deletion',
+      message: `Delete "${name}" from your profile? This cannot be undone.`,
       onConfirm: async () => {
-        setConfirmDialog((prev) => ({ ...prev, open: false }));
+        setConfirmDialog((p) => ({ ...p, open: false }));
         try {
           await deleteProfileEntity(label, name, state.activeStudentId);
           toast.success(`Deleted ${name}`);
           await loadProfile();
-        } catch (err) {
-          toast.error(`Delete failed: ${err.message}`);
-        }
+        } catch (err) { toast.error(`Delete failed: ${err.message}`); }
       },
     });
   };
 
-  const closeConfirmDialog = () => setConfirmDialog((prev) => ({ ...prev, open: false }));
-
   const handleEditField = async (field, value) => {
     try {
       await updateProfile(field, value, state.activeStudentId);
-      toast.success(`Updated ${formatFieldLabel(field)}`);
+      toast.success(`Updated ${fmtLabel(field)}`);
       await loadProfile();
-    } catch (err) {
-      toast.error(`Update failed: ${err.message}`);
-    }
+    } catch (err) { toast.error(`Update failed: ${err.message}`); }
   };
 
   const handleEditEntity = async (label, name, properties) => {
@@ -245,664 +155,283 @@ export default function ProfilePage() {
       await updateProfileEntity(label, name, properties, state.activeStudentId);
       toast.success(`Updated ${name}`);
       await loadProfile();
-    } catch (err) {
-      toast.error(`Update failed: ${err.message}`);
-    }
-  };
-
-  const handleSaveLongContext = async () => {
-    if (!longContextValidation.valid) {
-      toast.error(longContextValidation.message);
-      return;
-    }
-    setIsSavingLongContext(true);
-    try {
-      await updateProfile('long_context_summary', longContextSummary, state.activeStudentId);
-      toast.success('Saved long-context summary');
-      await loadProfile();
-    } catch (err) {
-      toast.error(`Update failed: ${err.message}`);
-    } finally {
-      setIsSavingLongContext(false);
-    }
+    } catch (err) { toast.error(`Update failed: ${err.message}`); }
   };
 
   const isProcessing = isUploading || isProcessingText;
   const completeness = Math.round((profile?.completeness || 0) * 100);
-  const confidence = Math.round((profile?.confidence || 0) * 100);
-  const memoryOverview = profile?.memory_overview || {};
-  const completenessBreakdown = profile?.completeness_breakdown || {};
-  const factSummary = profile?.fact_summary || {};
-  const temporalProfile = profile?.temporal_profile || {};
-  const temporalSummary = temporalProfile.summary || {};
-  const temporalEvents = temporalProfile.recent_events || [];
-  const longContextValidation = validateLongContextSummary(longContextSummary);
-  const completenessChecklist = [
-    { label: 'Name', done: !!profile?.personal?.name },
-    { label: 'University', done: !!profile?.personal?.university },
-    { label: 'Program', done: !!profile?.personal?.program },
-    { label: 'GPA', done: !!profile?.personal?.gpa },
-    { label: 'Semester', done: !!profile?.personal?.semester },
-    { label: 'Email', done: !!profile?.personal?.email },
-    { label: 'Skills', done: (profile?.skills?.length || 0) > 0 },
-    { label: 'Goals', done: (profile?.goals?.length || 0) > 0 },
-    { label: 'Documents', done: (profile?.documents?.length || 0) > 0 },
-  ];
-  const missingCoverageItems = completenessChecklist.filter((item) => !item.done);
-
-  // ── Build dynamic tabs ──────────────────────────────────────
-  const tabs = [{ id: 'personal', label: 'Personal', icon: User, count: null }];
-
-  if (profile?.all_entities) {
-    const PREFERRED_ORDER = ['Course', 'Skill', 'Company', 'Goal', 'Interest', 'Project', 'Department', 'Document'];
-    const entityLabels = Object.keys(profile.all_entities);
-
-    const ordered = [
-      ...PREFERRED_ORDER.filter((l) => entityLabels.includes(l)),
-      ...entityLabels.filter((l) => !PREFERRED_ORDER.includes(l)).sort(),
-    ];
-
-    for (const label of ordered) {
-      const items = profile.all_entities[label] || [];
-      if (items.length > 0 || label === 'Document') {
-        const config = getEntityConfig(label);
-        tabs.push({ id: label, label: config.label, icon: config.icon, count: items.length });
-      }
-    }
-  }
+  const sectionItems = profile?.section_items || {};
+  const totalEntities = Object.values(sectionItems).reduce((s, arr) => s + (arr?.length || 0), 0)
+    + (profile?.unsectioned_items?.length || 0);
+  const rootEntries = Object.entries(profile?.root_properties || {}).filter(
+    ([key, value]) => !HIDDEN_FIELDS.has(key) && value !== null && value !== '',
+  );
+  const profileName = profile?.root_properties?.name || '';
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-fade">
-      <ConfirmDialog
-        open={confirmDialog.open}
-        title={confirmDialog.title}
-        message={confirmDialog.message}
-        onConfirm={confirmDialog.onConfirm}
-        onCancel={closeConfirmDialog}
-        confirmLabel={confirmDialog.confirmLabel}
-        variant={confirmDialog.variant}
-      />
-      <div className="max-w-4xl mx-auto p-6 animate-fade-in">
-        {/* Header */}
-        <div className="flex items-center gap-4 mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 ring-1 ring-primary/10 flex items-center justify-center">
-            <GraduationCap className="h-7 w-7 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">My Profile</h1>
-            <p className="text-muted-foreground text-sm mt-0.5">
-              Manage your academic data. Upload documents or add information directly.
-            </p>
+      <ConfirmDialog {...confirmDialog} onCancel={() => setConfirmDialog((p) => ({ ...p, open: false }))} />
+
+      <div className="max-w-3xl mx-auto px-6 py-8 animate-fade-in">
+
+        {/* ── Header ─────────────────────────────────────── */}
+        <div className="flex items-center justify-between mb-8">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 ring-1 ring-primary/10 flex items-center justify-center">
+              <GraduationCap className="h-6 w-6 text-primary" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight">
+                {profileName || 'My Profile'}
+              </h1>
+              <div className="flex items-center gap-3 mt-1">
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <div className="h-1.5 w-20 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full bg-primary transition-all" style={{ width: `${completeness}%` }} />
+                  </div>
+                  <span>{completeness}%</span>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {(profile?.sections?.length || 0)} sections · {totalEntities} entities
+                </span>
+              </div>
+            </div>
           </div>
         </div>
 
-        {profile && (
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-            <div className="rounded-xl border bg-card p-5">
-              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
-                <Sparkles className="h-4 w-4 text-primary" /> Profile Completeness
-              </h3>
-              <p className="text-2xl font-bold">{completeness}%</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                {missingCoverageItems.length === 0
-                  ? 'Your profile has strong academic coverage.'
-                  : `${missingCoverageItems.length} profile areas are still missing.`}
-              </p>
-            </div>
-            <div className="rounded-xl border bg-card p-5">
-              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
-                <Star className="h-4 w-4 text-primary" /> Memory Confidence
-              </h3>
-              <p className="text-2xl font-bold">{confidence}%</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Based on the confidence of the facts and memories Pathfinder has stored.
-              </p>
-            </div>
-            <div className="rounded-xl border bg-card p-5">
-              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
-                <AlertTriangle className="h-4 w-4 text-primary" /> Memory Health
-              </h3>
-              <p className="text-sm text-muted-foreground">
-                {memoryOverview.candidate_facts || 0} candidate facts, {memoryOverview.memory_items || 0} memories
-              </p>
-              <p className="text-sm text-muted-foreground mt-1">
-                {memoryOverview.evidence || 0} evidence items tracked across your profile and documents
-              </p>
-            </div>
-            <div className="rounded-xl border bg-card p-5">
-              <h3 className="font-semibold text-sm flex items-center gap-2 mb-2">
-                <Check className="h-4 w-4 text-primary" /> Fact Trust
-              </h3>
-              <p className="text-sm text-muted-foreground">
-                {factSummary.confirmed_candidate_facts || 0} confirmed, {factSummary.reinforced_candidate_facts || 0} reinforced
-              </p>
-              <p className="text-sm text-muted-foreground mt-1">
-                {factSummary.inferred_candidate_facts || 0} inferred, {factSummary.document_backed || 0} document-backed
-              </p>
-            </div>
-          </div>
-        )}
-
-        {profile && (
-          <div className="rounded-xl border bg-card p-5 mb-8">
-            <div className="flex items-center justify-between gap-3 mb-4">
-              <h3 className="font-semibold text-sm flex items-center gap-2">
-                <Calendar className="h-4 w-4 text-primary" /> Temporal Memory
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                Pathfinder now distinguishes durable facts from changing student context.
-              </p>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3">
-              <div className="rounded-lg border bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground mb-1">Stable Facts</p>
-                <p className="text-xl font-bold">{temporalSummary.stable_count || 0}</p>
-                <p className="text-xs text-muted-foreground mt-1">Durable profile truth like identity, courses, skills, and experience.</p>
-              </div>
-              <div className="rounded-lg border bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground mb-1">Evolving Facts</p>
-                <p className="text-xl font-bold">{temporalSummary.evolving_count || 0}</p>
-                <p className="text-xs text-muted-foreground mt-1">Goals, interests, and preferences that may shift over time.</p>
-              </div>
-              <div className="rounded-lg border bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground mb-1">Temporary Facts</p>
-                <p className="text-xl font-bold">{temporalSummary.temporary_count || 0}</p>
-                <p className="text-xs text-muted-foreground mt-1">Short-term or semester-specific constraints and signals.</p>
-              </div>
-              <div className="rounded-lg border bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground mb-1">Active Candidates</p>
-                <p className="text-xl font-bold">{temporalSummary.active_candidate_count || 0}</p>
-                <p className="text-xs text-muted-foreground mt-1">New inferred facts still being reinforced before becoming durable.</p>
-              </div>
-              <div className="rounded-lg border bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground mb-1">Stale Signals</p>
-                <p className="text-xl font-bold">{temporalSummary.stale_candidate_count || 0}</p>
-                <p className="text-xs text-muted-foreground mt-1">Superseded or aging temporary facts that should not drive advice.</p>
-              </div>
-              <div className="rounded-lg border bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground mb-1">Expired Preferences</p>
-                <p className="text-xl font-bold">{temporalSummary.expired_preference_count || 0}</p>
-                <p className="text-xs text-muted-foreground mt-1">Old temporary preferences or constraints that should fade out of planning.</p>
-              </div>
-            </div>
-            {temporalEvents.length > 0 && (
-              <div className="mt-4">
-                <p className="text-xs text-muted-foreground mb-2">Recent Memory Events</p>
-                <div className="space-y-2">
-                  {temporalEvents.slice(0, 6).map((event, index) => (
-                    <div key={`${event.timestamp}-${event.value}-${index}`} className="rounded-lg border bg-muted/20 px-3 py-2">
-                      <div className="flex flex-wrap items-center gap-2 text-xs">
-                        <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary">{event.event_type}</span>
-                        <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground">{event.fact_type}</span>
-                        {event.stability && (
-                          <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground">{event.stability}</span>
-                        )}
-                        {event.timestamp && (
-                          <span className="text-muted-foreground">{new Date(event.timestamp).toLocaleDateString()}</span>
-                        )}
-                      </div>
-                      <p className="text-sm mt-2">{event.value || 'Unnamed memory event'}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {profile && Object.keys(completenessBreakdown).length > 0 && (
-          <div className="rounded-xl border bg-card p-5 mb-8">
-            <div className="flex items-center justify-between gap-3 mb-4">
-              <h3 className="font-semibold text-sm flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-primary" /> Coverage By Category
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                Pathfinder now separates durable profile facts from inferred memory.
-              </p>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {Object.entries(completenessBreakdown).map(([category, details]) => {
-                const percent = Math.round((details?.score || 0) * 100);
-                return (
-                  <div key={category} className="rounded-lg border bg-muted/20 p-3">
-                    <div className="flex items-center justify-between gap-2 mb-2">
-                      <p className="text-sm font-medium capitalize">{category}</p>
-                      <span className="text-xs text-muted-foreground">
-                        {details?.covered || 0}/{details?.total || 0}
-                      </span>
-                    </div>
-                    <div className="h-2 rounded-full bg-muted overflow-hidden">
-                      <div
-                        className="h-full bg-primary transition-all"
-                        style={{ width: `${percent}%` }}
-                      />
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-2">{percent}% coverage</p>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Processing Banner */}
+        {/* ── Processing Banner ───────────────────────────── */}
         {isProcessing && processingStep && (
-          <div className="mb-6 p-4 rounded-xl bg-yellow-50 dark:bg-yellow-950/50 border border-yellow-200 dark:border-yellow-800 flex items-center gap-3 animate-fade-in-up">
-            <Loader2 className="h-5 w-5 animate-spin text-yellow-600 dark:text-yellow-400" />
-            <div>
-              <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200">{processingStep}</p>
-              <p className="text-xs text-yellow-600 dark:text-yellow-400 flex items-center gap-1 mt-0.5">
-                <AlertTriangle className="h-3 w-3" />
-                Please do not refresh or navigate away.
-              </p>
-            </div>
+          <div className="mb-6 p-3.5 rounded-xl bg-yellow-50 dark:bg-yellow-950/50 border border-yellow-200 dark:border-yellow-800 flex items-center gap-3">
+            <Loader2 className="h-4 w-4 animate-spin text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
+            <p className="text-sm text-yellow-800 dark:text-yellow-200">{processingStep}</p>
           </div>
         )}
 
-        {/* Input Section */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-          {/* Document Upload */}
-          <div className="rounded-xl border bg-card p-5 hover:shadow-sm transition-shadow">
-            <h3 className="font-semibold mb-1.5 flex items-center gap-2">
+        {/* ── Add Data ────────────────────────────────────── */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-8">
+          <div className="rounded-xl border bg-card p-4">
+            <h3 className="text-sm font-medium flex items-center gap-2 mb-3">
               <Upload className="h-4 w-4 text-primary" /> Upload Document
             </h3>
-            <p className="text-xs text-muted-foreground mb-4">
-              Upload transcripts, resumes, or other academic documents (PDF, Images, DOCX).
-            </p>
             <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.heif,.heic,.docx" onChange={handleUpload} className="hidden" />
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isProcessing}
-              className="w-full py-2.5 border-2 border-dashed rounded-lg text-sm hover:bg-accent hover:border-primary/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2 active:scale-[0.98]"
+              className="w-full py-2 border-2 border-dashed rounded-lg text-sm hover:bg-accent hover:border-primary/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               {isUploading ? 'Processing...' : 'Select File'}
             </button>
           </div>
-
-          {/* Free Text Input */}
-          <div className="rounded-xl border bg-card p-5 hover:shadow-sm transition-shadow">
-            <h3 className="font-semibold mb-1.5 flex items-center gap-2">
+          <div className="rounded-xl border bg-card p-4">
+            <h3 className="text-sm font-medium flex items-center gap-2 mb-3">
               <Sparkles className="h-4 w-4 text-primary" /> Add Information
             </h3>
-            <p className="text-xs text-muted-foreground mb-4">
-              Type anything about yourself — we'll extract and store it intelligently.
-            </p>
             <textarea
               value={freeText}
               onChange={(e) => setFreeText(e.target.value)}
-              placeholder='e.g., "I have 2 years of Python experience and my GPA is 3.7..."'
-              className="w-full rounded-lg border bg-background px-3 py-2.5 text-sm resize-none h-20 focus:outline-none focus:ring-2 focus:ring-ring/50 transition-shadow"
+              placeholder="Type anything about yourself — we'll extract and store it."
+              className="w-full rounded-lg border bg-background px-3 py-2 text-sm resize-none h-[68px] focus:outline-none focus:ring-2 focus:ring-ring/50"
               disabled={isProcessing}
             />
             <button
               onClick={handleAddText}
               disabled={!freeText.trim() || isProcessing}
-              className="mt-2 w-full py-2.5 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
+              className="mt-2 w-full py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-1.5"
             >
-              {isProcessingText ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {isProcessingText ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               {isProcessingText ? 'Processing...' : 'Add to Profile'}
             </button>
           </div>
         </div>
 
-        <div className="rounded-xl border bg-card p-5 mb-8">
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <h3 className="font-semibold text-sm flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-primary" /> Long Context Passed To The Specialist
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              This is the durable context shape Pathfinder builds before each turn.
-            </p>
-          </div>
-          <div className="grid grid-cols-1 xl:grid-cols-[1.1fr,0.9fr] gap-4">
-            <div className="rounded-lg border bg-muted/20 p-4">
-              <p className="text-xs text-muted-foreground mb-2">Runtime Payload Preview</p>
-              <pre className="text-xs whitespace-pre-wrap break-words overflow-x-auto">
-                {JSON.stringify(profile?.long_context_preview || {}, null, 2)}
-              </pre>
-            </div>
-            <div className="rounded-lg border bg-muted/20 p-4">
-              <p className="text-xs text-muted-foreground mb-2">Editable Long-Context Summary</p>
-              <textarea
-                value={longContextSummary}
-                onChange={(e) => setLongContextSummary(e.target.value)}
-                placeholder={LONG_CONTEXT_TEMPLATE}
-                className="w-full rounded-lg border bg-background px-3 py-2.5 text-sm resize-none h-40 focus:outline-none focus:ring-2 focus:ring-ring/50 transition-shadow"
-              />
-              <div className="flex items-center justify-between gap-3 mt-3">
-                <div>
-                  <p className="text-xs text-muted-foreground">
-                    Required format: one line each for {LONG_CONTEXT_FIELDS.join(', ')}.
-                  </p>
-                  {!longContextValidation.valid ? (
-                    <p className="text-xs text-red-600 dark:text-red-400 mt-1">{longContextValidation.message}</p>
-                  ) : null}
+        {/* ── Profile Data ────────────────────────────────── */}
+        {state.profileLoading ? (
+          <LoadingSkeleton />
+        ) : !profile ? (
+          <EmptyState />
+        ) : (
+          <div className="space-y-4">
+            {rootEntries.length > 0 && (
+              <Section title="Profile Details" icon={User} count={rootEntries.length} defaultOpen>
+                <div className="divide-y">
+                  {rootEntries
+                    .sort(([a], [b]) => (a === 'name' ? -1 : b === 'name' ? 1 : a.localeCompare(b)))
+                    .map(([key, value]) => (
+                      <EditableField key={key} label={fmtLabel(key)} value={String(value)} fieldKey={key} onSave={handleEditField} />
+                    ))}
                 </div>
-                <button
-                  onClick={handleSaveLongContext}
-                  disabled={isSavingLongContext || !longContextValidation.valid}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
-                >
-                  {isSavingLongContext ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                  {isSavingLongContext ? 'Saving...' : 'Save Summary'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+              </Section>
+            )}
 
-        {/* Profile Tabs */}
-        <div className="rounded-xl border bg-card overflow-hidden">
-          <div className="flex border-b overflow-x-auto scrollbar-fade bg-muted/30">
-            {tabs.map(({ id, label, icon: Icon, count }) => (
-              <button
-                key={id}
-                onClick={() => setActiveTab(id)}
-                className={cn(
-                  'flex items-center gap-1.5 px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-all',
-                  activeTab === id
-                    ? 'border-primary text-primary bg-card'
-                    : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-card/50'
-                )}
-              >
-                <Icon className="h-4 w-4" />
-                {label}
-                {count !== null && count > 0 && (
-                  <span className={cn(
-                    'text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[20px] text-center',
-                    activeTab === id
-                      ? 'bg-primary/10 text-primary'
-                      : 'bg-muted text-muted-foreground'
-                  )}>
-                    {count}
-                  </span>
-                )}
-              </button>
+            {(profile.sections || []).map((section) => {
+              const items = sectionItems[section.key] || [];
+              return (
+                <Section
+                  key={section.key}
+                  title={section.label || section.key}
+                  description={section.description || section.purpose}
+                  icon={Folder}
+                  count={items.length}
+                  defaultOpen={items.length > 0 && items.length <= 15}
+                >
+                  {items.length > 0 ? (
+                    <EntityGroup items={items} onDelete={handleDelete} />
+                  ) : (
+                    <p className="text-sm text-muted-foreground py-4 text-center">No items yet.</p>
+                  )}
+                </Section>
+              );
+            })}
+
+            {(profile.unsectioned_items?.length || 0) > 0 && (
+              <Section title="Other" icon={Circle} count={profile.unsectioned_items.length} defaultOpen>
+                <EntityGroup items={profile.unsectioned_items} onDelete={handleDelete} />
+              </Section>
+            )}
+          </div>
+        )}
+
+        {/* ── Advanced / Debug ────────────────────────────── */}
+        {profile && (
+          <div className="mt-10">
+            <button
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mx-auto"
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+              Advanced
+              <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showAdvanced && 'rotate-180')} />
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-4 space-y-4 animate-fade-in">
+                <AdvancedPanel profile={profile} onSaveLongContext={async (text) => {
+                  try {
+                    await updateProfile('long_context_summary', text, state.activeStudentId);
+                    toast.success('Saved');
+                    await loadProfile();
+                  } catch (err) { toast.error(`Failed: ${err.message}`); }
+                }} />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Section (collapsible) ───────────────────────────────────────
+
+function Section({ title, description, icon: Icon, count = 0, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="rounded-xl border bg-card overflow-hidden">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-3 px-4 py-3.5 text-left hover:bg-muted/30 transition-colors">
+        <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+          <Icon className="h-4 w-4 text-primary" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold truncate">{title}</span>
+            {count > 0 && (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">{count}</span>
+            )}
+          </div>
+          {description && <p className="text-xs text-muted-foreground truncate mt-0.5">{description}</p>}
+        </div>
+        <ChevronDown className={cn('h-4 w-4 text-muted-foreground transition-transform flex-shrink-0', open && 'rotate-180')} />
+      </button>
+      {open && <div className="border-t">{children}</div>}
+    </div>
+  );
+}
+
+// ── Entity Group ────────────────────────────────────────────────
+
+function EntityGroup({ items, onDelete }) {
+  const grouped = {};
+  for (const entry of items) {
+    const label = entry?.label || 'Item';
+    (grouped[label] ||= []).push(entry?.item || {});
+  }
+
+  return (
+    <div className="divide-y">
+      {Object.entries(grouped).map(([label, entities]) => {
+        const { label: groupLabel, icon: Icon } = cfgFor(label);
+        return (
+          <div key={label}>
+            <div className="flex items-center gap-2 px-4 pt-3 pb-1.5">
+              <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{groupLabel}</span>
+              <span className="text-[10px] text-muted-foreground/60">{entities.length}</span>
+            </div>
+            {entities.map((item, i) => (
+              <EntityRow key={i} label={label} item={item} onDelete={onDelete} />
             ))}
           </div>
-
-          <div className="p-5">
-            {state.profileLoading ? (
-              <ProfileSkeleton />
-            ) : !profile ? (
-              <div className="text-center py-12">
-                <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
-                  <User className="h-6 w-6 text-muted-foreground" />
-                </div>
-                <p className="text-muted-foreground text-sm">
-                  No profile data yet. Upload a document or add information above.
-                </p>
-              </div>
-            ) : activeTab === 'personal' ? (
-              <DynamicPersonalTab personal={profile.personal} onEditField={handleEditField} />
-            ) : (
-              <DynamicEntityTab
-                label={activeTab}
-                items={profile.all_entities?.[activeTab] || []}
-                onDelete={handleDelete}
-                onEdit={handleEditEntity}
-              />
-            )}
-          </div>
-        </div>
-      </div>
+        );
+      })}
     </div>
   );
 }
 
-// ── Dynamic Personal Tab ────────────────────────────────────────
+// ── Entity Row ──────────────────────────────────────────────────
 
-function DynamicPersonalTab({ personal, onEditField }) {
-  if (!personal) return <EmptyTab />;
+function EntityRow({ label, item, onDelete }) {
+  const [expanded, setExpanded] = useState(false);
+  const name = item.name || item.title || item.code || item.key || item.filename || label;
+  const badge = (item.role || item.type || item.category || '');
 
-  const entries = Object.entries(personal)
-    .filter(([key, value]) => !HIDDEN_PERSONAL_FIELDS.has(key) && value != null && String(value).trim() !== '')
-    .sort(([a], [b]) => {
-      const order = ['name', 'university', 'program', 'gpa', 'semester', 'email'];
-      const ai = order.indexOf(a);
-      const bi = order.indexOf(b);
-      if (ai >= 0 && bi >= 0) return ai - bi;
-      if (ai >= 0) return -1;
-      if (bi >= 0) return 1;
-      return a.localeCompare(b);
-    });
-
-  return entries.length > 0 ? (
-    <div className="space-y-0.5">
-      {entries.map(([key, value]) => (
-        <EditableField
-          key={key}
-          label={formatFieldLabel(key)}
-          value={String(value)}
-          fieldKey={key}
-          onSave={onEditField}
-        />
-      ))}
-    </div>
-  ) : <EmptyTab />;
-}
-
-// ── Dynamic Entity Tab ──────────────────────────────────────────
-
-function DynamicEntityTab({ label, items, onDelete, onEdit }) {
-  if (!items || items.length === 0) return <EmptyTab />;
-
-  const config = getEntityConfig(label);
-  const [sortAsc, setSortAsc] = useState(true);
-
-  const sortedItems = React.useMemo(() => {
-    if (!config.sortKey) return items;
-    return [...items].sort((a, b) => {
-      const aVal = (a[config.sortKey] || '').toLowerCase();
-      const bVal = (b[config.sortKey] || '').toLowerCase();
-      return sortAsc ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
-    });
-  }, [items, config.sortKey, sortAsc]);
-
-  if (config.cardMode) {
-    return (
-      <div className="space-y-3">
-        {sortedItems.map((item, i) => (
-          <ExperienceCard
-            key={i}
-            label={label}
-            item={item}
-            onDelete={() => onDelete(label, item[config.nameKey] || item.name || '')}
-            onEdit={onEdit}
-          />
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      {config.sortKey && sortedItems.length > 1 && (
-        <div className="flex justify-end mb-2">
-          <button
-            onClick={() => setSortAsc(!sortAsc)}
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2.5 py-1.5 rounded-lg hover:bg-muted"
-          >
-            <ArrowUpDown className="h-3 w-3" />
-            {sortAsc ? 'A → Z' : 'Z → A'}
-          </button>
-        </div>
-      )}
-
-      <div className="space-y-0.5">
-        {sortedItems.map((item, i) => (
-          <div key={i} className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-muted/50 group transition-colors">
-            <span className="text-sm">{config.render(item)}</span>
-            <button
-              onClick={() => onDelete(label, item[config.nameKey] || item.name || item.filename || '')}
-              className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all p-1 rounded-md hover:bg-destructive/10"
-              title="Delete"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
+  const props = Object.entries(item).filter(
+    ([k, v]) => !HIDDEN_ENTITY_FIELDS.has(k) && k !== 'name' && k !== 'title' && v != null && String(v).trim() !== '',
   );
-}
-
-// ── Experience Card ─────────────────────────────────────────────
-
-function ExperienceCard({ label, item, onDelete, onEdit }) {
-  const [editing, setEditing] = useState(false);
-  const name = item.name || 'Company';
-  const title = item.title || item.role || '';
-  const description = item.description || '';
-  const startDate = item.start_date || item.startDate || '';
-  const endDate = item.end_date || item.endDate || '';
-
-  const [draft, setDraft] = useState({
-    name, title, description, start_date: startDate, end_date: endDate,
-  });
-
-  const handleSave = () => {
-    // Build only changed properties
-    const changes = {};
-    if (draft.name !== name) changes.name = draft.name;
-    if (draft.title !== title) changes.title = draft.title;
-    if (draft.description !== description) changes.description = draft.description;
-    if (draft.start_date !== startDate) changes.start_date = draft.start_date;
-    if (draft.end_date !== endDate) changes.end_date = draft.end_date;
-
-    if (Object.keys(changes).length > 0) {
-      onEdit(label, name, changes);
-    }
-    setEditing(false);
-  };
-
-  const handleCancel = () => {
-    setDraft({ name, title, description, start_date: startDate, end_date: endDate });
-    setEditing(false);
-  };
-
-  if (editing) {
-    return (
-      <div className="rounded-xl border p-4 ring-2 ring-primary/20 animate-fade-in">
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">Company</label>
-              <input
-                type="text"
-                value={draft.name}
-                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
-                autoFocus
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">Role / Title</label>
-              <input
-                type="text"
-                value={draft.title}
-                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">Start Date</label>
-              <input
-                type="text"
-                value={draft.start_date}
-                onChange={(e) => setDraft({ ...draft, start_date: e.target.value })}
-                placeholder="e.g. Jan 2022"
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground mb-1 block">End Date</label>
-              <input
-                type="text"
-                value={draft.end_date}
-                onChange={(e) => setDraft({ ...draft, end_date: e.target.value })}
-                placeholder="Present"
-                className="w-full rounded-lg border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="text-xs font-medium text-muted-foreground mb-1 block">Description</label>
-            <textarea
-              value={draft.description}
-              onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm resize-none h-20 focus:outline-none focus:ring-2 focus:ring-ring/50"
-            />
-          </div>
-
-          <div className="flex justify-end gap-2 pt-1">
-            <button
-              onClick={handleCancel}
-              className="px-3 py-1.5 text-sm font-medium rounded-lg border hover:bg-muted transition-colors flex items-center gap-1.5"
-            >
-              <X className="h-3.5 w-3.5" /> Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              className="px-3 py-1.5 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity flex items-center gap-1.5"
-            >
-              <Check className="h-3.5 w-3.5" /> Save
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const inline = props.filter(([, v]) => String(v).length <= 80);
+  const detail = props.filter(([, v]) => String(v).length > 80);
+  const hasMore = inline.length > 3 || detail.length > 0;
 
   return (
-    <div className="rounded-xl border p-4 hover:bg-muted/30 hover:shadow-sm transition-all group">
-      <div className="flex items-start justify-between">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-semibold">{name}</span>
-            {title && (
-              <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
-                {title}
-              </span>
-            )}
-          </div>
-
-          {(startDate || endDate) && (
-            <div className="flex items-center gap-1.5 mt-1.5 text-xs text-muted-foreground">
-              <Calendar className="h-3 w-3" />
-              <span>{startDate || '?'} — {endDate || 'Present'}</span>
-            </div>
+    <div className="group px-4 py-2.5 hover:bg-muted/30 transition-colors">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className="text-sm font-medium truncate">{name}</span>
+          {badge && badge !== name && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary flex-shrink-0">{badge}</span>
           )}
-
-          {description && (
-            <p className="mt-2 text-sm text-muted-foreground leading-relaxed line-clamp-3">
-              {description}
-            </p>
+          {inline.length > 0 && !expanded && (
+            <span className="text-xs text-muted-foreground truncate hidden sm:inline">
+              — {inline.slice(0, 2).map(([k, v]) => `${fmtLabel(k)}: ${String(v)}`).join(' · ')}
+            </span>
           )}
         </div>
-
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all ml-3 mt-0.5 flex-shrink-0">
+        <div className="flex items-center gap-0.5 flex-shrink-0">
+          {hasMore && (
+            <button onClick={() => setExpanded(!expanded)} className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-all" title={expanded ? 'Collapse' : 'Details'}>
+              <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', expanded && 'rotate-180')} />
+            </button>
+          )}
           <button
-            onClick={() => setEditing(true)}
-            className="text-muted-foreground hover:text-foreground p-1 rounded-md hover:bg-accent transition-colors"
-            title="Edit"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={onDelete}
-            className="text-muted-foreground hover:text-destructive p-1 rounded-md hover:bg-destructive/10 transition-colors"
+            onClick={() => onDelete(label, item.name || item.title || item.filename || name)}
+            className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all"
             title="Delete"
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
+
+      {expanded && props.length > 0 && (
+        <div className="mt-2 pl-1 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
+          {props.map(([k, v]) => (
+            <div key={k} className={cn(String(v).length > 80 && 'sm:col-span-2')}>
+              <span className="text-muted-foreground">{fmtLabel(k)}: </span>
+              <span className="text-foreground/80">{String(v)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -913,49 +442,27 @@ function EditableField({ label, value, fieldKey, onSave }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
 
-  const handleSave = () => {
-    if (draft !== value) {
-      onSave(fieldKey, draft);
-    }
-    setEditing(false);
-  };
-
-  const handleCancel = () => {
-    setDraft(value);
-    setEditing(false);
-  };
+  const save = () => { if (draft !== value) onSave(fieldKey, draft); setEditing(false); };
+  const cancel = () => { setDraft(value); setEditing(false); };
 
   return (
-    <div className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-muted/30 group transition-colors">
-      <span className="text-muted-foreground text-sm w-28 flex-shrink-0 font-medium">{label}</span>
+    <div className="flex items-center justify-between py-2.5 px-4 hover:bg-muted/30 group transition-colors">
+      <span className="text-muted-foreground text-sm w-32 flex-shrink-0">{label}</span>
       {editing ? (
-        <div className="flex items-center gap-2 flex-1 ml-4 animate-fade-in">
+        <div className="flex items-center gap-2 flex-1 ml-3">
           <input
-            type="text"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            type="text" value={draft} onChange={(e) => setDraft(e.target.value)}
             className="flex-1 rounded-lg border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
             autoFocus
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleSave();
-              if (e.key === 'Escape') handleCancel();
-            }}
+            onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') cancel(); }}
           />
-          <button onClick={handleSave} className="p-1 rounded-md text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30 transition-colors" title="Save">
-            <Check className="h-4 w-4" />
-          </button>
-          <button onClick={handleCancel} className="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors" title="Cancel">
-            <X className="h-4 w-4" />
-          </button>
+          <button onClick={save} className="p-1 rounded-md text-green-600 hover:bg-green-100 dark:hover:bg-green-900/30" title="Save"><Check className="h-4 w-4" /></button>
+          <button onClick={cancel} className="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10" title="Cancel"><X className="h-4 w-4" /></button>
         </div>
       ) : (
-        <div className="flex items-center gap-2 flex-1 ml-4 justify-end">
-          <span className="text-sm font-medium">{value || '—'}</span>
-          <button
-            onClick={() => { setDraft(value || ''); setEditing(true); }}
-            className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition-all p-1 rounded-md hover:bg-accent"
-            title="Edit"
-          >
+        <div className="flex items-center gap-2 flex-1 ml-3 justify-end">
+          <span className="text-sm">{value || '—'}</span>
+          <button onClick={() => { setDraft(value || ''); setEditing(true); }} className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-all" title="Edit">
             <Pencil className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -964,60 +471,131 @@ function EditableField({ label, value, fieldKey, onSave }) {
   );
 }
 
-function EmptyTab() {
+// ── Advanced Panel ──────────────────────────────────────────────
+
+function AdvancedPanel({ profile, onSaveLongContext }) {
+  const [summary, setSummary] = useState(
+    profile?.long_context_preview?.summary || profile?.root_properties?.long_context_summary || ''
+  );
+  const [saving, setSaving] = useState(false);
+  const temporal = profile?.temporal_profile?.summary || {};
+  const facts = profile?.fact_summary || {};
+  const memory = profile?.memory_overview || {};
+
+  const handleSave = async () => {
+    setSaving(true);
+    await onSaveLongContext(summary);
+    setSaving(false);
+  };
+
   return (
-    <div className="text-center py-10">
-      <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
-        <FileText className="h-5 w-5 text-muted-foreground/50" />
+    <>
+      {/* Stats */}
+      <div className="rounded-xl border bg-card p-4">
+        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Memory & Evidence</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { label: 'Stable facts', value: temporal.stable_count || 0 },
+            { label: 'Evolving', value: temporal.evolving_count || 0 },
+            { label: 'Candidates', value: temporal.active_candidate_count || 0 },
+            { label: 'Support records', value: memory.support_records || 0 },
+            { label: 'Confirmed', value: facts.confirmed_candidate_facts || 0 },
+            { label: 'Reinforced', value: facts.reinforced_candidate_facts || 0 },
+            { label: 'Inferred', value: facts.inferred_candidate_facts || 0 },
+            { label: 'Doc-backed', value: facts.document_backed || 0 },
+          ].map((s) => (
+            <div key={s.label} className="text-center">
+              <p className="text-lg font-semibold">{s.value}</p>
+              <p className="text-[10px] text-muted-foreground">{s.label}</p>
+            </div>
+          ))}
+        </div>
       </div>
-      <p className="text-muted-foreground text-sm">No data available yet.</p>
+
+      {/* Long Context Editor */}
+      <div className="rounded-xl border bg-card p-4">
+        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Long-Context Summary</h3>
+        <textarea
+          value={summary}
+          onChange={(e) => setSummary(e.target.value)}
+          placeholder={'Profile: none\nDetails: none\nSections: none'}
+          className="w-full rounded-lg border bg-background px-3 py-2.5 text-sm resize-none h-32 focus:outline-none focus:ring-2 focus:ring-ring/50 mb-2"
+        />
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] text-muted-foreground">One &quot;Label: value&quot; per line.</p>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </div>
+
+      {/* Runtime Payload */}
+      <div className="rounded-xl border bg-card p-4">
+        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Runtime Payload Preview</h3>
+        <pre className="text-[11px] text-muted-foreground whitespace-pre-wrap break-words bg-muted/30 rounded-lg p-3 max-h-64 overflow-y-auto">
+          {JSON.stringify(profile?.long_context_preview || {}, null, 2)}
+        </pre>
+      </div>
+    </>
+  );
+}
+
+// ── Shared small components ─────────────────────────────────────
+
+function LoadingSkeleton() {
+  return (
+    <div className="space-y-3">
+      {[...Array(4)].map((_, i) => (
+        <div key={i} className="rounded-xl border bg-card p-4">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-muted animate-pulse" />
+            <div className="flex-1 space-y-2">
+              <div className="h-4 w-32 bg-muted rounded animate-pulse" />
+              <div className="h-3 w-48 bg-muted rounded animate-pulse" />
+            </div>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
 
-// ── Confirmation Dialog ──────────────────────────────────────────
+function EmptyState() {
+  return (
+    <div className="text-center py-16">
+      <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
+        <User className="h-6 w-6 text-muted-foreground" />
+      </div>
+      <p className="text-muted-foreground text-sm">No profile data yet.</p>
+      <p className="text-muted-foreground text-xs mt-1">Upload a document or add information above to get started.</p>
+    </div>
+  );
+}
 
 function ConfirmDialog({ open, title, message, onConfirm, onCancel, confirmLabel = 'Delete', variant = 'destructive' }) {
   if (!open) return null;
-
-  const btnClass = variant === 'destructive'
-    ? 'bg-destructive text-destructive-foreground'
-    : 'bg-primary text-primary-foreground';
-  const iconBgClass = variant === 'destructive'
-    ? 'bg-destructive/10'
-    : 'bg-primary/10';
-  const iconColor = variant === 'destructive'
-    ? 'text-destructive'
-    : 'text-primary';
-
+  const isDanger = variant === 'destructive';
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
-      {/* Backdrop */}
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
-      {/* Dialog */}
       <div className="relative bg-card border rounded-2xl shadow-xl p-6 max-w-sm w-full mx-4 animate-fade-in-up">
         <div className="flex items-start gap-3 mb-4">
-          <div className={`w-10 h-10 rounded-full ${iconBgClass} flex items-center justify-center flex-shrink-0`}>
-            <AlertTriangle className={`h-5 w-5 ${iconColor}`} />
+          <div className={cn('w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0', isDanger ? 'bg-destructive/10' : 'bg-primary/10')}>
+            <AlertTriangle className={cn('h-5 w-5', isDanger ? 'text-destructive' : 'text-primary')} />
           </div>
           <div>
             <h3 className="text-sm font-semibold">{title}</h3>
             <p className="text-sm text-muted-foreground mt-1">{message}</p>
           </div>
         </div>
-        <div className="flex justify-end gap-2 mt-5">
-          <button
-            onClick={onCancel}
-            className="px-4 py-2 text-sm font-medium rounded-lg border hover:bg-muted transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            className={`px-4 py-2 text-sm font-medium rounded-lg ${btnClass} hover:opacity-90 transition-opacity`}
-          >
-            {confirmLabel}
-          </button>
+        <div className="flex justify-end gap-2">
+          <button onClick={onCancel} className="px-4 py-2 text-sm font-medium rounded-lg border hover:bg-muted transition-colors">Cancel</button>
+          <button onClick={onConfirm} className={cn('px-4 py-2 text-sm font-medium rounded-lg hover:opacity-90', isDanger ? 'bg-destructive text-destructive-foreground' : 'bg-primary text-primary-foreground')}>{confirmLabel}</button>
         </div>
       </div>
     </div>

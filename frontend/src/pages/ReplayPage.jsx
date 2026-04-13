@@ -100,6 +100,8 @@ export default function ReplayPage() {
   const toolCalls = Array.isArray(selectedReplay?.tool_call_log) ? selectedReplay.tool_call_log : [];
   const citations = Array.isArray(selectedReplay?.citations) ? selectedReplay.citations : [];
   const documentExtractions = Array.isArray(selectedReplay?.document_extractions) ? selectedReplay.document_extractions : [];
+  const documentIngestion = selectedReplay?.document_ingestion || {};
+  const patchSummaries = Array.isArray(documentIngestion?.patch_summaries) ? documentIngestion.patch_summaries : [];
 
   return (
     <div className="flex-1 overflow-y-auto scrollbar-fade">
@@ -247,6 +249,14 @@ export default function ReplayPage() {
                   <JsonBlock value={selectedReplay.long_context_payload || {}} />
                 </div>
 
+                <div className="rounded-xl border bg-muted/20 p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <FileText className="h-4 w-4 text-primary" />
+                    <p className="font-medium">Profile Schema</p>
+                  </div>
+                  <JsonBlock value={selectedReplay.profile_schema || {}} />
+                </div>
+
                 {documentExtractions.length > 0 ? (
                   <div className="rounded-xl border bg-muted/20 p-4">
                     <div className="flex items-center gap-2 mb-3">
@@ -275,6 +285,68 @@ export default function ReplayPage() {
                           <pre className="text-xs whitespace-pre-wrap break-words overflow-x-auto rounded-lg border bg-muted/20 p-3">
                             {item.text_preview || 'No extracted text saved.'}
                           </pre>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {patchSummaries.length > 0 ? (
+                  <div className="rounded-xl border bg-muted/20 p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Paperclip className="h-4 w-4 text-primary" />
+                      <p className="font-medium">Document Ingestion Patch</p>
+                      <span className="text-xs text-muted-foreground">
+                        {documentIngestion.entity_count || 0} entities • {documentIngestion.relationship_count || 0} relationships
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4 text-xs">
+                      <div className="rounded-lg border bg-card p-3">
+                        <p className="text-muted-foreground">Chunks</p>
+                        <p className="text-lg font-semibold">{documentIngestion.chunk_count || 0}</p>
+                      </div>
+                      <div className="rounded-lg border bg-card p-3">
+                        <p className="text-muted-foreground">Entities</p>
+                        <p className="text-lg font-semibold">{documentIngestion.entity_count || 0}</p>
+                      </div>
+                      <div className="rounded-lg border bg-card p-3">
+                        <p className="text-muted-foreground">Relationships</p>
+                        <p className="text-lg font-semibold">{documentIngestion.relationship_count || 0}</p>
+                      </div>
+                      <div className="rounded-lg border bg-card p-3">
+                        <p className="text-muted-foreground">Support Records</p>
+                        <p className="text-lg font-semibold">{documentIngestion.support_record_count || documentIngestion.candidate_fact_count || 0}</p>
+                      </div>
+                      <div className="rounded-lg border bg-card p-3">
+                        <p className="text-muted-foreground">Schema Sections</p>
+                        <p className="text-lg font-semibold">{documentIngestion.schema_section_count || 0}</p>
+                      </div>
+                    </div>
+                    <div className="space-y-4">
+                      {patchSummaries.map((item, index) => (
+                        <div key={item.document_id || `${item.filename}-${index}`} className="rounded-xl border bg-card p-4 space-y-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-semibold">{item.filename || 'Uploaded document'}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {item.entity_count || 0} entities • {item.relationship_count || 0} relationships
+                            </span>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-1">Agent Result</p>
+                            <JsonBlock value={item.agent_result || {}} />
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-1">Saved Items</p>
+                            <JsonBlock value={item.saved_items || []} />
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-1">Context Updates</p>
+                            <JsonBlock value={item.context_updates || {}} />
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground mb-1">Ingestion Tool Calls</p>
+                            <JsonBlock value={item.tool_calls || []} />
+                          </div>
                         </div>
                       ))}
                     </div>

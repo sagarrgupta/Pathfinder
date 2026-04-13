@@ -13,26 +13,20 @@ import json
 import logging
 from typing import Any
 
-from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.adapters.embeddings.ollama import EmbeddingServiceError, aembed_documents
-from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graph_store import (
     store_document_node,
     store_evidence,
-    store_extracted_entities,
 )
 from app.adapters.neo4j.vector_store import store_chunks
 from app.adapters.pdf.extractor import get_file_type
 from app.config.settings import settings
-from app.core.prompts import (
-    DOC_ANALYST_ENTITY_EXTRACTION_SYSTEM_PROMPT,
-    DOC_ANALYST_ENTITY_EXTRACTION_USER_PROMPT,
-)
 from app.core.state import PathfinderState
 from app.services.execution_registry import execute_document_ingestion
 from app.services.document_roles import infer_document_role
+from app.services.document_ingestion import execute_document_ingestion_agent
 from app.services.transcript_state import build_transcript_state
 from app.services.runtime_recovery import (
     recovery_for_document_embedding_failure,
@@ -40,13 +34,10 @@ from app.services.runtime_recovery import (
     recovery_for_empty_document_extraction,
     recovery_for_entity_extraction_failure,
 )
-from app.utils.json_extract import parse_json_object
 from app.utils.ids import generate_document_id, generate_chunk_id
 
 log = logging.getLogger("pathfinder.agents.doc_analyst")
 
-_ENTITY_EXTRACTION_SYSTEM = DOC_ANALYST_ENTITY_EXTRACTION_SYSTEM_PROMPT
-_ENTITY_EXTRACTION_USER = DOC_ANALYST_ENTITY_EXTRACTION_USER_PROMPT
 _EXTRACTED_TEXT_PREVIEW_LIMIT = 12000
 
 
@@ -58,13 +49,19 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
     student_id = state.get("student_id", "")
     is_global = state.get("is_global_upload", False)
     scope = "global" if is_global else "session"
+    query = str(state.get("query", "") or "")
 
     step_progress = list(state.get("step_progress", []))
     all_entities: list[dict[str, Any]] = []
+    all_relationships: list[dict[str, Any]] = []
+    all_candidate_facts: list[dict[str, Any]] = []
+    all_memory_items: list[dict[str, Any]] = []
+    all_promoted_entities: list[dict[str, Any]] = []
     total_chunks = 0
     document_roles: list[dict[str, Any]] = []
     transcript_states: list[dict[str, Any]] = []
     extracted_documents: list[dict[str, Any]] = []
+    patch_summaries: list[dict[str, Any]] = []
     recovery_events = list(state.get("recovery_events", []))
 
     if not files:
@@ -76,7 +73,6 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         chunk_overlap=settings.CHUNK_OVERLAP,
         separators=["\n\n", "\n", ". ", " ", ""],
     )
-    llm = get_text_llm()
 
     for file_info in files:
         if not isinstance(file_info, dict):
@@ -216,45 +212,97 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                     recovery_for_document_embedding_failure(filename, str(exc)).as_dict()
                 )
 
-        # Step 4: Entity extraction
-        step_progress.append(f"Extracting knowledge from {filename}...")
+        # Step 4: Rich ingestion patch extraction and application
+        step_progress.append(f"Extracting structured knowledge from {filename}...")
         try:
-            # Use string concatenation (NOT .format()) to avoid crashes
-            # when the resume text contains curly braces like {Python, Java}
-            user_content = _ENTITY_EXTRACTION_USER + full_text[:4000] + "\n--- DOCUMENT END ---"
-            response = await llm.ainvoke([
-                SystemMessage(content=_ENTITY_EXTRACTION_SYSTEM),
-                HumanMessage(content=user_content),
-            ])
-
-            content_text = response.content if isinstance(response.content, str) else str(response.content)
-
-            parsed = parse_json_object(content_text)
-            if parsed:
-                entities = parsed.get("entities", [])
-                student_props = parsed.get("student_properties", {})
-
-                # Store entities in KG
-                count = await store_extracted_entities(entities, doc_id, student_id)
-                all_entities.extend(entities)
-                step_progress.append(f"Extracted {count} entities from {filename}")
-
-                # Update student properties if found
-                if student_props:
-                    from app.adapters.neo4j.graph_store import update_student
-                    await update_student(student_id, **{k: v for k, v in student_props.items() if v})
-            else:
-                step_progress.append(f"Could not parse entities from {filename}")
-
+            applied = await execute_document_ingestion_agent(
+                student_id=student_id,
+                session_id=session_id if scope == "session" else None,
+                document_id=doc_id,
+                query=query,
+                filename=filename,
+                document_role=inferred_role.get("role", "general_document"),
+                file_type=file_type,
+                full_text=full_text,
+            )
+            profile_summary = applied.get("profile_summary", {}) if isinstance(applied.get("profile_summary", {}), dict) else {}
+            schema_sections = list((profile_summary.get("profile_schema", {}) or {}).get("sections", []) or [])
+            tool_log = list(applied.get("tool_call_log", []) or [])
+            entity_count = sum(
+                1
+                for item in tool_log
+                if isinstance(item, dict)
+                and item.get("status") == "ok"
+                and item.get("tool") in {"upsert_graph_node", "graph_add_node", "graph_update_node"}
+            )
+            relationship_count = sum(
+                1
+                for item in tool_log
+                if isinstance(item, dict)
+                and item.get("status") == "ok"
+                and item.get("tool") in {"upsert_graph_relation", "graph_add_relation", "graph_update_relation"}
+            )
+            candidate_fact_count = sum(
+                1
+                for item in tool_log
+                if isinstance(item, dict)
+                and item.get("status") == "ok"
+                and item.get("tool") == "add_or_update_fact"
+            )
+            support_record_count = candidate_fact_count
+            schema_section_count = sum(
+                1
+                for item in tool_log
+                if isinstance(item, dict)
+                and item.get("status") == "ok"
+                and item.get("tool") == "upsert_profile_schema_section"
+            )
+            all_entities.extend([{}] * entity_count)
+            all_relationships.extend([{}] * relationship_count)
+            all_candidate_facts.extend([{}] * candidate_fact_count)
+            patch_summaries.append(
+                {
+                    "document_id": doc_id,
+                    "filename": filename,
+                    "tool_calls": tool_log,
+                    "agent_result": applied.get("final_payload", {}),
+                    "saved_items": applied.get("saved_items", []),
+                    "summary": applied.get("summary", ""),
+                    "stop_reason": applied.get("stop_reason", ""),
+                    "profile_snapshot": profile_summary,
+                    "context_updates": applied.get("context_updates", {}),
+                    "schema_sections": schema_sections,
+                    "schema_section_count": schema_section_count or len(schema_sections),
+                    "entity_count": entity_count,
+                    "relationship_count": relationship_count,
+                    "support_record_count": support_record_count,
+                    "candidate_fact_count": candidate_fact_count,
+                    "memory_item_count": 0,
+                    "promoted_entity_count": 0,
+                }
+            )
+            step_progress.append(
+                f"Applied ingestion agent for {filename}: "
+                f"{schema_section_count or len(schema_sections)} schema sections, "
+                f"{entity_count} nodes, {relationship_count} relationships"
+            )
         except Exception as exc:
-            log.warning("Entity extraction failed for %s: %s", filename, exc)
-            step_progress.append(f"Entity extraction partially failed for {filename}")
+            log.warning("Structured ingestion failed for %s: %s", filename, exc)
+            step_progress.append(f"Structured ingestion partially failed for {filename}")
             recovery_events.append(
                 recovery_for_entity_extraction_failure(filename, str(exc)).as_dict()
             )
 
-    step_progress.append(f"Document processing complete: {total_chunks} chunks, {len(all_entities)} entities")
-    log.info("Doc analyst: %d chunks, %d entities", total_chunks, len(all_entities))
+    step_progress.append(
+        f"Document processing complete: {total_chunks} chunks, {len(all_entities)} entities, "
+        f"{len(all_relationships)} relationships"
+    )
+    log.info(
+        "Doc analyst: %d chunks, %d entities, %d relationships",
+        total_chunks,
+        len(all_entities),
+        len(all_relationships),
+    )
 
     return {
         **state,
@@ -266,6 +314,12 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
             "documents": extracted_documents,
             "chunk_count": total_chunks,
             "entity_count": len(all_entities),
+            "relationship_count": len(all_relationships),
+            "support_record_count": len(all_candidate_facts) + len(all_memory_items),
+            "candidate_fact_count": len(all_candidate_facts),
+            "memory_item_count": len(all_memory_items),
+            "promoted_entity_count": len(all_promoted_entities),
+            "patch_summaries": patch_summaries,
         },
         "recovery_events": recovery_events,
         "step_progress": step_progress,

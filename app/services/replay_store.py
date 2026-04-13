@@ -57,7 +57,17 @@ def build_replay_artifact(
         "specialist_output": specialist_output,
         "tool_call_log": tool_call_log,
         "long_context_payload": dict(final_state.get("long_context_payload", {}) or {}),
+        "profile_schema": dict((final_state.get("profile_data", {}) or {}).get("profile_schema", {}) or {}),
         "document_extractions": list(latest_ingestion_result.get("documents", []) or []),
+        "document_ingestion": {
+            "chunk_count": int(latest_ingestion_result.get("chunk_count", 0) or 0),
+            "entity_count": int(latest_ingestion_result.get("entity_count", 0) or 0),
+            "relationship_count": int(latest_ingestion_result.get("relationship_count", 0) or 0),
+            "candidate_fact_count": int(latest_ingestion_result.get("candidate_fact_count", 0) or 0),
+            "memory_item_count": int(latest_ingestion_result.get("memory_item_count", 0) or 0),
+            "promoted_entity_count": int(latest_ingestion_result.get("promoted_entity_count", 0) or 0),
+            "patch_summaries": list(latest_ingestion_result.get("patch_summaries", []) or []),
+        },
         "context_overview": {
             "document_result_count": len(final_state.get("retrieved_documents", []) or []),
             "web_result_count": len(final_state.get("web_results", []) or []),

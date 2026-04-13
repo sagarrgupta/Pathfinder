@@ -15,11 +15,15 @@ from app.adapters.neo4j.graph_store import (
     ensure_student,
     execute_cypher,
     get_full_profile,
+    get_profile_schema,
     get_relevant_memories,
     list_saved_recommendations,
     run_cypher,
     store_candidate_fact,
     update_student,
+    upsert_entity_for_student,
+    upsert_relationship_for_student,
+    upsert_profile_schema_section,
 )
 from app.adapters.neo4j.vector_store import hybrid_search
 from app.adapters.web_search.fallback_chain import search as web_search
@@ -32,6 +36,7 @@ log = logging.getLogger("pathfinder.tools.registry")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DEFAULT_RELATIONSHIP = "HAS"
 _JSON_LIMIT = 8000
+_INTERNAL_SUPPORT_LABELS = {"CandidateFact", "MemoryItem", "Evidence", "Section", "SchemaSection"}
 
 
 @dataclass(frozen=True)
@@ -89,10 +94,15 @@ def get_mcp_tools() -> list[Tool]:
 
 
 async def execute_tool(name: str, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    """Execute one registered tool."""
+    """Execute one registered tool, catching runtime errors so one bad call
+    does not abort the entire agentic loop."""
     for spec in _TOOL_SPECS:
         if spec.name == name:
-            return await spec.handler(arguments, context)
+            try:
+                return await spec.handler(arguments, context)
+            except Exception as exc:
+                log.warning("Tool %s raised %s: %s", name, type(exc).__name__, exc)
+                return {"error": f"{type(exc).__name__}: {exc}"}
     return {"error": f"unknown tool: {name}"}
 
 
@@ -126,31 +136,27 @@ def _schema_with_context_fields(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _profile_small_facts(profile: dict[str, Any]) -> dict[str, Any]:
-    personal = profile.get("personal", {}) if isinstance(profile.get("personal", {}), dict) else {}
-    goals = [
-        str(item.get("name") or item.get("value") or "").strip()
-        for item in profile.get("goals", [])
-        if isinstance(item, dict) and str(item.get("name") or item.get("value") or "").strip()
+    root = profile.get("root_properties", {}) if isinstance(profile.get("root_properties", {}), dict) else {}
+    sections = profile.get("sections", []) if isinstance(profile.get("sections", []), list) else []
+    all_entities = profile.get("all_entities", {}) if isinstance(profile.get("all_entities", {}), dict) else {}
+    section_names = [
+        str(item.get("label") or item.get("key") or "").strip()
+        for item in sections
+        if isinstance(item, dict) and str(item.get("label") or item.get("key") or "").strip()
     ][:5]
-    preferences = [
-        str(item.get("name") or item.get("value") or "").strip()
-        for item in profile.get("preferences", [])
-        if isinstance(item, dict) and str(item.get("name") or item.get("value") or "").strip()
-    ][:5]
-    skills = [
-        str(item.get("name") or "").strip()
-        for item in profile.get("skills", [])
-        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    entity_types = [
+        str(label).strip()
+        for label, items in all_entities.items()
+        if label not in _INTERNAL_SUPPORT_LABELS and isinstance(items, list) and items
     ][:8]
     return {
-        "name": str(personal.get("name", "") or ""),
-        "institution": str(personal.get("university", "") or ""),
-        "program": str(personal.get("program", "") or ""),
-        "semester": str(personal.get("semester", "") or ""),
-        "gpa": str(personal.get("gpa", "") or ""),
-        "goals": goals,
-        "preferences": preferences,
-        "skills": skills,
+        "name": str(root.get("name", "") or ""),
+        "institution": str(root.get("university", "") or ""),
+        "program": str(root.get("program", "") or ""),
+        "semester": str(root.get("semester", "") or ""),
+        "gpa": str(root.get("gpa", "") or ""),
+        "sections": section_names,
+        "entity_types": entity_types,
     }
 
 
@@ -159,13 +165,103 @@ async def _get_profile_summary(_: dict[str, Any], context: ToolContext) -> dict[
     profile = await get_full_profile(context.student_id)
     return {
         "profile_summary": _profile_small_facts(profile),
+        "profile_schema": profile.get("profile_schema", {}),
         "counts": {
-            "courses": len(profile.get("courses", [])),
-            "skills": len(profile.get("skills", [])),
-            "goals": len(profile.get("goals", [])),
-            "documents": len(profile.get("documents", [])),
+            "sections": len(profile.get("sections", [])),
+            "unsectioned_items": len(profile.get("unsectioned_items", [])),
+            "graph_entities": sum(
+                len(items)
+                for label, items in (profile.get("all_entities", {}) or {}).items()
+                if label not in _INTERNAL_SUPPORT_LABELS
+            ),
+            "support_records": sum(
+                len(items)
+                for label, items in (profile.get("all_entities", {}) or {}).items()
+                if label in _INTERNAL_SUPPORT_LABELS - {"Section", "SchemaSection"}
+            ),
         },
     }
+
+
+async def _get_profile_schema(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    return {"profile_schema": await get_profile_schema(context.student_id)}
+
+
+async def _upsert_profile_schema_section(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    key = str(arguments.get("key", "") or "").strip().lower()
+    label = str(arguments.get("label", "") or "").strip()
+    if not key or not label:
+        return {"error": "key and label are required"}
+    section = await upsert_profile_schema_section(
+        context.student_id,
+        key=key,
+        label=label,
+        description=str(arguments.get("description", "") or "").strip(),
+        purpose=str(arguments.get("purpose", "") or "").strip(),
+        parent_key=str(arguments.get("parent_key", "") or "").strip() or None,
+        confidence=float(arguments.get("confidence", 0.75) or 0.75),
+    )
+    return {"section": section}
+
+
+async def _update_student_profile(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    updates = arguments.get("updates", {}) if isinstance(arguments.get("updates", {}), dict) else {}
+    flat: dict[str, Any] = {}
+    for key, value in updates.items():
+        k = str(key).strip()
+        if not k:
+            continue
+        if isinstance(value, dict):
+            for sub_key, sub_value in value.items():
+                sk = str(sub_key).strip()
+                if sk and sub_value is not None and str(sub_value).strip():
+                    flat[sk] = str(sub_value).strip() if not isinstance(sub_value, (int, float, bool)) else sub_value
+        elif value is not None and str(value).strip():
+            flat[k] = str(value).strip() if not isinstance(value, (int, float, bool)) else value
+    if not flat:
+        return {"error": "no profile fields provided"}
+    updated = await update_student(context.student_id, **flat)
+    return {"updated_profile": updated}
+
+
+async def _upsert_graph_node(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    label = _safe_identifier(arguments.get("entity_type", ""), "entity_type")
+    relationship = _safe_identifier(arguments.get("relationship_type", _DEFAULT_RELATIONSHIP), "relationship_type")
+    identity = arguments.get("identity", {}) if isinstance(arguments.get("identity", {}), dict) else {}
+    properties = arguments.get("properties", {}) if isinstance(arguments.get("properties", {}), dict) else {}
+    section_key = str(arguments.get("section_key", "") or "").strip().lower() or None
+    if not identity and not properties:
+        return {"error": "identity or properties is required"}
+    entity = await upsert_entity_for_student(
+        label=label,
+        identity_props=identity,
+        properties=properties,
+        student_id=context.student_id,
+        relationship=relationship,
+        section_key=section_key,
+    )
+    return {"node": entity}
+
+
+async def _upsert_graph_relation(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    source_type = _safe_identifier(arguments.get("source_entity_type", ""), "source_entity_type")
+    target_type = _safe_identifier(arguments.get("target_entity_type", ""), "target_entity_type")
+    relationship_type = _safe_identifier(arguments.get("relationship_type", ""), "relationship_type")
+    source_identity = arguments.get("source_identity", {}) if isinstance(arguments.get("source_identity", {}), dict) else {}
+    target_identity = arguments.get("target_identity", {}) if isinstance(arguments.get("target_identity", {}), dict) else {}
+    properties = arguments.get("properties", {}) if isinstance(arguments.get("properties", {}), dict) else {}
+    if not source_identity or not target_identity:
+        return {"error": "source_identity and target_identity are required"}
+    relation = await upsert_relationship_for_student(
+        student_id=context.student_id,
+        source_label=source_type,
+        source_identity=source_identity,
+        relationship=relationship_type,
+        target_label=target_type,
+        target_identity=target_identity,
+        properties=properties,
+    )
+    return {"relation": relation}
 
 
 async def _list_entity_types(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -192,15 +288,26 @@ def _filter_clauses(filters: dict[str, Any], prefix: str, alias: str) -> tuple[l
 
 async def _typed_node_lookup(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     entity_type = _safe_identifier(arguments.get("entity_type", ""), "entity_type")
-    limit = _tool_limit(arguments.get("limit", 8), default=8)
+    limit = _tool_limit(arguments.get("limit", 20), default=20, maximum=50)
     filters = arguments.get("filters", {}) if isinstance(arguments.get("filters", {}), dict) else {}
     clauses, params = _filter_clauses(filters, "node", "n")
     where = " AND ".join(["s.id = $student_id"] + clauses)
     rows = await run_cypher(
         f"""
-        MATCH (s:Student)-[r]->(n:{entity_type})
+        MATCH (s:Profile)
+        CALL {{
+            WITH s
+            MATCH (s)-[r]->(n:{entity_type})
+            WHERE type(r) <> 'HAS_SECTION' AND type(r) <> 'HAS_SCHEMA_SECTION'
+            RETURN n, type(r) AS rel_type, coalesce(n._schema_section, '') AS section_key
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(section:Section)-[:HAS_ITEM]->(n:{entity_type})
+            RETURN n, 'HAS_ITEM' AS rel_type, section.key AS section_key
+        }}
+        WITH s, n, rel_type, section_key
         WHERE {where}
-        RETURN n {{.*, _relationship: type(r)}} AS node
+        RETURN n {{.*, _relationship: rel_type, _schema_section: section_key}} AS node
         ORDER BY coalesce(n.updated_at, n.created_at) DESC
         LIMIT $limit
         """,
@@ -212,13 +319,23 @@ async def _typed_node_lookup(arguments: dict[str, Any], context: ToolContext) ->
 async def _typed_relation_lookup(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     relationship_type = _safe_identifier(arguments.get("relationship_type", ""), "relationship_type")
     target_type = _safe_identifier(arguments.get("target_entity_type", ""), "target_entity_type")
-    limit = _tool_limit(arguments.get("limit", 8), default=8)
+    limit = _tool_limit(arguments.get("limit", 20), default=20, maximum=50)
     filters = arguments.get("target_filters", {}) if isinstance(arguments.get("target_filters", {}), dict) else {}
     clauses, params = _filter_clauses(filters, "rel", "n")
     where = " AND ".join(["s.id = $student_id"] + clauses)
     rows = await run_cypher(
         f"""
-        MATCH (s:Student)-[r:{relationship_type}]->(n:{target_type})
+        MATCH (s:Profile)
+        CALL {{
+            WITH s
+            MATCH (s)-[r:{relationship_type}]->(n:{target_type})
+            RETURN r, n
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(:Section)-[:HAS_ITEM]->(n:{target_type})<-[r:{relationship_type}]-()
+            RETURN r, n
+        }}
+        WITH s, r, n
         WHERE {where}
         RETURN {{
             relationship_type: type(r),
@@ -239,9 +356,20 @@ async def _fetch_node_by_id(arguments: dict[str, Any], context: ToolContext) -> 
         return {"error": "node_id is required"}
     rows = await run_cypher(
         f"""
-        MATCH (s:Student {{id: $student_id}})-[r]->(n:{entity_type})
+        MATCH (s:Profile {{id: $student_id}})
+        CALL {{
+            WITH s
+            MATCH (s)-[r]->(n:{entity_type})
+            WHERE type(r) <> 'HAS_SECTION' AND type(r) <> 'HAS_SCHEMA_SECTION'
+            RETURN n, type(r) AS rel_type, coalesce(n._schema_section, '') AS section_key
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(section:Section)-[:HAS_ITEM]->(n:{entity_type})
+            RETURN n, 'HAS_ITEM' AS rel_type, section.key AS section_key
+        }}
+        WITH s, n, rel_type, section_key
         WHERE toString(n.id) = $node_id OR toString(n.name) = $node_id
-        RETURN n {{.*, _relationship: type(r)}} AS node
+        RETURN n {{.*, _relationship: rel_type, _schema_section: section_key}} AS node
         LIMIT 1
         """,
         {"student_id": context.student_id, "node_id": node_id},
@@ -256,7 +384,17 @@ async def _fetch_relation_detail(arguments: dict[str, Any], context: ToolContext
     target_value = str(arguments.get("target_value", "") or "").strip()
     rows = await run_cypher(
         f"""
-        MATCH (s:Student {{id: $student_id}})-[r:{relationship_type}]->(n:{target_type})
+        MATCH (s:Profile {{id: $student_id}})
+        CALL {{
+            WITH s
+            MATCH (s)-[r:{relationship_type}]->(n:{target_type})
+            RETURN r, n
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(:Section)-[:HAS_ITEM]->(n:{target_type})<-[r:{relationship_type}]-()
+            RETURN r, n
+        }}
+        WITH r, n
         WHERE toString(n.{target_field}) = $target_value
         RETURN {{
             relationship_type: type(r),
@@ -272,13 +410,14 @@ async def _fetch_relation_detail(arguments: dict[str, Any], context: ToolContext
 
 async def _list_document_groups(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     profile = await get_full_profile(context.student_id)
+    documents = ((profile.get("all_entities", {}) or {}).get("Document", [])) or []
     groups: dict[str, int] = {}
-    for doc in profile.get("documents", []):
+    for doc in documents:
         if not isinstance(doc, dict):
             continue
         role = str(doc.get("document_role") or doc.get("doc_type") or doc.get("file_type") or "unknown")
         groups[role] = groups.get(role, 0) + 1
-    return {"document_groups": groups, "documents": profile.get("documents", [])[:12]}
+    return {"document_groups": groups, "documents": documents[:12]}
 
 
 async def _search_documents_semantic(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -322,7 +461,7 @@ async def _fetch_document_snippet(arguments: dict[str, Any], context: ToolContex
     if chunk_id:
         rows = await run_cypher(
             """
-            MATCH (s:Student {id: $student_id})-[:UPLOADED]->(:Document)<-[:FROM_DOCUMENT]-(c:Chunk {id: $chunk_id})
+            MATCH (s:Profile {id: $student_id})-[:UPLOADED]->(:Document)<-[:FROM_DOCUMENT]-(c:Chunk {id: $chunk_id})
             RETURN c {.*} AS chunk
             LIMIT 1
             """,
@@ -331,7 +470,7 @@ async def _fetch_document_snippet(arguments: dict[str, Any], context: ToolContex
         return {"chunk": rows[0].get("chunk", {}) if rows else {}}
     rows = await run_cypher(
         """
-        MATCH (s:Student {id: $student_id})-[:UPLOADED]->(d:Document {id: $document_id})<-[:FROM_DOCUMENT]-(c:Chunk)
+        MATCH (s:Profile {id: $student_id})-[:UPLOADED]->(d:Document {id: $document_id})<-[:FROM_DOCUMENT]-(c:Chunk)
         RETURN c {.*} AS chunk
         ORDER BY c.chunk_index ASC
         LIMIT 5
@@ -399,10 +538,11 @@ async def _get_session_summary(_: dict[str, Any], context: ToolContext) -> dict[
 async def _list_context_categories(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     profile = await get_full_profile(context.student_id)
     memories = await get_relevant_memories(context.student_id, str((_context_state(context)).get("query", "") or ""), limit=4)
+    all_entities = profile.get("all_entities", {}) or {}
     return {
         "categories": {
             "graph_entity_types": sorted((profile.get("all_entities", {}) or {}).keys()),
-            "documents_available": len(profile.get("documents", [])),
+            "documents_available": len(all_entities.get("Document", [])),
             "memory_buckets": sorted(memories.keys()),
             "session_context_available": bool(context.state),
         }
@@ -478,7 +618,7 @@ async def _supersede_outdated_fact(arguments: dict[str, Any], context: ToolConte
         return {"error": "fact_id is required"}
     rows = await execute_cypher(
         """
-        MATCH (s:Student {id: $student_id})-[:HAS_CANDIDATE_FACT|HAS_MEMORY]->(n)
+        MATCH (s:Profile {id: $student_id})-[:HAS_CANDIDATE_FACT|HAS_MEMORY]->(n)
         WHERE n.id = $fact_id
         SET n.status = 'superseded',
             n.superseded_at = datetime(),
@@ -494,7 +634,19 @@ async def _graph_add_node(arguments: dict[str, Any], context: ToolContext) -> di
     label = _safe_identifier(arguments.get("entity_type", ""), "entity_type")
     relationship = _safe_identifier(arguments.get("relationship_type", _DEFAULT_RELATIONSHIP), "relationship_type")
     properties = arguments.get("properties", {}) if isinstance(arguments.get("properties", {}), dict) else {}
-    entity = await create_entity(label, properties, context.student_id, relationship=relationship)
+    section_key = str(arguments.get("section_key", "") or "").strip().lower() or None
+    identity = {}
+    for key in ("name", "code", "id", "key"):
+        if key in properties and properties[key]:
+            identity[key] = properties[key]
+    entity = await upsert_entity_for_student(
+        label=label,
+        identity_props=identity,
+        properties=properties,
+        student_id=context.student_id,
+        relationship=relationship,
+        section_key=section_key,
+    )
     return {"node": entity}
 
 
@@ -513,10 +665,21 @@ async def _graph_update_node(arguments: dict[str, Any], context: ToolContext) ->
         params[param_name] = value
     rows = await execute_cypher(
         f"""
-        MATCH (s:Student {{id: $student_id}})-[r]->(n:{label})
+        MATCH (s:Profile {{id: $student_id}})
+        CALL {{
+            WITH s
+            MATCH (s)-[r]->(n:{label})
+            WHERE type(r) <> 'HAS_SECTION' AND type(r) <> 'HAS_SCHEMA_SECTION'
+            RETURN n, type(r) AS rel_type
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(:Section)-[:HAS_ITEM]->(n:{label})
+            RETURN n, 'HAS_ITEM' AS rel_type
+        }}
+        WITH n, rel_type
         WHERE {" AND ".join(where_parts)}
         SET {", ".join(set_parts)}, n.updated_at = datetime()
-        RETURN n {{.*, _relationship: type(r)}} AS node
+        RETURN n {{.*, _relationship: rel_type}} AS node
         LIMIT 5
         """,
         {"student_id": context.student_id, **params},
@@ -542,8 +705,26 @@ async def _graph_add_relation(arguments: dict[str, Any], context: ToolContext) -
         params[param_name] = value
     rows = await execute_cypher(
         f"""
-        MATCH (s:Student {{id: $student_id}})-[]->(src:{source_type})
-        MATCH (s)-[]->(dst:{target_type})
+        MATCH (s:Profile {{id: $student_id}})
+        CALL {{
+            WITH s
+            MATCH (s)-[]->(src:{source_type})
+            RETURN src
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(:Section)-[:HAS_ITEM]->(src:{source_type})
+            RETURN src
+        }}
+        CALL {{
+            WITH s
+            MATCH (s)-[]->(dst:{target_type})
+            RETURN dst
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(:Section)-[:HAS_ITEM]->(dst:{target_type})
+            RETURN dst
+        }}
+        WITH src, dst
         WHERE {" AND ".join(source_clauses + target_clauses)}
         MERGE (src)-[r:{relationship_type}]->(dst)
         {"SET " + ", ".join(property_set) if property_set else ""}
@@ -578,10 +759,28 @@ async def _graph_update_relation(arguments: dict[str, Any], context: ToolContext
         params[param_name] = value
     rows = await execute_cypher(
         f"""
-        MATCH (s:Student {{id: $student_id}})-[]->(src:{source_type})
-        MATCH (s)-[]->(dst:{target_type})
-        MATCH (src)-[r:{relationship_type}]->(dst)
+        MATCH (s:Profile {{id: $student_id}})
+        CALL {{
+            WITH s
+            MATCH (s)-[]->(src:{source_type})
+            RETURN src
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(:Section)-[:HAS_ITEM]->(src:{source_type})
+            RETURN src
+        }}
+        CALL {{
+            WITH s
+            MATCH (s)-[]->(dst:{target_type})
+            RETURN dst
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(:Section)-[:HAS_ITEM]->(dst:{target_type})
+            RETURN dst
+        }}
+        WITH src, dst
         WHERE {" AND ".join(source_clauses + target_clauses)}
+        MATCH (src)-[r:{relationship_type}]->(dst)
         SET {", ".join(set_parts)}
         RETURN {{
             relationship_type: type(r),
@@ -602,12 +801,23 @@ async def _graph_soft_delete_node(arguments: dict[str, Any], context: ToolContex
     clauses, params = _filter_clauses(match, "delete", "n")
     rows = await execute_cypher(
         f"""
-        MATCH (s:Student {{id: $student_id}})-[r]->(n:{label})
+        MATCH (s:Profile {{id: $student_id}})
+        CALL {{
+            WITH s
+            MATCH (s)-[r]->(n:{label})
+            WHERE type(r) <> 'HAS_SECTION' AND type(r) <> 'HAS_SCHEMA_SECTION'
+            RETURN n, type(r) AS rel_type
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(:Section)-[:HAS_ITEM]->(n:{label})
+            RETURN n, 'HAS_ITEM' AS rel_type
+        }}
+        WITH n, rel_type
         WHERE {" AND ".join(clauses)}
         SET n.status = 'superseded',
             n.superseded_at = datetime(),
             n.updated_at = datetime()
-        RETURN n {{.*, _relationship: type(r)}} AS node
+        RETURN n {{.*, _relationship: rel_type}} AS node
         LIMIT 5
         """,
         {"student_id": context.student_id, **params},
@@ -625,10 +835,28 @@ async def _graph_soft_delete_relation(arguments: dict[str, Any], context: ToolCo
     target_clauses, target_params = _filter_clauses(target_match, "ddst", "dst")
     rows = await execute_cypher(
         f"""
-        MATCH (s:Student {{id: $student_id}})-[]->(src:{source_type})
-        MATCH (s)-[]->(dst:{target_type})
-        MATCH (src)-[r:{relationship_type}]->(dst)
+        MATCH (s:Profile {{id: $student_id}})
+        CALL {{
+            WITH s
+            MATCH (s)-[]->(src:{source_type})
+            RETURN src
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(:Section)-[:HAS_ITEM]->(src:{source_type})
+            RETURN src
+        }}
+        CALL {{
+            WITH s
+            MATCH (s)-[]->(dst:{target_type})
+            RETURN dst
+            UNION
+            WITH s
+            MATCH (s)-[:HAS_SECTION|HAS_SCHEMA_SECTION]->(:Section)-[:HAS_ITEM]->(dst:{target_type})
+            RETURN dst
+        }}
+        WITH src, dst
         WHERE {" AND ".join(source_clauses + target_clauses)}
+        MATCH (src)-[r:{relationship_type}]->(dst)
         SET r.status = 'superseded',
             r.superseded_at = datetime(),
             r.updated_at = datetime()
@@ -645,12 +873,59 @@ async def _graph_soft_delete_relation(arguments: dict[str, Any], context: ToolCo
     return {"relations": [row.get("relation", {}) for row in rows]}
 
 
+async def _respond(arguments: dict[str, Any], _context: ToolContext) -> dict[str, Any]:
+    """Pass-through: returns the arguments so the caller can extract the final answer."""
+    return {
+        "message": str(arguments.get("message", "") or ""),
+        "memory_patch": arguments.get("memory_patch"),
+        "provenance": arguments.get("provenance"),
+        "stop_reason": str(arguments.get("stop_reason", "") or ""),
+    }
+
+
 _TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "get_profile_summary",
         "Return a compact summary of the current student's durable profile and core counts.",
         {"type": "object", "properties": {}, "additionalProperties": False},
         _get_profile_summary,
+    ),
+    ToolSpec(
+        "get_profile_schema",
+        "Return the current student's reusable profile schema sections and descriptions.",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        _get_profile_schema,
+    ),
+    ToolSpec(
+        "upsert_profile_schema_section",
+        "Create or update one reusable profile schema section for the current student.",
+        {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string"},
+                "label": {"type": "string"},
+                "description": {"type": "string"},
+                "purpose": {"type": "string"},
+                "parent_key": {"type": "string"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            },
+            "required": ["key", "label"],
+            "additionalProperties": False,
+        },
+        _upsert_profile_schema_section,
+    ),
+    ToolSpec(
+        "update_student_profile",
+        "Update supported top-level student profile fields for the current student.",
+        {
+            "type": "object",
+            "properties": {
+                "updates": {"type": "object", "additionalProperties": {"type": "string"}},
+            },
+            "required": ["updates"],
+            "additionalProperties": False,
+        },
+        _update_student_profile,
     ),
     ToolSpec(
         "list_entity_types",
@@ -888,18 +1163,36 @@ _TOOL_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "graph_add_node",
-        "Add a new student-linked graph node with an explicit entity type and relationship type.",
+        "Add a new student-linked graph node with an explicit entity type. Always pass section_key to organize under the right schema section.",
         {
             "type": "object",
             "properties": {
                 "entity_type": {"type": "string"},
                 "relationship_type": {"type": "string"},
+                "section_key": {"type": "string"},
                 "properties": {"type": "object", "additionalProperties": True},
             },
             "required": ["entity_type", "properties"],
             "additionalProperties": False,
         },
         _graph_add_node,
+    ),
+    ToolSpec(
+        "upsert_graph_node",
+        "Create or update a student-linked graph node using identity fields and rich properties.",
+        {
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string"},
+                "relationship_type": {"type": "string"},
+                "section_key": {"type": "string"},
+                "identity": {"type": "object", "additionalProperties": {"type": "string"}},
+                "properties": {"type": "object", "additionalProperties": True},
+            },
+            "required": ["entity_type", "properties"],
+            "additionalProperties": False,
+        },
+        _upsert_graph_node,
     ),
     ToolSpec(
         "graph_update_node",
@@ -933,6 +1226,24 @@ _TOOL_SPECS: tuple[ToolSpec, ...] = (
             "additionalProperties": False,
         },
         _graph_add_relation,
+    ),
+    ToolSpec(
+        "upsert_graph_relation",
+        "Create or update an explicit relation between two student graph nodes using identity matches.",
+        {
+            "type": "object",
+            "properties": {
+                "source_entity_type": {"type": "string"},
+                "source_identity": {"type": "object", "additionalProperties": {"type": "string"}},
+                "target_entity_type": {"type": "string"},
+                "target_identity": {"type": "object", "additionalProperties": {"type": "string"}},
+                "relationship_type": {"type": "string"},
+                "properties": {"type": "object", "additionalProperties": True},
+            },
+            "required": ["source_entity_type", "source_identity", "target_entity_type", "target_identity", "relationship_type"],
+            "additionalProperties": False,
+        },
+        _upsert_graph_relation,
     ),
     ToolSpec(
         "graph_update_relation",
@@ -982,6 +1293,22 @@ _TOOL_SPECS: tuple[ToolSpec, ...] = (
             "additionalProperties": False,
         },
         _graph_soft_delete_relation,
+    ),
+    ToolSpec(
+        "respond",
+        "Return the final response to the user. Call this tool when you are done with all other tool calls and ready to deliver your answer.",
+        {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "The full response message to the user (markdown allowed)."},
+                "memory_patch": {"description": "Durable memory update object, or null if none needed."},
+                "provenance": {"description": "Brief summary of key tool calls or sources used."},
+                "stop_reason": {"type": "string", "description": "Why you stopped (e.g. answered, need_more_info)."},
+            },
+            "required": ["message"],
+            "additionalProperties": False,
+        },
+        _respond,
     ),
 )
 

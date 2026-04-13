@@ -268,7 +268,7 @@ async def similarity_search(
                 f"""
                 CALL db.index.vector.queryNodes($index_name, $k, $embedding)
                 YIELD node AS chunk, score
-                MATCH (chunk)-[:FROM_DOCUMENT]->(d:Document)<-[:UPLOADED]-(s:Student {{id: $student_id}})
+                MATCH (chunk)-[:FROM_DOCUMENT]->(d:Document)<-[:UPLOADED]-(s:Profile {{id: $student_id}})
                 WHERE chunk.embedding IS NOT NULL
                 {scope_sql}
                 RETURN chunk.id AS id,
@@ -353,7 +353,7 @@ async def hybrid_search(
                 """
                 UNWIND $chunk_refs AS ref
                 MATCH (d:Document {id: ref.doc_id})<-[:FROM_DOCUMENT]-(c:Chunk {id: ref.chunk_id})
-                OPTIONAL MATCH (:Student {id: $student_id})-[r]->(e)
+                OPTIONAL MATCH (:Profile {id: $student_id})-[r]->(e)
                 WHERE e._source_document = ref.doc_id
                 RETURN ref.chunk_id AS chunk_id,
                        ref.doc_id AS doc_id,
