@@ -50,7 +50,7 @@ def _recent_messages(messages: list[Any], limit: int = 8) -> list[dict[str, str]
 
 def _manifest(profile: dict[str, Any], memories: dict[str, Any]) -> dict[str, Any]:
     all_entities = profile.get("all_entities", {}) if isinstance(profile.get("all_entities", {}), dict) else {}
-    documents = profile.get("documents", []) if isinstance(profile.get("documents", []), list) else []
+    documents = all_entities.get("Document", []) if isinstance(all_entities.get("Document", []), list) else []
     document_groups: dict[str, int] = {}
     for doc in documents:
         if not isinstance(doc, dict):
@@ -76,31 +76,37 @@ def _manifest(profile: dict[str, Any], memories: dict[str, Any]) -> dict[str, An
 
 
 def _small_facts(profile: dict[str, Any], session_summary: dict[str, Any]) -> dict[str, Any]:
-    personal = profile.get("personal", {}) if isinstance(profile.get("personal", {}), dict) else {}
-    goals = [
-        str(item.get("name") or item.get("value") or "").strip()
-        for item in profile.get("goals", [])
-        if isinstance(item, dict) and str(item.get("name") or item.get("value") or "").strip()
-    ][:5]
-    preferences = [
-        str(item.get("name") or item.get("value") or "").strip()
-        for item in profile.get("preferences", [])
-        if isinstance(item, dict) and str(item.get("name") or item.get("value") or "").strip()
-    ][:5]
-    return {
-        "name": str(personal.get("name", "") or ""),
-        "institution": str(personal.get("university", "") or ((session_summary.get("institution", {}) or {}).get("value", ""))),
-        "program": str(personal.get("program", "") or ((session_summary.get("program", {}) or {}).get("value", ""))),
-        "semester": str(personal.get("semester", "") or ((session_summary.get("standing", {}) or {}).get("value", ""))),
-        "gpa": str(personal.get("gpa", "") or ""),
-        "goals": goals,
-        "preferences": preferences,
-    }
+    from app.services.long_context import _small_facts as _shared_small_facts
+    return _shared_small_facts(profile, session_summary)
 
 
 def _system_prompt(selected_specialist: str) -> str:
     specialist = _SPECIALIST_CONFIG.get(selected_specialist, _SPECIALIST_CONFIG["general"])
     return str(specialist["prompt"])
+
+
+_NOT_FOUND_PHRASES = (
+    "couldn't find", "could not find", "unable to find", "no specific",
+    "i don't have", "not available", "i couldn't locate",
+    "i was unable", "i could not locate", "did not find",
+)
+
+
+def _should_retry_web_search(
+    payload: dict[str, Any],
+    tool_log: list[dict[str, Any]],
+) -> bool:
+    """Return True if the LLM gave up on a web-searchable question too early.
+
+    Criteria: the answer contains a "not found" phrase AND the LLM used
+    fewer than 2 distinct search_web calls or fewer than 2 fetch_url calls.
+    """
+    message = str(payload.get("message", "") or "").lower()
+    if not any(phrase in message for phrase in _NOT_FOUND_PHRASES):
+        return False
+    search_count = sum(1 for t in tool_log if isinstance(t, dict) and t.get("tool") == "search_web")
+    fetch_count = sum(1 for t in tool_log if isinstance(t, dict) and t.get("tool") == "fetch_url")
+    return search_count < 2 or fetch_count < 2
 
 
 def _extract_message_from_text(content: str) -> str:
@@ -185,7 +191,22 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
     short_context = {
         "recent_messages": _recent_messages(session_messages),
         "session_summary": session_summary,
+        "profile_schema": profile.get("profile_schema", {}),
     }
+    latest_ingestion = working_state.get("latest_ingestion_result", {}) if isinstance(working_state.get("latest_ingestion_result", {}), dict) else {}
+    patch_summaries = list(latest_ingestion.get("patch_summaries", []) or [])
+    if patch_summaries:
+        short_context["document_ingestion"] = [
+            {
+                "filename": item.get("filename", ""),
+                "student_updates": item.get("student_updates", {}),
+                "context_updates": item.get("context_updates", {}),
+                "entity_count": item.get("entity_count", 0),
+                "relationship_count": item.get("relationship_count", 0),
+            }
+            for item in patch_summaries[:4]
+            if isinstance(item, dict)
+        ]
     long_context = {
         **build_long_context_payload(profile, session_summary),
         "memory_buckets": {
@@ -196,6 +217,17 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
         "manifest": _manifest(profile, memories),
         "small_facts": _small_facts(profile, session_summary),
     }
+    long_term_points: list[str] = []
+    for item in patch_summaries[:4]:
+        if not isinstance(item, dict):
+            continue
+        context_updates = item.get("context_updates", {}) if isinstance(item.get("context_updates", {}), dict) else {}
+        for point in list(context_updates.get("long_term_summary_points", []) or []):
+            text = str(point or "").strip()
+            if text and text not in long_term_points:
+                long_term_points.append(text)
+    if long_term_points:
+        long_context["recent_document_highlights"] = long_term_points[:12]
 
     llm = get_text_llm(reasoning).bind_tools(get_tool_schemas())
     tool_context = ToolContext(
@@ -227,13 +259,15 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
     ]
     tool_call_log = list(working_state.get("tool_call_log", []))
     final_payload: dict[str, Any] = {}
+    web_retry_used = False
 
-    for _ in range(6):
+    for _ in range(12):
         ai_msg = await llm.ainvoke(messages)
         messages.append(ai_msg)
         if not isinstance(ai_msg, AIMessage):
             break
         if ai_msg.tool_calls:
+            responded = False
             for call in ai_msg.tool_calls[:6]:
                 tool_name = str(call.get("name", "") or "")
                 args = call.get("args", {}) if isinstance(call.get("args", {}), dict) else {}
@@ -256,6 +290,25 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
                         tool_call_id=str(call.get("id", "") or ""),
                     )
                 )
+                if tool_name == "respond" and not result.get("error"):
+                    final_payload = result
+                    responded = True
+            if responded:
+                if not web_retry_used and _should_retry_web_search(final_payload, tool_call_log):
+                    web_retry_used = True
+                    nudge = (
+                        "Your answer says you could not find the information, but you "
+                        "have not exhausted web search options. Try a different "
+                        "search_web query (rephrase, broaden, or use different "
+                        "keywords from the student's profile) and fetch_url on the "
+                        "most relevant result. Then respond again with whatever you "
+                        "find — even partial information is better than none."
+                    )
+                    messages.append(HumanMessage(content=nudge))
+                    final_payload = {}
+                    log.info("Web-search retry nudge injected for student=%s", student_id)
+                    continue
+                break
             continue
         content = ai_msg.content if isinstance(ai_msg.content, str) else str(ai_msg.content)
         parsed = parse_json_object(content)

@@ -53,7 +53,7 @@ def _rank_candidate(item: dict[str, object]) -> tuple[float, float, float, str]:
 async def _fetch_candidate_facts(student_id: str) -> list[dict[str, object]]:
     rows = await execute_cypher(
         """
-        MATCH (s:Student {id: $sid})-[:HAS_CANDIDATE_FACT]->(c:CandidateFact)
+        MATCH (s:Profile {id: $sid})-[:HAS_CANDIDATE_FACT]->(c:CandidateFact)
         WHERE coalesce(c.status, 'candidate') <> 'archived'
         RETURN c {.*} AS fact
         """,
@@ -81,7 +81,7 @@ async def maybe_consolidate_memory(student_id: str, reason: str) -> dict[str, in
     """Run a bounded consolidation pass over candidate facts and memories."""
     promoted = await execute_cypher(
         """
-        MATCH (s:Student {id: $sid})-[:HAS_CANDIDATE_FACT]->(c:CandidateFact)
+        MATCH (s:Profile {id: $sid})-[:HAS_CANDIDATE_FACT]->(c:CandidateFact)
         WHERE c.status = 'candidate'
           AND (
             coalesce(c.promotion_score, 0) >= 0.78
@@ -101,7 +101,7 @@ async def maybe_consolidate_memory(student_id: str, reason: str) -> dict[str, in
     )
     archived = await execute_cypher(
         """
-        MATCH (s:Student {id: $sid})-[:HAS_MEMORY]->(m:MemoryItem)
+        MATCH (s:Profile {id: $sid})-[:HAS_MEMORY]->(m:MemoryItem)
         WHERE m.status = 'candidate' AND coalesce(m.confidence, 0) < 0.35 AND coalesce(m.salience, 0) < 0.35
         SET m.status = 'archived'
         RETURN count(m) AS archived
@@ -184,7 +184,7 @@ async def maybe_consolidate_memory(student_id: str, reason: str) -> dict[str, in
 
     merged_duplicates = await execute_cypher(
         """
-        MATCH (s:Student {id: $sid})-[:HAS_MEMORY]->(m1:MemoryItem),
+        MATCH (s:Profile {id: $sid})-[:HAS_MEMORY]->(m1:MemoryItem),
               (s)-[:HAS_MEMORY]->(m2:MemoryItem)
         WHERE m1.id < m2.id
           AND m1.memory_type = m2.memory_type

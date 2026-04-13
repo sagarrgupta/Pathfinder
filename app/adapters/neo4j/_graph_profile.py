@@ -9,6 +9,15 @@ from typing import Any
 
 from ._graph_common import metadata_dict, normalize_name, safe_float, safe_int
 
+INTERNAL_SUPPORT_LABELS = {"CandidateFact", "MemoryItem", "Evidence", "Section", "SchemaSection"}
+ROOT_PROPERTY_EXCLUDE_KEYS = {
+    "id",
+    "created_at",
+    "updated_at",
+    "long_context_notes",
+    "long_context_summary",
+}
+
 
 def fact_source_support_kind(source_type: str | None, source_ref: str | None) -> str:
     lowered_type = str(source_type or "").strip().lower()
@@ -156,7 +165,7 @@ def dedupe_entities(items: list[dict[str, Any]], key_field: str = "name", label:
     return values
 
 
-def profile_fact_from_personal(key: str, value: Any) -> dict[str, Any] | None:
+def profile_fact_from_root_property(key: str, value: Any) -> dict[str, Any] | None:
     text = str(value or "").strip()
     if not text:
         return None
@@ -164,7 +173,7 @@ def profile_fact_from_personal(key: str, value: Any) -> dict[str, Any] | None:
         "fact_type": key,
         "value": text,
         "normalized_value": text.casefold(),
-        "source_kind": "student_property",
+        "source_kind": "root_property",
         "stability": "stable",
         "confidence": 1.0,
         "status": "resolved",
@@ -176,25 +185,13 @@ def profile_fact_from_entity(label: str, entity: dict[str, Any]) -> dict[str, An
     value = str(entity.get("name") or entity.get("value") or "").strip()
     if not value:
         return None
-    fact_type_map = {
-        "Course": "course",
-        "Skill": "skill",
-        "Goal": "goal",
-        "Interest": "interest",
-        "Company": "experience",
-        "Project": "project",
-        "Constraint": "constraint",
-        "Preference": "preference",
-    }
-    fact_type = fact_type_map.get(label)
-    if not fact_type:
-        return None
+    fact_type = normalize_name(label).replace(" ", "_") or "entity"
     return {
         "fact_type": fact_type,
         "value": value,
         "normalized_value": value.casefold(),
         "source_kind": "core_entity",
-        "stability": "stable" if fact_type in {"skill", "course", "project", "experience"} else "evolving",
+        "stability": "stable",
         "confidence": float(entity.get("confidence", 1.0) or 1.0),
         "status": "resolved",
         "metadata": {"label": label, "relationship": entity.get("_relationship", "")},
@@ -277,21 +274,33 @@ def profile_completeness_breakdown(
     entities_by_label: dict[str, list[dict[str, Any]]],
     candidate_fact_ledger: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    confirmed_or_reinforced = [
-        item
-        for item in candidate_fact_ledger
-        if item.get("confirmation_state") in {"confirmed", "reinforced"}
+    populated_root_fields = [
+        key for key, value in student.items()
+        if key not in ROOT_PROPERTY_EXCLUDE_KEYS and str(value or "").strip()
     ]
-    by_type: dict[str, list[dict[str, Any]]] = {}
-    for fact in confirmed_or_reinforced:
-        by_type.setdefault(str(fact.get("fact_type") or "generic").lower(), []).append(fact)
+    schema_sections = entities_by_label.get("Section", []) or entities_by_label.get("SchemaSection", [])
+    durable_labels = [
+        label for label, items in entities_by_label.items()
+        if label not in INTERNAL_SUPPORT_LABELS and isinstance(items, list) and items
+    ]
+    structured_items = sum(
+        1
+        for label, items in entities_by_label.items()
+        if label not in INTERNAL_SUPPORT_LABELS
+        for item in items
+        if isinstance(item, dict) and str(item.get("_schema_section") or "").strip()
+    )
+    support_records = (
+        len(candidate_fact_ledger)
+        + len(entities_by_label.get("MemoryItem", []))
+        + len(entities_by_label.get("Evidence", []))
+    )
     categories = {
-        "identity": [bool(student.get("name")), bool(student.get("email")), bool(student.get("university"))],
-        "academics": [bool(student.get("program")), bool(student.get("semester")), bool(student.get("gpa")), bool(entities_by_label.get("Course"))],
-        "goals": [bool(entities_by_label.get("Goal")), bool(by_type.get("goal"))],
-        "skills": [bool(entities_by_label.get("Skill")), bool(by_type.get("skill"))],
-        "experience": [bool(entities_by_label.get("Company")), bool(entities_by_label.get("Project")), bool(entities_by_label.get("Document"))],
-        "preferences": [bool(entities_by_label.get("Preference")), bool(entities_by_label.get("Constraint")), bool(by_type.get("preference")), bool(by_type.get("constraint"))],
+        "root_properties": [bool(populated_root_fields)],
+        "schema_structure": [bool(schema_sections)],
+        "structured_items": [structured_items > 0],
+        "graph_coverage": [bool(durable_labels)],
+        "supporting_records": [support_records > 0],
     }
     breakdown: dict[str, dict[str, Any]] = {}
     for category, checks in categories.items():
@@ -362,12 +371,16 @@ def build_full_profile_payload(student: dict[str, Any], raw_entities_by_label: d
         for label, items in raw_entities_by_label.items()
     }
     profile_facts: list[dict[str, Any]] = []
-    for personal_key in ("name", "email", "university", "program", "semester", "gpa"):
-        fact = profile_fact_from_personal(personal_key, student.get(personal_key))
+    for personal_key, value in student.items():
+        if personal_key in ROOT_PROPERTY_EXCLUDE_KEYS:
+            continue
+        fact = profile_fact_from_root_property(personal_key, value)
         if fact:
             profile_facts.append(fact)
-    for label in ("Course", "Skill", "Goal", "Interest", "Company", "Project", "Constraint", "Preference"):
-        for entity in entities_by_label.get(label, []):
+    for label, items in entities_by_label.items():
+        if label in INTERNAL_SUPPORT_LABELS:
+            continue
+        for entity in items:
             fact = profile_fact_from_entity(label, entity)
             if fact:
                 profile_facts.append(fact)
@@ -379,17 +392,51 @@ def build_full_profile_payload(student: dict[str, Any], raw_entities_by_label: d
         sum(item.get("score", 0.0) for item in completeness_breakdown.values()) / max(len(completeness_breakdown), 1),
         2,
     )
+    schema_sections = entities_by_label.get("Section", []) or entities_by_label.get("SchemaSection", [])
+    section_map = {
+        str(item.get("key", "") or ""): {
+            **item,
+            "key": str(item.get("key", "") or ""),
+            "items": [],
+        }
+        for item in schema_sections
+        if str(item.get("key", "") or "")
+    }
+    unsectioned_items: list[dict[str, Any]] = []
+    for label, items in entities_by_label.items():
+        if label in {"Section", "SchemaSection"}:
+            continue
+        for item in items:
+            entry = {"label": label, "item": item}
+            section_key = str(item.get("_schema_section", "") or "").strip().lower()
+            if section_key and section_key in section_map:
+                section_map[section_key]["items"].append(entry)
+            else:
+                unsectioned_items.append(entry)
+    sections = []
+    section_items: dict[str, list[dict[str, Any]]] = {}
+    for key, section in section_map.items():
+        items = list(section.get("items", []) or [])
+        sections.append({
+            "key": key,
+            "label": str(section.get("label", "") or key),
+            "description": str(section.get("description", "") or ""),
+            "purpose": str(section.get("purpose", "") or ""),
+            "parent_key": str(section.get("parent_key", "") or ""),
+            "item_count": len(items),
+        })
+        section_items[key] = items
+    sections.sort(key=lambda item: (str(item.get("parent_key", "") or ""), str(item.get("label", "") or "")))
     return {
-        "personal": student,
-        "courses": entities_by_label.get("Course", []),
-        "skills": entities_by_label.get("Skill", []),
-        "goals": entities_by_label.get("Goal", []),
-        "interests": entities_by_label.get("Interest", []),
-        "experience": entities_by_label.get("Company", []),
-        "documents": entities_by_label.get("Document", []),
-        "projects": entities_by_label.get("Project", []),
-        "constraints": entities_by_label.get("Constraint", []),
-        "preferences": entities_by_label.get("Preference", []),
+        "root_properties": student,
+        "sections": sections,
+        "section_items": section_items,
+        "unsectioned_items": unsectioned_items,
+        "support_records": {
+            "candidate_facts": entities_by_label.get("CandidateFact", []),
+            "memory_items": entities_by_label.get("MemoryItem", []),
+            "evidence": entities_by_label.get("Evidence", []),
+        },
         "candidate_facts": entities_by_label.get("CandidateFact", []),
         "candidate_fact_ledger": candidate_fact_ledger,
         "memory_items": entities_by_label.get("MemoryItem", []),

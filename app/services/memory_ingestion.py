@@ -339,7 +339,7 @@ def _normalize_candidate_fact(fact: dict[str, Any], student_updates: dict[str, s
     value = _clean_candidate_value(fact_type, str(fact.get("value", "")))
     if not value:
         return []
-    if fact_type == "identity" and any(student_updates.get(key) for key in ("name", "university", "program", "semester", "gpa", "email")):
+    if fact_type == "identity" and student_updates:
         return []
 
     route = fact.get("route", "candidate_structured")
@@ -537,7 +537,7 @@ async def ingest_memory(
         value = str(fact.get("value", "")).strip()
         if not value:
             continue
-        if fact_type == "identity" and any(student_updates.get(key) for key in ("name", "university", "program", "semester", "gpa", "email")):
+        if fact_type == "identity" and student_updates:
             continue
 
         confidence = _safe_float(fact.get("confidence"), 0.6)

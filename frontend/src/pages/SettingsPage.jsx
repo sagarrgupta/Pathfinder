@@ -40,12 +40,11 @@ export default function SettingsPage() {
   const [showResetModal, setShowResetModal] = useState(false);
   const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
   const modelEntries = Object.entries(state.settings.models || {});
-  const dependencyPairs = health
-    ? [
-        ['Neo4j', health.neo4j],
-        ['LM Studio', health.lm_studio],
-        ['Ollama', health.ollama],
-      ]
+  const dependencyPairs = health?.services
+    ? Object.entries(health.services).map(([key, status]) => [
+        key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+        status,
+      ])
     : [];
   const connectedCount = dependencyPairs.filter(([, status]) => status === 'connected').length;
   const runtimeReadiness = health ? Math.round((connectedCount / Math.max(dependencyPairs.length, 1)) * 100) : 0;

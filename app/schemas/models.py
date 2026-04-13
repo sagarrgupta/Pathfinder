@@ -45,19 +45,19 @@ class ProfileUpdate(RequestModel):
 
 
 class EntityUpdate(RequestModel):
-    """Update properties on a profile entity (Company, Skill, etc.)."""
+    """Update properties on a profile entity by any identity key(s)."""
     student_id: Optional[str] = Field(default=None, max_length=120)
     label: str = Field(..., min_length=1, max_length=80)
-    name: str = Field(..., min_length=1, max_length=200)  # current name to identify the entity
-    properties: dict[str, Any] = Field(default_factory=dict)  # new property values
+    name: Optional[str] = Field(default=None, max_length=200)
+    match_props: dict[str, Any] = Field(default_factory=dict)
+    properties: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProfileCreate(RequestModel):
     """Create a new local student profile."""
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+
     name: str = Field(..., min_length=1, max_length=120)
-    email: Optional[str] = Field(default=None, max_length=200)
-    university: Optional[str] = Field(default=None, max_length=200)
-    program: Optional[str] = Field(default=None, max_length=200)
 
 
 class SettingsUpdate(RequestModel):
@@ -121,27 +121,19 @@ class DocumentUploadResponse(ResponseModel):
 
 
 class ProfileResponse(ResponseModel):
-    """Student profile data.
-
-    Maintains backward-compatible named fields AND a dynamic ``all_entities``
-    dict so the frontend can render any entity type that appears in the KG.
-    """
-    personal: dict[str, Any] = Field(default_factory=dict)
-    academic: dict[str, Any] = Field(default_factory=dict)
-    # Named entity collections (backward compat)
-    skills: list[dict[str, Any]] = Field(default_factory=list)
-    courses: list[dict[str, Any]] = Field(default_factory=list)
-    goals: list[dict[str, Any]] = Field(default_factory=list)
-    documents: list[dict[str, Any]] = Field(default_factory=list)
-    interests: list[dict[str, Any]] = Field(default_factory=list)
-    experience: list[dict[str, Any]] = Field(default_factory=list)
-    projects: list[dict[str, Any]] = Field(default_factory=list)
+    """Schema-driven student profile payload."""
+    root_properties: dict[str, Any] = Field(default_factory=dict)
+    sections: list[dict[str, Any]] = Field(default_factory=list)
+    section_items: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    unsectioned_items: list[dict[str, Any]] = Field(default_factory=list)
+    support_records: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     profile_facts: list[dict[str, Any]] = Field(default_factory=list)
     candidate_fact_ledger: list[dict[str, Any]] = Field(default_factory=list)
     completeness_breakdown: dict[str, Any] = Field(default_factory=dict)
     fact_summary: dict[str, Any] = Field(default_factory=dict)
     temporal_profile: dict[str, Any] = Field(default_factory=dict)
     long_context_preview: dict[str, Any] = Field(default_factory=dict)
+    profile_schema: dict[str, Any] = Field(default_factory=dict)
     # Dynamic: all entity types from the KG keyed by Neo4j label
     all_entities: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     completeness: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -151,11 +143,10 @@ class ProfileResponse(ResponseModel):
 
 class ProfileInfo(ResponseModel):
     """Local student profile summary."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="allow")
+
     student_id: str = Field(..., min_length=1, max_length=120)
-    name: str = Field(default="Student", min_length=1, max_length=120)
-    email: Optional[str] = Field(default=None, max_length=200)
-    university: Optional[str] = Field(default=None, max_length=200)
-    program: Optional[str] = Field(default=None, max_length=200)
+    name: str = Field(default="Profile", min_length=1, max_length=120)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     completeness: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -200,9 +191,7 @@ class SavedRecommendationInfo(ResponseModel):
 class HealthResponse(ResponseModel):
     """Health check response."""
     status: str = "ok"
-    neo4j: str = "unknown"
-    lm_studio: str = "unknown"
-    ollama: str = "unknown"
+    services: dict[str, str] = Field(default_factory=dict)
     version: str = "2.0.0"
 
 

@@ -1,12 +1,12 @@
 # Graph Report - .  (2026-04-12)
 
 ## Corpus Check
-- 81 files · ~66,302 words
+- 82 files · ~70,938 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1006 nodes · 2199 edges · 72 communities detected
-- Extraction: 61% EXTRACTED · 39% INFERRED · 0% AMBIGUOUS · INFERRED: 848 edges (avg confidence: 0.5)
+- 1041 nodes · 2264 edges · 72 communities detected
+- Extraction: 62% EXTRACTED · 38% INFERRED · 0% AMBIGUOUS · INFERRED: 850 edges (avg confidence: 0.5)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -96,15 +96,15 @@
 10. `ProfileResponse` - 41 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `Deterministic specialist selector for the simplified Pathfinder flow.` --uses--> `PathfinderState`  [INFERRED]
-  app/agents/orchestrator.py → app/core/state.py
-- `Score the request against the 3 specialist prompt families.` --uses--> `PathfinderState`  [INFERRED]
-  app/agents/orchestrator.py → app/core/state.py
+- `Execution context shared by tool handlers.` --uses--> `PathfinderState`  [INFERRED]
+  app/tools/registry.py → app/core/state.py
 - `Pathfinder MCP server backed by the canonical tool registry.` --uses--> `ToolContext`  [INFERRED]
   app/mcp_server.py → app/tools/registry.py
 - `Expose the canonical registry as MCP tools.` --uses--> `ToolContext`  [INFERRED]
   app/mcp_server.py → app/tools/registry.py
 - `Dispatch one tool through the shared registry.` --uses--> `ToolContext`  [INFERRED]
+  app/mcp_server.py → app/tools/registry.py
+- `Run the MCP server over stdio.` --uses--> `ToolContext`  [INFERRED]
   app/mcp_server.py → app/tools/registry.py
 
 ## Communities
@@ -115,15 +115,15 @@ Nodes (147): _academic_level_scores(), academic_source_relevance(), add_handoff_
 
 ### Community 1 - "Community 1"
 Cohesion: 0.03
-Nodes (86): build_graph(), get_compiled_graph(), LangGraph assembly for the simplified MCP-first Pathfinder flow., After input guard, either stop with responder or continue to orchestration., The orchestrator either dispatches to the specialist or short-circuits., The specialist usually goes through validation before response rendering., The validator can only forward to the responder., Build the simplified Pathfinder graph. (+78 more)
+Nodes (75): build_graph(), get_compiled_graph(), LangGraph assembly for the simplified MCP-first Pathfinder flow., After input guard, either stop with responder or continue to orchestration., The orchestrator either dispatches to the specialist or short-circuits., The specialist usually goes through validation before response rendering., The validator can only forward to the responder., Build the simplified Pathfinder graph. (+67 more)
 
 ### Community 2 - "Community 2"
-Cohesion: 0.22
-Nodes (89): BaseModel, ChatRequest, ChatResponse, Citation, DocumentUploadResponse, EntityUpdate, EvalAnalyticsResponse, EvalBenchmarkInfo (+81 more)
+Cohesion: 0.03
+Nodes (95): apply_conflict_choice(), close_driver(), _coerce_graph_property_value(), create_entity(), create_student(), delete_document_cascade(), delete_entity(), delete_entity_for_student() (+87 more)
 
 ### Community 3 - "Community 3"
-Cohesion: 0.04
-Nodes (77): apply_conflict_choice(), close_driver(), create_entity(), create_student(), delete_document_cascade(), delete_entity(), delete_entity_for_student(), ensure_student() (+69 more)
+Cohesion: 0.22
+Nodes (89): BaseModel, ChatRequest, ChatResponse, Citation, DocumentUploadResponse, EntityUpdate, EvalAnalyticsResponse, EvalBenchmarkInfo (+81 more)
 
 ### Community 4 - "Community 4"
 Cohesion: 0.08
@@ -134,88 +134,88 @@ Cohesion: 0.09
 Nodes (40): add_profile_text(), background_status(), chat(), check_document_exists(), create_profile(), delete_all_data_everywhere(), delete_profile_entity(), delete_session() (+32 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.08
-Nodes (33): ChatOpenAI, _build_llm(), get_text_llm(), get_vision_llm(), is_garbage_output(), _log_error(), _log_request(), _log_response() (+25 more)
+Cohesion: 0.07
+Nodes (37): ChatOpenAI, _build_llm(), _build_reasoning_config(), get_text_llm(), get_vision_llm(), is_garbage_output(), _is_gemma_4_model(), _log_error() (+29 more)
 
 ### Community 7 - "Community 7"
 Cohesion: 0.14
 Nodes (32): CandidateFactRecord, _classify_fact_stability(), _clean_candidate_value(), _clean_student_property(), _evidence_kind(), _expand_core_values(), _extract_memory_candidates(), _fact_preference_score() (+24 more)
 
 ### Community 8 - "Community 8"
+Cohesion: 0.11
+Nodes (24): execute_document_ingestion_agent(), _normalize_context_updates(), Structured document-ingestion patch extraction and application., Use the MCP-style tool registry to ingest one document into profile state., call_tool(), list_tools(), Pathfinder MCP server backed by the canonical tool registry., Expose the canonical registry as MCP tools. (+16 more)
+
+### Community 9 - "Community 9"
 Cohesion: 0.1
 Nodes (12): addProfileText(), checkDocumentExists(), deleteProfileEntity(), deleteSession(), evaluateRecentReplays(), getEvalAnalytics(), getProfile(), getProfileGraph() (+4 more)
 
-### Community 9 - "Community 9"
+### Community 10 - "Community 10"
 Cohesion: 0.13
 Nodes (19): Structured recovery recipes for common Pathfinder runtime failures., Structured recovery event for one automatic degradation or escalation., Recovery event for document extraction failures., Recovery event for files that produced no usable extracted text., Recovery event for chunking/embedding storage failures., Recovery event for entity extraction failures during document analysis., Recovery event when retrieval produces very thin evidence., Return explicit recovery events for dependency-gated workflows. (+11 more)
 
-### Community 10 - "Community 10"
+### Community 11 - "Community 11"
 Cohesion: 0.13
 Nodes (16): build_chat_runtime_session(), ChatRuntimeSession, DependencySnapshot, determine_method(), get_dependency_status(), Runtime session helpers for chat execution.  This module centralizes per-request, Build graph config for this turn., Build the final SSE payload for a completed turn. (+8 more)
 
-### Community 11 - "Community 11"
+### Community 12 - "Community 12"
 Cohesion: 0.12
 Nodes (10): metadata_fields(), metadata_json(), Shared utility helpers for the Neo4j graph store., Validate dynamic Cypher identifiers used for labels/relationships., Extract and sanitize a projected map field from one Neo4j record., Convert Neo4j-specific types to Python-native types recursively., Return the canonical metadata payload for graph writes., record_map() (+2 more)
 
-### Community 12 - "Community 12"
+### Community 13 - "Community 13"
 Cohesion: 0.16
 Nodes (17): _convert_heif_to_jpeg(), _extract_page_with_vision(), extract_text_from_docx(), extract_text_from_image(), extract_text_from_pdf(), extract_text_from_plaintext(), _extract_text_with_vision(), get_file_type() (+9 more)
 
-### Community 13 - "Community 13"
+### Community 14 - "Community 14"
 Cohesion: 0.18
 Nodes (17): build_transcript_state(), _course_status(), _extract_courses(), _extract_cumulative_gpa(), _extract_latest_academic_standing(), _extract_milestones(), _extract_personal_info(), _extract_term_gpa() (+9 more)
 
-### Community 14 - "Community 14"
+### Community 15 - "Community 15"
 Cohesion: 0.21
 Nodes (14): build_candidate_fact_ledger(), build_full_profile_payload(), build_temporal_profile(), candidate_confirmation_state(), canonical_entity_key(), dedupe_entities(), expand_compound_entity_values(), parse_datetimeish() (+6 more)
 
-### Community 15 - "Community 15"
+### Community 16 - "Community 16"
 Cohesion: 0.12
 Nodes (15): generate_chunk_id(), generate_document_id(), generate_evidence_id(), generate_memory_id(), generate_replay_id(), generate_session_id(), generate_student_id(), ID generation utilities. (+7 more)
 
-### Community 16 - "Community 16"
+### Community 17 - "Community 17"
 Cohesion: 0.17
 Nodes (15): _artifact_dir(), build_replay_artifact(), delete_all_replay_artifacts(), delete_replay_artifacts_for_student(), get_replay_artifact(), list_replay_artifacts(), Replay artifact persistence for completed Pathfinder turns., Load a single replay artifact by ID. (+7 more)
 
-### Community 17 - "Community 17"
+### Community 18 - "Community 18"
 Cohesion: 0.19
 Nodes (15): _document_ingestors(), execute_document_ingestion(), execute_web_search(), ExecutionRegistry, get_active_retrieval_strategy(), get_active_text_model(), get_active_vision_model(), get_execution_registry() (+7 more)
 
-### Community 18 - "Community 18"
+### Community 19 - "Community 19"
 Cohesion: 0.17
 Nodes (14): _background_loop(), BackgroundStatus, consolidation_loop(), get_background_status(), _is_neo4j_auth_error(), Lightweight background jobs for Pathfinder., Return current background job status for observability., Backward-compatible loop entry used by existing startup wiring. (+6 more)
 
-### Community 19 - "Community 19"
-Cohesion: 0.19
+### Community 20 - "Community 20"
+Cohesion: 0.16
 Nodes (4): DynamicEntityTab(), getEntityConfig(), ProfilePage(), validateLongContextSummary()
 
-### Community 20 - "Community 20"
+### Community 21 - "Community 21"
 Cohesion: 0.36
 Nodes (10): are_semantic_duplicates(), _contains_phrase(), normalize_fact_value(), normalize_text(), _preference_axes(), Shared helpers for distinguishing true conflicts from compatible facts., Separate incompatible clusters from facts that can safely coexist., semantic_tokens() (+2 more)
 
-### Community 21 - "Community 21"
+### Community 22 - "Community 22"
 Cohesion: 0.29
 Nodes (8): _benchmark_dir(), build_eval_analytics(), _group_summary(), list_benchmark_sets(), Benchmark metadata and replay analytics for continuous evaluation., Build grouped replay analytics for continuous evaluation., Load benchmark-set metadata from checked-in JSON files., _trend_summary()
 
-### Community 22 - "Community 22"
+### Community 23 - "Community 23"
 Cohesion: 0.36
 Nodes (9): build_long_context_payload(), _default_summary(), _manifest(), normalize_long_context_summary(), Shared builders for the long-context payload passed to specialists., Build the durable long-context payload shared across runtime and UI., Validate and normalize the editable long-context summary format., _small_facts() (+1 more)
 
-### Community 23 - "Community 23"
+### Community 24 - "Community 24"
 Cohesion: 0.27
 Nodes (5): applyTheme(), appReducer(), generateRuntimeStudentId(), getOrCreateRuntimeStudentId(), getSystemTheme()
 
-### Community 24 - "Community 24"
+### Community 25 - "Community 25"
 Cohesion: 0.33
 Nodes (8): _balanced_slice(), parse_json_array(), parse_json_object(), _parse_json_payload(), Utilities for robustly extracting JSON payloads from model output., Parse a JSON object from raw model output., Parse a JSON array from raw model output., _try_loads()
 
-### Community 25 - "Community 25"
-Cohesion: 0.39
-Nodes (8): _fetch_candidate_facts(), _freshness_score(), maybe_consolidate_memory(), _parse_datetimeish(), _rank_candidate(), Event-driven and periodic memory consolidation hooks., Run a bounded consolidation pass over candidate facts and memories., _update_statuses()
-
 ### Community 26 - "Community 26"
 Cohesion: 0.39
-Nodes (7): _durable_context(), _is_light_conversation(), _keyword_overlap(), orchestrator(), _profile_signals(), Deterministic specialist selector for the simplified Pathfinder flow., Score the request against the 3 specialist prompt families.
+Nodes (8): _fetch_candidate_facts(), _freshness_score(), maybe_consolidate_memory(), _parse_datetimeish(), _rank_candidate(), Event-driven and periodic memory consolidation hooks., Run a bounded consolidation pass over candidate facts and memories., _update_statuses()
 
 ### Community 27 - "Community 27"
 Cohesion: 0.29
@@ -398,7 +398,7 @@ Cohesion: 1.0
 Nodes (0): 
 
 ## Knowledge Gaps
-- **281 isolated node(s):** `Pathfinder FastAPI application entry point.`, `Startup and shutdown tasks.`, `Shared tool registry package for Pathfinder.`, `Persistent conversation memory via LangGraph SqliteSaver.  Provides the checkpoi`, `Return the singleton SQLite checkpointer.` (+276 more)
+- **288 isolated node(s):** `Pathfinder FastAPI application entry point.`, `Startup and shutdown tasks.`, `Shared tool registry package for Pathfinder.`, `Persistent conversation memory via LangGraph SqliteSaver.  Provides the checkpoi`, `Return the singleton SQLite checkpointer.` (+283 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **Thin community `Community 48`** (2 nodes): `__init__.py`, `Shared tool registry package for Pathfinder.`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
@@ -452,8 +452,10 @@ Nodes (0):
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `PathfinderState` connect `Community 1` to `Community 0`, `Community 26`, `Community 4`?**
-  _High betweenness centrality (0.065) - this node is a cross-community bridge._
+- **Why does `PathfinderState` connect `Community 1` to `Community 0`, `Community 8`, `Community 4`?**
+  _High betweenness centrality (0.066) - this node is a cross-community bridge._
+- **Why does `ToolContext` connect `Community 8` to `Community 1`?**
+  _High betweenness centrality (0.015) - this node is a cross-community bridge._
 - **Are the 38 inferred relationships involving `ProfileTextInput` (e.g. with `Normalize a raw student record into the API response shape.` and `Normalize a stored memory record into a saved recommendation response.`) actually correct?**
   _`ProfileTextInput` has 38 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 38 inferred relationships involving `ProfileUpdate` (e.g. with `Normalize a raw student record into the API response shape.` and `Normalize a stored memory record into a saved recommendation response.`) actually correct?**
@@ -464,5 +466,3 @@ _Questions this graph is uniquely positioned to answer:_
   _`ProfileCreate` has 38 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 38 inferred relationships involving `SettingsUpdate` (e.g. with `Normalize a raw student record into the API response shape.` and `Normalize a stored memory record into a saved recommendation response.`) actually correct?**
   _`SettingsUpdate` has 38 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `Pathfinder FastAPI application entry point.`, `Startup and shutdown tasks.`, `Shared tool registry package for Pathfinder.` to the rest of the system?**
-  _281 weakly-connected nodes found - possible documentation gaps or missing edges._

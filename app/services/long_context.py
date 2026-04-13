@@ -4,16 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-SUMMARY_FIELDS = (
-    "Student",
-    "Academic",
-    "Goals",
-    "Preferences",
-    "Skills",
-    "Notes",
-)
-
-SUMMARY_TEMPLATE = "\n".join(f"{field}: " for field in SUMMARY_FIELDS)
+INTERNAL_SUPPORT_LABELS = {"CandidateFact", "MemoryItem", "Evidence", "Section"}
+_ROOT_PROPERTY_EXCLUDE_KEYS = {
+    "id", "created_at", "updated_at",
+    "long_context_notes", "long_context_summary",
+}
 
 
 def build_long_context_payload(
@@ -32,11 +27,14 @@ def build_long_context_payload(
 
 
 def normalize_long_context_summary(text: str) -> str:
-    """Validate and normalize the editable long-context summary format."""
+    """Validate and normalize an editable long-context summary.
+
+    Accepts any set of ``Label: value`` lines — no fixed field list.
+    """
     raw = str(text or "").strip()
     if not raw:
         raise ValueError(
-            "Long-context summary is required and must use the labeled template."
+            "Long-context summary is required and must use 'Label: value' lines."
         )
 
     parsed: dict[str, str] = {}
@@ -48,10 +46,8 @@ def normalize_long_context_summary(text: str) -> str:
             raise ValueError("Each summary line must use the format 'Label: value'.")
         label, value = stripped.split(":", 1)
         normalized_label = label.strip()
-        if normalized_label not in SUMMARY_FIELDS:
-            raise ValueError(
-                f"Unsupported summary label '{normalized_label}'. Use only: {', '.join(SUMMARY_FIELDS)}."
-            )
+        if not normalized_label:
+            raise ValueError("Summary label cannot be empty.")
         if normalized_label in parsed:
             raise ValueError(f"Duplicate summary label '{normalized_label}'.")
         normalized_value = value.strip()
@@ -59,18 +55,15 @@ def normalize_long_context_summary(text: str) -> str:
             raise ValueError(f"Summary field '{normalized_label}' cannot be empty. Use 'none' when needed.")
         parsed[normalized_label] = normalized_value
 
-    missing = [field for field in SUMMARY_FIELDS if field not in parsed]
-    if missing:
-        raise ValueError(
-            f"Missing required summary fields: {', '.join(missing)}."
-        )
+    if not parsed:
+        raise ValueError("Summary must contain at least one 'Label: value' line.")
 
-    return "\n".join(f"{field}: {parsed[field]}" for field in SUMMARY_FIELDS)
+    return "\n".join(f"{label}: {value}" for label, value in parsed.items())
 
 
 def _manifest(profile: dict[str, Any]) -> dict[str, Any]:
     all_entities = profile.get("all_entities", {}) if isinstance(profile.get("all_entities", {}), dict) else {}
-    documents = profile.get("documents", []) if isinstance(profile.get("documents", []), list) else []
+    documents = all_entities.get("Document", []) if isinstance(all_entities.get("Document", []), list) else []
     document_groups: dict[str, int] = {}
     for doc in documents:
         if not isinstance(doc, dict):
@@ -91,31 +84,49 @@ def _manifest(profile: dict[str, Any]) -> dict[str, Any]:
 
 
 def _small_facts(profile: dict[str, Any], session_summary: dict[str, Any]) -> dict[str, Any]:
-    personal = profile.get("personal", {}) if isinstance(profile.get("personal", {}), dict) else {}
-    goals = [
-        str(item.get("name") or item.get("value") or "").strip()
-        for item in profile.get("goals", [])
-        if isinstance(item, dict) and str(item.get("name") or item.get("value") or "").strip()
-    ][:5]
-    preferences = [
-        str(item.get("name") or item.get("value") or "").strip()
-        for item in profile.get("preferences", [])
-        if isinstance(item, dict) and str(item.get("name") or item.get("value") or "").strip()
-    ][:5]
+    """Dynamically extract all populated root properties and schema info."""
+    root = profile.get("root_properties", {}) if isinstance(profile.get("root_properties", {}), dict) else {}
+    sections = profile.get("sections", []) if isinstance(profile.get("sections", []), list) else []
+    all_entities = profile.get("all_entities", {}) if isinstance(profile.get("all_entities", {}), dict) else {}
+
+    profile_fields: dict[str, str] = {}
+    for key, value in root.items():
+        if key in _ROOT_PROPERTY_EXCLUDE_KEYS:
+            continue
+        text = str(value or "").strip()
+        if text:
+            profile_fields[key] = text
+
+    session_fields = session_summary if isinstance(session_summary, dict) else {}
+    for key in ("institution", "program", "standing"):
+        if key not in profile_fields:
+            entry = session_fields.get(key, {})
+            if isinstance(entry, dict):
+                val = str(entry.get("value", "") or "").strip()
+                if val:
+                    profile_fields[key] = val
+
+    section_labels = [
+        str(item.get("label") or item.get("key") or "").strip()
+        for item in sections
+        if isinstance(item, dict) and str(item.get("label") or item.get("key") or "").strip()
+    ]
+    entity_types = [
+        str(label).strip()
+        for label, items in all_entities.items()
+        if label not in INTERNAL_SUPPORT_LABELS and isinstance(items, list) and items
+    ]
+
     return {
-        "name": str(personal.get("name", "") or ""),
-        "institution": str(personal.get("university", "") or ((session_summary.get("institution", {}) or {}).get("value", ""))),
-        "program": str(personal.get("program", "") or ((session_summary.get("program", {}) or {}).get("value", ""))),
-        "semester": str(personal.get("semester", "") or ((session_summary.get("standing", {}) or {}).get("value", ""))),
-        "gpa": str(personal.get("gpa", "") or ""),
-        "goals": goals,
-        "preferences": preferences,
+        "profile_fields": profile_fields,
+        "sections": section_labels,
+        "entity_types": entity_types,
     }
 
 
 def _summary(profile: dict[str, Any], session_summary: dict[str, Any]) -> str:
-    personal = profile.get("personal", {}) if isinstance(profile.get("personal", {}), dict) else {}
-    stored = str(personal.get("long_context_summary", "") or "").strip()
+    root = profile.get("root_properties", {}) if isinstance(profile.get("root_properties", {}), dict) else {}
+    stored = str(root.get("long_context_summary", "") or "").strip()
     if stored:
         try:
             return normalize_long_context_summary(stored)
@@ -131,29 +142,24 @@ def _default_summary(
     *,
     carried_notes: str = "",
 ) -> str:
-    small_facts = _small_facts(profile, session_summary)
-    skills = [
-        str(item.get("name") or "").strip()
-        for item in profile.get("skills", [])
-        if isinstance(item, dict) and str(item.get("name") or "").strip()
-    ][:8]
-    values = {
-        "Student": small_facts.get("name") or "none",
-        "Academic": ", ".join(
-            item
-            for item in [
-                f"institution {small_facts['institution']}" if small_facts.get("institution") else "",
-                f"program {small_facts['program']}" if small_facts.get("program") else "",
-                f"semester {small_facts['semester']}" if small_facts.get("semester") else "",
-                f"GPA {small_facts['gpa']}" if small_facts.get("gpa") else "",
-            ]
-            if item
-        ) or "none",
-        "Goals": ", ".join(small_facts.get("goals") or []) or "none",
-        "Preferences": ", ".join(small_facts.get("preferences") or []) or "none",
-        "Skills": ", ".join(skills) or "none",
-        "Notes": carried_notes or "none",
-    }
-    return normalize_long_context_summary(
-        "\n".join(f"{field}: {values[field]}" for field in SUMMARY_FIELDS)
-    )
+    """Build a summary dynamically from whatever data exists in the profile."""
+    facts = _small_facts(profile, session_summary)
+    profile_fields = facts.get("profile_fields", {})
+    section_labels = facts.get("sections", [])
+    entity_types = facts.get("entity_types", [])
+
+    lines: dict[str, str] = {}
+    lines["Profile"] = profile_fields.get("name", "none")
+
+    detail_parts = [
+        f"{key} {value}"
+        for key, value in profile_fields.items()
+        if key != "name"
+    ]
+    lines["Details"] = ", ".join(detail_parts) if detail_parts else "none"
+    lines["Sections"] = ", ".join(section_labels[:8]) if section_labels else "none"
+    lines["Entities"] = ", ".join(entity_types[:8]) if entity_types else "none"
+    lines["Notes"] = carried_notes or "none"
+
+    summary_text = "\n".join(f"{label}: {value}" for label, value in lines.items())
+    return normalize_long_context_summary(summary_text)
