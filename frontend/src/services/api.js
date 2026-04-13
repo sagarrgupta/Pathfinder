@@ -88,11 +88,9 @@ export async function checkDocumentExists(filename, studentId) {
   return response.json();
 }
 
-export async function uploadDocument(file, scope = 'global', sessionId = null, replace = false, studentId = null) {
+export async function uploadDocument(file, replace = false, studentId = null) {
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('scope', scope);
-  if (sessionId) formData.append('session_id', sessionId);
   if (studentId) formData.append('student_id', studentId);
   if (replace) formData.append('replace', 'true');
 

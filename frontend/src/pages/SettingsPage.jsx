@@ -19,6 +19,11 @@ function formatModelKey(key) {
   return MODEL_KEY_LABELS[key] || key.replace(/_/g, ' ');
 }
 
+/** Matches backend health: e.g. web_search is "configured" when keys are set, not "connected". */
+function isDependencyHealthy(status) {
+  return status === 'connected' || status === 'configured';
+}
+
 const THEME_OPTIONS = [
   { value: 'light', label: 'Light', icon: Sun },
   { value: 'dark', label: 'Dark', icon: Moon },
@@ -46,7 +51,7 @@ export default function SettingsPage() {
         status,
       ])
     : [];
-  const connectedCount = dependencyPairs.filter(([, status]) => status === 'connected').length;
+  const connectedCount = dependencyPairs.filter(([, status]) => isDependencyHealthy(status)).length;
   const runtimeReadiness = health ? Math.round((connectedCount / Math.max(dependencyPairs.length, 1)) * 100) : 0;
 
   useEffect(() => {
@@ -234,7 +239,7 @@ export default function SettingsPage() {
                     <span className="font-medium">{name}</span>
                     <span className={cn(
                       'px-2 py-0.5 rounded-full text-xs font-medium',
-                      status === 'connected'
+                      isDependencyHealthy(status)
                         ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
                         : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
                     )}>
@@ -271,13 +276,19 @@ export default function SettingsPage() {
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    {status === 'connected' ? (
+                    {isDependencyHealthy(status) ? (
                       <>
-                        <span className="relative flex h-2.5 w-2.5">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500" />
+                        {status === 'connected' ? (
+                          <span className="relative flex h-2.5 w-2.5">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500" />
+                          </span>
+                        ) : (
+                          <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
+                        )}
+                        <span className="text-xs font-medium text-green-600 dark:text-green-400">
+                          {status === 'configured' ? 'Configured' : 'Connected'}
                         </span>
-                        <span className="text-xs font-medium text-green-600 dark:text-green-400">Connected</span>
                       </>
                     ) : (
                       <>

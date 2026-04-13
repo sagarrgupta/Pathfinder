@@ -429,7 +429,6 @@ async def _search_documents_semantic(arguments: dict[str, Any], context: ToolCon
         query=query,
         k=limit,
         student_id=context.student_id,
-        session_id=context.session_id or None,
     )
     trimmed = [
         {

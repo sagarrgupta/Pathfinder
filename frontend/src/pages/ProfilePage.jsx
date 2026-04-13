@@ -74,7 +74,7 @@ export default function ProfilePage() {
     setIsUploading(true);
     setProcessingStep('Processing and extracting entities...');
     try {
-      const result = await uploadDocument(file, 'global', null, replace, state.activeStudentId);
+      const result = await uploadDocument(file, replace, state.activeStudentId);
       toast.success(
         replace
           ? `Replaced ${file.name}: ${result.entities_extracted} entities extracted`

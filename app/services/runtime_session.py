@@ -38,7 +38,6 @@ class RuntimeSnapshot:
     reasoning: str
     selected_retrieval_mode: str
     compare_mode: bool
-    is_global_upload: bool
     uploaded_file_count: int
     request_plan: dict[str, Any]
     web_provider_chain: list[str]
@@ -54,7 +53,6 @@ class ChatRuntimeSession:
     session_id: str
     student_id: str
     files: list[dict[str, Any]]
-    is_global_upload: bool
     topic_guard_enabled: bool
     dependency_status: DependencySnapshot
     runtime_snapshot: RuntimeSnapshot
@@ -68,7 +66,6 @@ class ChatRuntimeSession:
             "files": self.files,
             "session_id": self.session_id,
             "student_id": self.student_id,
-            "is_global_upload": self.is_global_upload,
             "topic_guard_enabled": self.topic_guard_enabled,
             "request_plan": {
                 "reasoning": self.reasoning,
@@ -143,7 +140,6 @@ async def build_chat_runtime_session(
     session_id: str,
     student_id: str,
     files: list[dict[str, Any]],
-    is_global_upload: bool,
     topic_guard_enabled: bool,
     reasoning: str = "medium",
 ) -> ChatRuntimeSession:
@@ -164,7 +160,6 @@ async def build_chat_runtime_session(
         reasoning=normalized_reasoning,
         selected_retrieval_mode=get_active_retrieval_strategy(),
         compare_mode=False,
-        is_global_upload=is_global_upload,
         uploaded_file_count=len(files),
         request_plan=request_plan,
         web_provider_chain=list(registry.web_providers),
@@ -176,7 +171,6 @@ async def build_chat_runtime_session(
         session_id=session_id,
         student_id=student_id,
         files=files,
-        is_global_upload=is_global_upload,
         topic_guard_enabled=topic_guard_enabled,
         dependency_status=DependencySnapshot(**dependency_status),
         runtime_snapshot=snapshot,

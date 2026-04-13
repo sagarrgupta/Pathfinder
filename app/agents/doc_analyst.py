@@ -45,10 +45,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
     """Process uploaded files: extract, chunk, embed, store."""
     files = state.get("files", [])
     files = list(files) if isinstance(files, list) else []
-    session_id = state.get("session_id", "")
     student_id = state.get("student_id", "")
-    is_global = state.get("is_global_upload", False)
-    scope = "global" if is_global else "session"
     query = str(state.get("query", "") or "")
 
     step_progress = list(state.get("step_progress", []))
@@ -147,9 +144,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         await store_document_node(
             document_id=doc_id,
             filename=filename,
-            scope=scope,
             student_id=student_id,
-            session_id=session_id if scope == "session" else None,
             doc_type=inferred_role.get("role", "general_document"),
             file_type=file_type,
             document_role=inferred_role.get("role", "general_document"),
@@ -166,7 +161,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                 source_type="transcript_state",
                 content=json.dumps(transcript_states[-1]["state"], ensure_ascii=True),
                 source_ref=f"doc:{doc_id}",
-                session_id=session_id if scope == "session" else None,
+                session_id=None,
                 metadata={
                     "document_id": doc_id,
                     "filename": filename,
@@ -217,7 +212,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         try:
             applied = await execute_document_ingestion_agent(
                 student_id=student_id,
-                session_id=session_id if scope == "session" else None,
+                session_id=None,
                 document_id=doc_id,
                 query=query,
                 filename=filename,

@@ -26,11 +26,9 @@ from app.adapters.neo4j.graph_store import (
     get_graph_data,
     list_students,
     list_saved_recommendations,
-    promote_document_to_global,
     reset_student_data,
     reset_all_data,
     run_cypher,
-    execute_cypher,
     store_memory_item,
     update_saved_recommendation_outcome,
     update_entity,
@@ -228,7 +226,6 @@ async def chat(
     session_id: Optional[str] = Form(None),
     student_id: Optional[str] = Form(None),
     files: list[UploadFile] = File(default=[]),
-    is_global_upload: bool = Form(False),
     replace_filenames: str = Form(""),
     reasoning: str = Form("medium"),
 ):
@@ -259,7 +256,6 @@ async def chat(
                 session_id=session_id,
                 student_id=resolved_student_id,
                 files=file_data,
-                is_global_upload=is_global_upload,
                 topic_guard_enabled=_topic_guard_enabled,
                 reasoning=(reasoning if str(reasoning or "").strip() else _reasoning),
             )
@@ -352,12 +348,10 @@ async def check_document_exists(filename: str, student_id: Optional[str] = Query
 @router.post("/documents", response_model=DocumentUploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
-    scope: str = Form("global"),
-    session_id: Optional[str] = Form(None),
     student_id: Optional[str] = Form(None),
     replace: str = Form("false"),
 ):
-    """Upload a document to the student profile or session."""
+    """Upload a document to the student profile (stored on the profile graph)."""
     resolved_student_id = await _resolve_student_id(student_id)
     upload = await _read_upload_file(file)
 
@@ -373,9 +367,8 @@ async def upload_document(
 
     state: dict[str, Any] = {
         "files": [upload],
-        "session_id": session_id or "",
+        "session_id": "",
         "student_id": resolved_student_id,
-        "is_global_upload": scope == "global",
         "step_progress": [],
     }
 
@@ -387,7 +380,6 @@ async def upload_document(
     return DocumentUploadResponse(
         document_id=f"doc_uploaded",
         filename=upload["filename"],
-        scope=scope,
         document_role=first_role.get("role", "general_document"),
         role_confidence=float(first_role.get("confidence", 0.0) or 0.0),
         entities_extracted=len(result.get("extracted_entities", [])),
@@ -652,26 +644,9 @@ async def update_recommendation_outcome(recommendation_id: str, body: SavedRecom
 
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str, student_id: Optional[str] = Query(default=None)):
-    """Delete a chat session and its session-scoped documents."""
+    """Acknowledge discarding a chat session id; profile documents are not removed."""
     resolved_student_id = await _resolve_student_id(student_id)
-    # Delete session-scoped documents from Neo4j
-    await execute_cypher(
-        """
-        MATCH (s:Profile {id: $student_id})-[:UPLOADED]->(d:Document {session_id: $sid, scope: 'session'})
-        OPTIONAL MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d)
-        DETACH DELETE c, d
-        """,
-        {"sid": session_id, "student_id": resolved_student_id},
-    )
     return {"deleted": True, "session_id": session_id, "student_id": resolved_student_id}
-
-
-@router.put("/sessions/{session_id}/promote-doc")
-async def promote_session_doc(session_id: str, document_id: str = Form(...), student_id: Optional[str] = Form(default=None)):
-    """Promote a session document to global scope."""
-    resolved_student_id = await _resolve_student_id(student_id)
-    promoted = await promote_document_to_global(document_id, resolved_student_id)
-    return {"promoted": promoted, "document_id": document_id}
 
 
 # ── Settings ─────────────────────────────────────────────────────
