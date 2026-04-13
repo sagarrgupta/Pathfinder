@@ -1,13 +1,26 @@
 """Pathfinder application settings.
 
 All configuration is loaded from environment variables or .env file.
+
+The .env path is resolved from the repository root (next to ``app/``), not from the
+process current working directory, so ``NEO4J_PASSWORD`` and other vars load when
+you start the server from any directory.
 """
+
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# app/config/settings.py -> parents[2] == project root (contains app/)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=_ENV_FILE,
+        env_file_encoding="utf-8",
+    )
 
     # ---------- LM Studio (Text + Vision LLM) ----------
     LLM_BASE_URL: str = "http://localhost:1234/v1"
@@ -23,7 +36,8 @@ class Settings(BaseSettings):
     # ---------- Neo4j ----------
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"
-    NEO4J_PASSWORD: str = "pathfinder123"
+    # Set NEO4J_PASSWORD in .env or the environment (loaded at Settings() init).
+    NEO4J_PASSWORD: str = ""
 
     # ---------- SQLite (LangGraph Memory) ----------
     SQLITE_DB_PATH: str = "data/pathfinder.db"

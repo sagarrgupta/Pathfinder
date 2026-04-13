@@ -928,9 +928,7 @@ async def get_entities(
 async def store_document_node(
     document_id: str,
     filename: str,
-    scope: str,
     student_id: str,
-    session_id: str | None = None,
     doc_type: str = "other",
     file_type: str = "unknown",
     document_role: str = "general_document",
@@ -946,8 +944,8 @@ async def store_document_node(
             CREATE (s)-[:UPLOADED]->(d:Document {
                 id: $doc_id,
                 filename: $filename,
-                scope: $scope,
-                session_id: $session_id,
+                scope: 'global',
+                session_id: null,
                 type: $doc_type,
                 file_type: $file_type,
                 document_role: $document_role,
@@ -960,8 +958,6 @@ async def store_document_node(
             student_id=student_id,
             doc_id=document_id,
             filename=filename,
-            scope=scope,
-            session_id=session_id,
             doc_type=doc_type,
             file_type=file_type,
             document_role=document_role,
@@ -1018,23 +1014,6 @@ async def delete_document_cascade(document_id: str, student_id: str) -> bool:
         except Exception:
             await tx.rollback()
             raise
-
-
-async def promote_document_to_global(document_id: str, student_id: str) -> bool:
-    """Change a session-scoped document to global scope."""
-    driver = await get_driver()
-    async with driver.session() as session:
-        result = await session.run(
-            """
-            MATCH (s:Profile {id: $student_id})-[:UPLOADED]->(d:Document {id: $doc_id})
-            SET d.scope = 'global', d.session_id = null
-            RETURN d.id AS id
-            """,
-            doc_id=document_id,
-            student_id=student_id,
-        )
-        record = await result.single()
-        return record is not None
 
 
 # ── Extracted Entities from Documents ───────────────────────────

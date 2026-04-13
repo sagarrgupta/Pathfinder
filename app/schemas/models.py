@@ -113,7 +113,6 @@ class DocumentUploadResponse(ResponseModel):
     """Response after uploading a document."""
     document_id: str = Field(..., min_length=1, max_length=120)
     filename: str = Field(..., min_length=1, max_length=260)
-    scope: str = Field(..., min_length=1, max_length=40)  # "global" or "session"
     document_role: str = Field(default="general_document", min_length=1, max_length=80)
     role_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     entities_extracted: int = Field(default=0, ge=0)

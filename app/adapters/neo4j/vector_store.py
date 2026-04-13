@@ -123,16 +123,6 @@ def _prepared_chunk_rows(chunks: list[dict[str, Any]], document_id: str) -> list
     return rows
 
 
-def _scope_filters(scope: str | None, session_id: str | None) -> tuple[str, dict[str, Any]]:
-    if scope == "global":
-        return "AND d.scope = 'global'", {}
-    if scope == "session":
-        if not session_id:
-            raise ValueError("session_id is required when scope='session'")
-        return "AND d.session_id = $session_id", {"session_id": session_id}
-    return "", {}
-
-
 def _query_tokens(text: str) -> set[str]:
     return {match.group(0).lower() for match in _QUERY_TOKEN_RE.finditer(text or "")}
 
@@ -226,25 +216,9 @@ async def store_chunks(
 async def similarity_search(
     query: str,
     k: int = 5,
-    scope: str | None = None,
-    session_id: str | None = None,
     student_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Semantic similarity search over Chunk nodes.
-
-    Parameters
-    ----------
-    query : str
-        Natural language query.
-    k : int
-        Number of results.
-    scope : str, optional
-        ``'global'``, ``'session'``, or ``None`` (search both).
-    session_id : str, optional
-        If scope is session, filter by this session.
-    student_id : str
-        Student to scope results to.
-    """
+    """Semantic similarity search over Chunk nodes for the student's documents."""
     if not student_id:
         raise ValueError("student_id is required for similarity_search")
     query = (query or "").strip()
@@ -261,16 +235,13 @@ async def similarity_search(
 
     driver = await get_driver()
     async with driver.session() as session:
-        scope_sql, scope_params = _scope_filters(scope, session_id)
-
         try:
             result = await session.run(
-                f"""
+                """
                 CALL db.index.vector.queryNodes($index_name, $k, $embedding)
                 YIELD node AS chunk, score
-                MATCH (chunk)-[:FROM_DOCUMENT]->(d:Document)<-[:UPLOADED]-(s:Profile {{id: $student_id}})
+                MATCH (chunk)-[:FROM_DOCUMENT]->(d:Document)<-[:UPLOADED]-(s:Profile {id: $student_id})
                 WHERE chunk.embedding IS NOT NULL
-                {scope_sql}
                 RETURN chunk.id AS id,
                        chunk.text AS text,
                        chunk.page_number AS page_number,
@@ -285,7 +256,6 @@ async def similarity_search(
                 k=k,
                 embedding=query_embedding,
                 student_id=student_id,
-                **scope_params,
             )
         except Exception as exc:
             message = f"Vector similarity search failed in Neo4j: {exc}"
@@ -315,7 +285,6 @@ async def hybrid_search(
     query: str,
     k: int = 5,
     student_id: str | None = None,
-    session_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Combine vector similarity with graph context.
 
@@ -333,7 +302,6 @@ async def hybrid_search(
         query=query,
         k=k,
         student_id=student_id,
-        session_id=session_id,
     )
 
     if not vector_results:

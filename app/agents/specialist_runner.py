@@ -185,7 +185,6 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
         query=query,
         k=5,
         student_id=student_id,
-        session_id=session_id or None,
     )
 
     short_context = {

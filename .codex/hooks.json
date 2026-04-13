@@ -10,6 +10,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/graphify-rebuild-hook.sh always",
+            "timeout": 120,
+            "statusMessage": "graphify: rebuilding code graph"
+          }
+        ]
+      }
     ]
   }
 }

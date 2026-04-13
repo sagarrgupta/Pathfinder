@@ -29,7 +29,6 @@ class PathfinderState(TypedDict, total=False):
     files: list[UploadedFile]                 # Files uploaded in this turn
     session_id: str                           # Chat session ID
     student_id: str                           # Student identifier
-    is_global_upload: bool                    # Whether uploaded docs go to global profile
     reasoning: str                            # User-selected reasoning effort for local LLM calls
     request_plan: dict[str, Any]              # Deterministic request-planning hints for this turn
 

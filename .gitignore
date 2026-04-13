@@ -31,7 +31,9 @@ data/
 *.sqlite3
 
 # ── IDE / Editor ─────────────────────────────────
-.cursor/
+# Cursor: ignore local editor state; allow committed Agent hooks (hooks.json)
+.cursor/*
+!.cursor/hooks.json
 .vscode/
 .idea/
 *.swp
