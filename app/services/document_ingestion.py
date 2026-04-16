@@ -11,15 +11,13 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from app.adapters.embeddings.ollama import aembed_query
 from app.adapters.llm.lmstudio import get_text_llm
-from app.adapters.neo4j.graph_store import (
-    get_profile_schema,
-    store_evidence,
-)
+from app.adapters.neo4j.graphDB import GraphDB
 from app.core.prompts import (
     DOCUMENT_INGESTION_AGENT_SYSTEM_PROMPT,
     DOCUMENT_INGESTION_AGENT_USER_PROMPT,
 )
-from app.tools.registry import ToolContext, compact_result, execute_tool, get_tool_schemas
+from app.tools.graph_tools import get_driver as get_graph_driver
+from app.tools.tools import ToolContext, compact_result, execute_tool, get_tool_schemas
 from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.services.document_ingestion")
@@ -79,18 +77,7 @@ async def execute_document_ingestion_agent(
     chunks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Use the MCP-style tool registry to ingest one document into profile state."""
-    evidence = await store_evidence(
-        student_id=student_id,
-        source_type="document_ingestion",
-        content=full_text[:_DOCUMENT_LIMIT],
-        session_id=session_id,
-        metadata={
-            "document_id": document_id,
-            "filename": filename,
-            "patch_kind": "document_ingestion",
-        },
-        embedding=await aembed_query(full_text[:4000]),
-    )
+    await aembed_query(full_text[:4000])
     llm = get_text_llm().bind_tools(get_tool_schemas())
     tool_context = ToolContext(
         student_id=student_id,
@@ -102,7 +89,9 @@ async def execute_document_ingestion_agent(
             }
         },
     )
-    current_schema = await get_profile_schema(student_id)
+    current_schema = {
+        "sections": await GraphDB(await get_graph_driver()).get_student_sections(student_id=student_id)
+    }
     schema_text = json.dumps(current_schema, indent=2, ensure_ascii=True, default=str)
     chunk_text = json.dumps(chunks or [], ensure_ascii=True, default=str)[:_CHUNK_PROMPT_LIMIT]
     prompt = DOCUMENT_INGESTION_AGENT_USER_PROMPT.format(
@@ -162,16 +151,25 @@ async def execute_document_ingestion_agent(
             }
         break
 
-    profile = await execute_tool("get_profile_summary", {}, tool_context)
-    entity_types = await execute_tool("list_entity_types", {}, tool_context)
+    profile_graph = await GraphDB(await get_graph_driver()).get_full_student(student_id=student_id)
+    entity_types = sorted(
+        {
+            str(entity.get("entity_type") or "Entity")
+            for entity in list(profile_graph.get("entities", []) or [])
+            if isinstance(entity, dict)
+        }
+    )
     return {
-        "evidence": evidence,
+        "evidence": {},
         "tool_call_log": tool_call_log,
         "final_payload": final_payload,
         "context_updates": _normalize_context_updates(final_payload.get("context_updates")),
         "saved_items": list(final_payload.get("saved_items", []) or []) if isinstance(final_payload, dict) else [],
         "summary": str(final_payload.get("summary", "") or ""),
         "stop_reason": str(final_payload.get("stop_reason", "") or ""),
-        "profile_summary": profile,
-        "entity_types": entity_types,
+        "profile_summary": {
+            "student_graph": profile_graph,
+            "profile_schema": {"sections": profile_graph.get("sections", [])},
+        },
+        "entity_types": {"entity_types": entity_types},
     }

@@ -67,7 +67,6 @@ async def light_validator(state: PathfinderState) -> PathfinderState:
         },
         "citations": citations,
         "confidence_score": confidence,
-        "is_grounded": bool(citations) or not tool_call_log,
         "stop_reason": stop_reason,
         "step_progress": step_progress,
         "next_node": "responder",

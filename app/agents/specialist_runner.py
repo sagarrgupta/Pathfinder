@@ -9,8 +9,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from app.adapters.neo4j.graph_store import get_full_profile, get_relevant_memories
-from app.adapters.neo4j.vector_store import hybrid_search
+from app.adapters.neo4j.graphDB import GraphDB
 from app.adapters.llm.lmstudio import get_text_llm
 from app.agents.doc_analyst import doc_analyst
 from app.core.prompts import (
@@ -21,7 +20,8 @@ from app.core.prompts import (
 from app.core.quality import build_session_summary
 from app.core.state import PathfinderState
 from app.services.long_context import build_long_context_payload
-from app.tools.registry import ToolContext, compact_result, execute_tool, get_tool_schemas
+from app.tools.graph_tools import get_driver as get_graph_driver
+from app.tools.tools import ToolContext, compact_result, execute_tool, get_tool_schemas
 from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.specialist_runner")
@@ -33,6 +33,36 @@ _SPECIALIST_CONFIG = {
 }
 _MESSAGE_FIELD_RE = re.compile(r'"message"\s*:\s*"((?:\\.|[^"])*)"', re.DOTALL)
 _SPECIAL_TOKEN_RE = re.compile(r"<\|.*?\|>")
+
+
+def _profile_student(profile: dict[str, Any]) -> dict[str, Any]:
+    student = profile.get("student")
+    if isinstance(student, dict):
+        return student
+    root = profile.get("root_properties")
+    return dict(root) if isinstance(root, dict) else {}
+
+
+def _profile_entity_groups(profile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    if isinstance(profile.get("all_entities"), dict):
+        return {
+            str(label): list(items)
+            for label, items in profile.get("all_entities", {}).items()
+            if isinstance(items, list)
+        }
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for entity in profile.get("entities", []) if isinstance(profile.get("entities"), list) else []:
+        if not isinstance(entity, dict):
+            continue
+        label = str(entity.get("entity_type") or "Entity")
+        groups.setdefault(label, []).append(entity)
+        for document in entity.get("documents", []) if isinstance(entity.get("documents"), list) else []:
+            if isinstance(document, dict):
+                groups.setdefault("Document", []).append(document)
+        for chunk in entity.get("chunks", []) if isinstance(entity.get("chunks"), list) else []:
+            if isinstance(chunk, dict):
+                groups.setdefault("Chunk", []).append(chunk)
+    return groups
 
 
 def _recent_messages(messages: list[Any], limit: int = 8) -> list[dict[str, str]]:
@@ -49,13 +79,13 @@ def _recent_messages(messages: list[Any], limit: int = 8) -> list[dict[str, str]
 
 
 def _manifest(profile: dict[str, Any], memories: dict[str, Any]) -> dict[str, Any]:
-    all_entities = profile.get("all_entities", {}) if isinstance(profile.get("all_entities", {}), dict) else {}
+    all_entities = _profile_entity_groups(profile)
     documents = all_entities.get("Document", []) if isinstance(all_entities.get("Document", []), list) else []
     document_groups: dict[str, int] = {}
     for doc in documents:
         if not isinstance(doc, dict):
             continue
-        group = str(doc.get("document_role") or doc.get("doc_type") or "unknown")
+        group = str(doc.get("file_type") or "unknown")
         document_groups[group] = document_groups.get(group, 0) + 1
     return {
         "graph_entity_types": {
@@ -141,6 +171,10 @@ def _clean_message(content: str) -> str:
     return text.strip().strip('"').strip()
 
 
+async def _graph_db() -> GraphDB:
+    return GraphDB(await get_graph_driver())
+
+
 def _bounded_tool_value(value: Any, limit: int = 12000) -> Any:
     """Keep replay-facing tool payloads readable without dropping structure."""
     try:
@@ -177,11 +211,11 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
         working_state.update(doc_state)
         step_progress = list(doc_state.get("step_progress", step_progress))
 
-    profile = await get_full_profile(student_id)
+    profile = await (await _graph_db()).get_full_student(student_id=student_id)
     session_messages = list(working_state.get("messages", []))
     session_summary = build_session_summary(profile, session_messages, query)
-    memories = await get_relevant_memories(student_id, query, limit=6)
-    retrieved_documents = await hybrid_search(
+    memories = {}
+    retrieved_documents = await (await _graph_db()).hybrid_search(
         query=query,
         k=5,
         student_id=student_id,
@@ -190,7 +224,7 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
     short_context = {
         "recent_messages": _recent_messages(session_messages),
         "session_summary": session_summary,
-        "profile_schema": profile.get("profile_schema", {}),
+        "profile_schema": profile.get("profile_schema", {"sections": profile.get("sections", [])}),
     }
     latest_ingestion = working_state.get("latest_ingestion_result", {}) if isinstance(working_state.get("latest_ingestion_result", {}), dict) else {}
     patch_summaries = list(latest_ingestion.get("patch_summaries", []) or [])

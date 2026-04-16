@@ -37,8 +37,8 @@ class ProfileTextInput(RequestModel):
     text: str = Field(..., min_length=1, max_length=5000)
 
 
-class ProfileUpdate(RequestModel):
-    """Update a specific profile field."""
+class StudentUpdate(RequestModel):
+    """Update a specific student field."""
     student_id: Optional[str] = Field(default=None, max_length=120)
     field: str = Field(..., min_length=1, max_length=80)
     value: Any
@@ -53,8 +53,8 @@ class EntityUpdate(RequestModel):
     properties: dict[str, Any] = Field(default_factory=dict)
 
 
-class ProfileCreate(RequestModel):
-    """Create a new local student profile."""
+class StudentCreate(RequestModel):
+    """Create a new local student."""
     model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
 
     name: str = Field(..., min_length=1, max_length=120)
@@ -113,39 +113,34 @@ class DocumentUploadResponse(ResponseModel):
     """Response after uploading a document."""
     document_id: str = Field(..., min_length=1, max_length=120)
     filename: str = Field(..., min_length=1, max_length=260)
-    document_role: str = Field(default="general_document", min_length=1, max_length=80)
-    role_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     entities_extracted: int = Field(default=0, ge=0)
     chunks_stored: int = Field(default=0, ge=0)
 
 
-class ProfileResponse(ResponseModel):
-    """Schema-driven student profile payload."""
+class StudentResponse(ResponseModel):
+    """Schema-driven student payload."""
     root_properties: dict[str, Any] = Field(default_factory=dict)
     sections: list[dict[str, Any]] = Field(default_factory=list)
     section_items: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     unsectioned_items: list[dict[str, Any]] = Field(default_factory=list)
     support_records: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
-    profile_facts: list[dict[str, Any]] = Field(default_factory=list)
-    candidate_fact_ledger: list[dict[str, Any]] = Field(default_factory=list)
     completeness_breakdown: dict[str, Any] = Field(default_factory=dict)
     fact_summary: dict[str, Any] = Field(default_factory=dict)
     temporal_profile: dict[str, Any] = Field(default_factory=dict)
     long_context_preview: dict[str, Any] = Field(default_factory=dict)
-    profile_schema: dict[str, Any] = Field(default_factory=dict)
+    student_schema: dict[str, Any] = Field(default_factory=dict)
     # Dynamic: all entity types from the KG keyed by Neo4j label
     all_entities: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     completeness: float = Field(default=0.0, ge=0.0, le=1.0)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    memory_overview: dict[str, Any] = Field(default_factory=dict)
 
 
-class ProfileInfo(ResponseModel):
-    """Local student profile summary."""
+class StudentInfo(ResponseModel):
+    """Local student summary."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="allow")
 
     student_id: str = Field(..., min_length=1, max_length=120)
-    name: str = Field(default="Profile", min_length=1, max_length=120)
+    name: str = Field(default="Student", min_length=1, max_length=120)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     completeness: float = Field(default=0.0, ge=0.0, le=1.0)

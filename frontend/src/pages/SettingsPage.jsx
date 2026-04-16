@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
-import { getSettings, updateSettings, getHealth, resetAllData, deleteAllDataEverywhere } from '@/services/api';
+import { getSettings, updateSettings, getHealth, resetStudentData, deleteAllDataEverywhere } from '@/services/api';
 import {
   Settings, Shield, Monitor, Server, Loader2,
   CheckCircle2, XCircle, Trash2, AlertTriangle, X,
@@ -38,7 +38,7 @@ const REASONING_OPTIONS = [
 ];
 
 export default function SettingsPage() {
-  const { state, dispatch, refreshProfile, refreshProfiles } = useApp();
+  const { state, dispatch, refreshStudent, refreshStudents } = useApp();
   const toast = useToast();
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -335,7 +335,7 @@ export default function SettingsPage() {
             <div>
               <p className="text-sm font-medium">Reset All Data</p>
               <p className="text-xs text-muted-foreground">
-                Permanently delete your profile, all documents, courses, skills, and knowledge graph data.
+                Permanently delete this student's documents, entities, and graph data.
               </p>
             </div>
             <button
@@ -348,9 +348,9 @@ export default function SettingsPage() {
           </div>
           <div className="flex items-center justify-between pt-4 border-t border-destructive/20">
             <div>
-              <p className="text-sm font-medium">Delete All Data (All Profiles)</p>
+              <p className="text-sm font-medium">Delete All Data (All Students)</p>
               <p className="text-xs text-muted-foreground">
-                Permanently delete every profile, all Neo4j graph data, and all chat history across profiles.
+                Permanently delete every student, all Neo4j graph data, and all chat history.
               </p>
             </div>
             <button
@@ -371,8 +371,8 @@ export default function SettingsPage() {
           onClose={() => setShowResetModal(false)}
           onSuccess={async (msg) => {
             dispatch({ type: 'CLEAR_STUDENT_DATA', payload: state.activeStudentId });
-            await refreshProfiles().catch(() => {});
-            await refreshProfile(state.activeStudentId).catch(() => {});
+            await refreshStudents().catch(() => {});
+            await refreshStudent(state.activeStudentId).catch(() => {});
             toast.success(msg);
           }}
         />
@@ -383,7 +383,7 @@ export default function SettingsPage() {
           onClose={() => setShowDeleteAllModal(false)}
           onSuccess={async (msg) => {
             dispatch({ type: 'CLEAR_ALL_LOCAL_DATA' });
-            await refreshProfiles().catch(() => {});
+            await refreshStudents().catch(() => {});
             toast.success(msg);
           }}
         />
@@ -403,8 +403,8 @@ function ResetModal({ studentId, onClose, onSuccess }) {
     setIsResetting(true);
     setError('');
     try {
-      await resetAllData(studentId);
-      onSuccess('All profile data has been reset successfully.');
+      await resetStudentData(studentId);
+      onSuccess('All student data has been reset successfully.');
       onClose();
     } catch (err) {
       setError(`Reset failed: ${err.message}`);
@@ -451,10 +451,10 @@ function ResetModal({ studentId, onClose, onSuccess }) {
 
           <ul className="text-sm space-y-2 pl-1">
             {[
-              'Your student profile and personal information',
+              'This student node and its stored properties',
               'All uploaded documents and extracted text',
-              'Courses, skills, goals, experience, and other entities',
-              'Entire knowledge graph data',
+              'All sections, entities, fields, and relationships',
+              'The complete student graph for this student id',
             ].map((text, i) => (
               <li key={i} className="flex items-center gap-2.5 text-muted-foreground">
                 <span className="w-1.5 h-1.5 rounded-full bg-destructive flex-shrink-0" />
@@ -507,7 +507,7 @@ function DeleteAllModal({ onClose, onSuccess }) {
     setError('');
     try {
       await deleteAllDataEverywhere();
-      onSuccess('All profiles, graph data, and chats have been deleted.');
+      onSuccess('All students, graph data, and chats have been deleted.');
       onClose();
     } catch (err) {
       setError(`Delete all failed: ${err.message}`);
@@ -547,11 +547,11 @@ function DeleteAllModal({ onClose, onSuccess }) {
 
         <div className="p-5 space-y-4">
           <p className="text-sm text-muted-foreground leading-relaxed">
-            This will permanently delete <strong className="text-destructive">everything for all profiles</strong>:
+            This will permanently delete <strong className="text-destructive">everything for all students</strong>:
           </p>
           <ul className="text-sm space-y-2 pl-1">
             {[
-              'All student profiles',
+              'All student records',
               'All Neo4j nodes and relationships',
               'All persisted chat history',
               'All uploaded documents and extracted entities',

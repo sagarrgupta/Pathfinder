@@ -61,11 +61,9 @@ export default function Message({ message, isLast, isStreaming }) {
   const routingReason = metadata.routingReason || '';
   const toolCallLog = Array.isArray(metadata.toolCallLog) ? metadata.toolCallLog : [];
   const specialistOutput = metadata.specialistOutput || {};
-  const documentRoles = Array.isArray(metadata.documentRoles) ? metadata.documentRoles : [];
   const transcriptStates = Array.isArray(metadata.transcriptStates) ? metadata.transcriptStates : [];
   const successfulToolCalls = toolCallLog.filter((item) => item?.status === 'ok');
   const topTools = successfulToolCalls.slice(0, 4);
-  const topDocumentRoles = documentRoles.slice(0, 3);
   const methodLabel = metadata.method && metadata.method !== 'direct' ? metadata.method : '';
   const qualityPathLabel = metadata.qualityPath && metadata.qualityPath !== 'direct' ? metadata.qualityPath : '';
   const hasMeaningfulRouting = Object.values(routingScores).some((value) => Number(value) > 0);
@@ -76,7 +74,6 @@ export default function Message({ message, isLast, isStreaming }) {
     (selectedSpecialist && hasMeaningfulRouting) ||
     (routingReason && hasMeaningfulRouting) ||
     successfulToolCalls.length > 0 ||
-    documentRoles.length > 0 ||
     transcriptStates.length > 0 ||
     hasRuntimeWarnings ||
     (runtimeSnapshot.selected_retrieval_mode && methodLabel) ||
@@ -239,9 +236,6 @@ export default function Message({ message, isLast, isStreaming }) {
               {citations.length > 0 && (
                 <span>{citations.length} source{citations.length === 1 ? '' : 's'}</span>
               )}
-              {topDocumentRoles.length > 0 && (
-                <span>{topDocumentRoles.length} document signal{topDocumentRoles.length === 1 ? '' : 's'}</span>
-              )}
             </div>
 
             {routingReason && hasMeaningfulRouting && (
@@ -308,20 +302,13 @@ export default function Message({ message, isLast, isStreaming }) {
                   </div>
                 )}
 
-                {(documentRoles.length > 0 || transcriptStates.length > 0) && (
+                {transcriptStates.length > 0 && (
                   <div>
                     <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Document Signals</p>
                     <div className="flex flex-wrap gap-1.5">
-                      {topDocumentRoles.map((item, index) => (
-                        <span key={`${item.role}-${index}`} className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">
-                          {formatPriority(item.role)} {typeof item.confidence === 'number' ? `${Math.round(item.confidence * 100)}%` : ''}
-                        </span>
-                      ))}
-                      {transcriptStates.length > 0 && (
-                        <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">
-                          {transcriptStates.length} transcript state{transcriptStates.length === 1 ? '' : 's'}
-                        </span>
-                      )}
+                      <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">
+                        {transcriptStates.length} transcript state{transcriptStates.length === 1 ? '' : 's'}
+                      </span>
                     </div>
                   </div>
                 )}

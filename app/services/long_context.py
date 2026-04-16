@@ -11,6 +11,36 @@ _ROOT_PROPERTY_EXCLUDE_KEYS = {
 }
 
 
+def _profile_student(profile: dict[str, Any]) -> dict[str, Any]:
+    student = profile.get("student")
+    if isinstance(student, dict):
+        return student
+    root = profile.get("root_properties")
+    return dict(root) if isinstance(root, dict) else {}
+
+
+def _profile_entity_groups(profile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    if isinstance(profile.get("all_entities"), dict):
+        return {
+            str(label): list(items)
+            for label, items in profile.get("all_entities", {}).items()
+            if isinstance(items, list)
+        }
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for entity in profile.get("entities", []) if isinstance(profile.get("entities"), list) else []:
+        if not isinstance(entity, dict):
+            continue
+        label = str(entity.get("entity_type") or "Entity")
+        groups.setdefault(label, []).append(entity)
+        for document in entity.get("documents", []) if isinstance(entity.get("documents"), list) else []:
+            if isinstance(document, dict):
+                groups.setdefault("Document", []).append(document)
+        for chunk in entity.get("chunks", []) if isinstance(entity.get("chunks"), list) else []:
+            if isinstance(chunk, dict):
+                groups.setdefault("Chunk", []).append(chunk)
+    return groups
+
+
 def build_long_context_payload(
     profile: dict[str, Any] | None,
     session_summary: dict[str, Any] | None,
@@ -62,13 +92,13 @@ def normalize_long_context_summary(text: str) -> str:
 
 
 def _manifest(profile: dict[str, Any]) -> dict[str, Any]:
-    all_entities = profile.get("all_entities", {}) if isinstance(profile.get("all_entities", {}), dict) else {}
+    all_entities = _profile_entity_groups(profile)
     documents = all_entities.get("Document", []) if isinstance(all_entities.get("Document", []), list) else []
     document_groups: dict[str, int] = {}
     for doc in documents:
         if not isinstance(doc, dict):
             continue
-        group = str(doc.get("document_role") or doc.get("doc_type") or "unknown")
+        group = str(doc.get("file_type") or "unknown")
         document_groups[group] = document_groups.get(group, 0) + 1
     return {
         "graph_entity_types": {
@@ -85,9 +115,9 @@ def _manifest(profile: dict[str, Any]) -> dict[str, Any]:
 
 def _small_facts(profile: dict[str, Any], session_summary: dict[str, Any]) -> dict[str, Any]:
     """Dynamically extract all populated root properties and schema info."""
-    root = profile.get("root_properties", {}) if isinstance(profile.get("root_properties", {}), dict) else {}
+    root = _profile_student(profile)
     sections = profile.get("sections", []) if isinstance(profile.get("sections", []), list) else []
-    all_entities = profile.get("all_entities", {}) if isinstance(profile.get("all_entities", {}), dict) else {}
+    all_entities = _profile_entity_groups(profile)
 
     profile_fields: dict[str, str] = {}
     for key, value in root.items():
@@ -125,7 +155,7 @@ def _small_facts(profile: dict[str, Any], session_summary: dict[str, Any]) -> di
 
 
 def _summary(profile: dict[str, Any], session_summary: dict[str, Any]) -> str:
-    root = profile.get("root_properties", {}) if isinstance(profile.get("root_properties", {}), dict) else {}
+    root = _profile_student(profile)
     stored = str(root.get("long_context_summary", "") or "").strip()
     if stored:
         try:

@@ -181,8 +181,6 @@ class VectorDB:
                 metadata["page_number"] = chunk.get("page_number")
             if "chunk_index" in chunk and "chunk_index" not in metadata:
                 metadata["chunk_index"] = chunk.get("chunk_index")
-            if "document_role" in chunk and "document_role" not in metadata:
-                metadata["document_role"] = chunk.get("document_role")
             if "extraction_confidence" in chunk and "extraction_confidence" not in metadata:
                 metadata["extraction_confidence"] = chunk.get("extraction_confidence")
             if "start_offset" in chunk and "start_offset" not in metadata:

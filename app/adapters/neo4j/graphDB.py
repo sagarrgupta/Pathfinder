@@ -41,21 +41,43 @@ class GraphDB:
             for stmt in constraints + indexes:
                 await session.run(stmt)
 
-    async def upsert_student(self, *, student_id: str) -> dict:
-        """Create or return the root student node."""
+    async def get_student(self, *, student_id: str) -> dict[str, Any] | None:
+        """Fetch one student node by id."""
         async with self.driver.session() as session:
-            result = await session.run("""
-                MERGE (s:Student {id: $student_id})
-                ON CREATE SET s.created_at = datetime()
-                SET s.updated_at = datetime()
+            result = await session.run(
+                """
+                MATCH (s:Student {id: $student_id})
                 RETURN s {.*} AS student
-            """,
-            student_id=student_id,
+                LIMIT 1
+                """,
+                student_id=student_id,
             )
             record = await result.single()
             if not record:
-                raise ValueError(f"Student not found: {student_id}")
+                return None
             return sanitize_neo4j_value(dict(record["student"]))
+
+    async def update_student(self, *, student_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        """Update scalar properties on the root student node."""
+        assignments: list[str] = ["s.updated_at = datetime()"]
+        params: dict[str, Any] = {"student_id": student_id}
+        for idx, (key, value) in enumerate(updates.items()):
+            if value is None:
+                continue
+            field = self._safe_identifier(str(key or "").strip(), "student field")
+            param = f"value_{idx}"
+            assignments.append(f"s.{field} = ${param}")
+            params[param] = value
+        async with self.driver.session() as session:
+            await session.run(
+                f"""
+                MERGE (s:Student {{id: $student_id}})
+                ON CREATE SET s.created_at = datetime()
+                SET {", ".join(assignments)}
+                """,
+                params,
+            )
+        return await self.get_student(student_id=student_id) or {"id": student_id}
 
     async def create_document(self, *, student_id: str, document_id: str, filename: str, file_type: str = "unknown") -> dict:
         """Create document node. (:Student)-[:UPLOADED]->(:Document)."""
@@ -75,6 +97,36 @@ class GraphDB:
             if not record:
                 raise ValueError(f"Document not found: {document_id}")
             return sanitize_neo4j_value(dict(record["document"]))
+
+    async def find_document_by_filename(self, *, student_id: str, filename: str) -> dict[str, Any] | None:
+        """Find one document for a student by filename."""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (:Student {id: $student_id})-[:UPLOADED]->(d:Document {filename: $filename})
+                RETURN d {.*} AS document
+                LIMIT 1
+                """,
+                student_id=student_id,
+                filename=filename,
+            )
+            record = await result.single()
+            if not record:
+                return None
+            return sanitize_neo4j_value(dict(record["document"]))
+
+    async def delete_document_cascade(self, *, document_id: str) -> dict[str, Any]:
+        """Delete one document and any chunks attached to it."""
+        async with self.driver.session() as session:
+            await session.run(
+                """
+                MATCH (d:Document {id: $document_id})
+                OPTIONAL MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d)
+                DETACH DELETE c, d
+                """,
+                document_id=document_id,
+            )
+        return sanitize_neo4j_value({"status": "success", "document_id": document_id})
 
     async def upsert_section(
         self,
@@ -330,22 +382,249 @@ class GraphDB:
             if not record:
                 raise ValueError("entity not found")
             return sanitize_neo4j_value(dict(record["entity"]))
+
+    async def get_student_summary(self, *, student_id: str) -> dict[str, Any]:
+        """Return a compact student summary for planning and tool selection."""
+        student_graph = await self.get_full_student(student_id=student_id)
+        student = dict(student_graph.get("student") or {})
+        sections = list(student_graph.get("sections") or [])
+        entities = list(student_graph.get("entities") or [])
+
+        entity_counts: dict[str, int] = {}
+
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+            entity_type = str(entity.get("entity_type") or "Entity")
+            entity_counts[entity_type] = entity_counts.get(entity_type, 0) + 1
+
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (s:Student {id: $student_id})
+                OPTIONAL MATCH (s)-[:UPLOADED]->(d:Document)
+                OPTIONAL MATCH (d)<-[:FROM_DOCUMENT]-(c:Chunk)
+                RETURN count(DISTINCT d) AS document_count,
+                       count(DISTINCT c) AS chunk_count
+                """,
+                student_id=student_id,
+            )
+            record = await result.single()
+            document_count = int(record["document_count"] or 0) if record else 0
+            chunk_count = int(record["chunk_count"] or 0) if record else 0
+
+        summary = {
+            "student": student,
+            "sections": [
+                str(item.get("key") or item.get("label") or "").strip()
+                for item in sections
+                if isinstance(item, dict) and str(item.get("key") or item.get("label") or "").strip()
+            ],
+            "entity_types": sorted(entity_counts.keys()),
+            "counts": {
+                "sections": len(sections),
+                "entities": len(entities),
+                "documents": document_count,
+                "chunks": chunk_count,
+                "entity_types": entity_counts,
+            },
+            "student_schema": {"sections": sections},
+        }
+        return sanitize_neo4j_value(summary)
+
+    async def get_student_schema(self, *, student_id: str) -> dict[str, Any]:
+        """Return the current student section schema."""
+        sections = await self.get_student_sections(student_id=student_id)
+        return sanitize_neo4j_value({"sections": sections})
+
+    async def list_entity_types(self, *, student_id: str) -> dict[str, Any]:
+        """Return entity types currently present in the student graph with counts."""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (:Student {id: $student_id})-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(ent:Entity)
+                RETURN ent.entity_type AS entity_type, count(ent) AS entity_count
+                ORDER BY entity_type
+                """,
+                student_id=student_id,
+            )
+            entity_counts: dict[str, int] = {}
+            async for record in result:
+                entity_type = str(record.get("entity_type") or "Entity").strip()
+                if not entity_type:
+                    continue
+                entity_counts[entity_type] = int(record.get("entity_count", 0) or 0)
+        return sanitize_neo4j_value({
+            "entity_types": sorted(entity_counts.keys()),
+            "entity_counts": entity_counts,
+        })
+
+    async def typed_node_lookup(
+        self,
+        *,
+        student_id: str,
+        entity_type: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return matching entities of one type using exact-match filters."""
+        safe_entity_type = self._safe_identifier(entity_type, "entity_type")
+        filters = filters or {}
+        where_parts: list[str] = ["ent.student_id = $student_id"]
+        params: dict[str, Any] = {"student_id": student_id, "limit": max(1, min(int(limit or 20), 50))}
+        for idx, (field, value) in enumerate(filters.items()):
+            safe_field = self._safe_identifier(field, "filter field")
+            param_name = f"filter_{idx}"
+            where_parts.append(f"toString(ent.{safe_field}) = ${param_name}")
+            params[param_name] = str(value or "")
+
+        query = f"""
+            MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(sec:Section)-[:HAS_ITEM]->(ent:Entity:{safe_entity_type})
+            WHERE {" AND ".join(where_parts)}
+            RETURN ent {{.*, section_key: sec.key}} AS node
+            ORDER BY coalesce(ent.updated_at, ent.created_at) DESC
+            LIMIT $limit
+        """
+        async with self.driver.session() as session:
+            result = await session.run(query, params)
+            rows = [dict(record["node"]) async for record in result if record and record.get("node")]
+        return sanitize_neo4j_value(rows)
+
+    async def typed_relation_lookup(
+        self,
+        *,
+        student_id: str,
+        relationship_type: str,
+        target_entity_type: str,
+        target_filters: dict[str, Any] | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return student-owned relations of one type whose target matches one entity type."""
+        rel_type = self._safe_identifier(relationship_type, "relationship_type")
+        target_type = self._safe_identifier(target_entity_type, "target_entity_type")
+        target_filters = target_filters or {}
+
+        where_parts: list[str] = ["dst.student_id = $student_id"]
+        params: dict[str, Any] = {"student_id": student_id, "limit": max(1, min(int(limit or 20), 50))}
+        for idx, (field, value) in enumerate(target_filters.items()):
+            safe_field = self._safe_identifier(field, "target field")
+            param_name = f"target_{idx}"
+            where_parts.append(f"toString(dst.{safe_field}) = ${param_name}")
+            params[param_name] = str(value or "")
+
+        query = f"""
+            MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(src_sec:Section)-[:HAS_ITEM]->(src:Entity)-[r:{rel_type}]->(dst:Entity:{target_type})
+            OPTIONAL MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(dst_sec:Section)-[:HAS_ITEM]->(dst)
+            WHERE {" AND ".join(where_parts)}
+            RETURN {{
+                relationship_type: type(r),
+                source: src {{.*}},
+                source_section_key: src_sec.key,
+                target: dst {{.*}},
+                target_section_key: dst_sec.key,
+                relationship: properties(r)
+            }} AS relation
+            LIMIT $limit
+        """
+        async with self.driver.session() as session:
+            result = await session.run(query, params)
+            rows = [dict(record["relation"]) async for record in result if record and record.get("relation")]
+        return sanitize_neo4j_value(rows)
+
+    async def fetch_node_by_id(
+        self,
+        *,
+        student_id: str,
+        entity_type: str,
+        node_id: str,
+    ) -> dict[str, Any]:
+        """Fetch one entity by a stable id-like value within a specific entity type."""
+        safe_entity_type = self._safe_identifier(entity_type, "entity_type")
+        lookup_value = str(node_id or "").strip()
+        if not lookup_value:
+            raise ValueError("node_id is required")
+
+        async with self.driver.session() as session:
+            result = await session.run(
+                f"""
+                MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(sec:Section)-[:HAS_ITEM]->(n:Entity:{safe_entity_type})
+                WHERE n.student_id = $student_id
+                  AND (
+                    toString(n.id) = $node_id OR
+                    toString(n.name) = $node_id OR
+                    toString(n.code) = $node_id OR
+                    toString(n.key) = $node_id OR
+                    toString(n.title) = $node_id
+                  )
+                RETURN n {{.*, section_key: sec.key}} AS node
+                LIMIT 1
+                """,
+                student_id=student_id,
+                node_id=lookup_value,
+            )
+            record = await result.single()
+            if not record:
+                raise ValueError("node not found")
+            return sanitize_neo4j_value(dict(record["node"]))
+
+    async def fetch_relation_detail(
+        self,
+        *,
+        student_id: str,
+        relationship_type: str,
+        target_entity_type: str,
+        target_field: str = "id",
+        target_value: str,
+    ) -> dict[str, Any]:
+        """Fetch one relation detail using an exact target field match."""
+        rel_type = self._safe_identifier(relationship_type, "relationship_type")
+        target_type = self._safe_identifier(target_entity_type, "target_entity_type")
+        safe_target_field = self._safe_identifier(target_field, "target_field")
+        lookup_value = str(target_value or "").strip()
+        if not lookup_value:
+            raise ValueError("target_value is required")
+
+        query = f"""
+            MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(src_sec:Section)-[:HAS_ITEM]->(src:Entity)-[r:{rel_type}]->(dst:Entity:{target_type})
+            OPTIONAL MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(dst_sec:Section)-[:HAS_ITEM]->(dst)
+            WHERE dst.student_id = $student_id
+              AND toString(dst.{safe_target_field}) = $target_value
+            RETURN {{
+                relationship_type: type(r),
+                source: src {{.*}},
+                source_section_key: src_sec.key,
+                target: dst {{.*}},
+                target_section_key: dst_sec.key,
+                relationship: properties(r)
+            }} AS relation
+            LIMIT 1
+        """
+        async with self.driver.session() as session:
+            result = await session.run(
+                query,
+                student_id=student_id,
+                target_value=lookup_value,
+            )
+            record = await result.single()
+            if not record:
+                raise ValueError("relation not found")
+            return sanitize_neo4j_value(dict(record["relation"]))
     
     async def upsert_entity_field(
         self,
         *,
         student_id: str,
         entity_type: str,
-        entity_identity: dict[str, str],
+        identity: dict[str, str],
         field_name: str,
         field_value: Any,
     ) -> dict:
         """Add/update one complex Field node under an Entity for expandable nested details."""
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
         safe_field_name = self._safe_identifier(field_name, "field_name")
-        if not entity_identity:
-            raise ValueError("entity_identity is required")
-        owner_key = self._entity_owner_key(student_id, safe_entity_type, entity_identity)
+        if not identity:
+            raise ValueError("identity is required")
+        owner_key = self._entity_owner_key(student_id, safe_entity_type, identity)
         where_parts: list[str] = ["ent.student_id = $student_id"]
         params: dict[str, Any] = {
             "student_id": student_id,
@@ -355,7 +634,7 @@ class GraphDB:
             "field_id": generate_field_id(),
             "field_value_json": json.dumps(field_value, ensure_ascii=True, default=str),
         }
-        for idx, (field, value) in enumerate(entity_identity.items()):
+        for idx, (field, value) in enumerate(identity.items()):
             safe_field = self._safe_identifier(field, "identity field")
             param_name = f"id_{idx}"
             where_parts.append(f"ent.{safe_field} = ${param_name}")
@@ -385,15 +664,15 @@ class GraphDB:
         *,
         student_id: str,
         entity_type: str,
-        entity_identity: dict[str, str],
+        identity: dict[str, str],
     ) -> list[dict]:
         """Return Field nodes for one entity so retrieval can show structured details."""
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
-        if not entity_identity:
-            raise ValueError("entity_identity is required")
+        if not identity:
+            raise ValueError("identity is required")
         where_parts: list[str] = ["ent.student_id = $student_id"]
         params: dict[str, Any] = {"student_id": student_id}
-        for idx, (field, value) in enumerate(entity_identity.items()):
+        for idx, (field, value) in enumerate(identity.items()):
             safe_field = self._safe_identifier(field, "identity field")
             param_name = f"id_{idx}"
             where_parts.append(f"ent.{safe_field} = ${param_name}")
@@ -451,16 +730,16 @@ class GraphDB:
         *,
         student_id: str,
         entity_type: str,
-        entity_identity: dict[str, str],
+        identity: dict[str, str],
         chunk_id: str,
     ) -> dict:
         """Create the grounding edge (:Entity)-[:MENTIONED_IN]->(Chunk)."""
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
-        if not entity_identity:
-            raise ValueError("entity_identity is required")
+        if not identity:
+            raise ValueError("identity is required")
         where_parts: list[str] = ["ent.student_id = $student_id"]
         params: dict[str, Any] = {"student_id": student_id, "chunk_id": chunk_id}
-        for idx, (field, value) in enumerate(entity_identity.items()):
+        for idx, (field, value) in enumerate(identity.items()):
             safe_field = self._safe_identifier(field, "identity field")
             param_name = f"id_{idx}"
             where_parts.append(f"ent.{safe_field} = ${param_name}")
@@ -487,16 +766,16 @@ class GraphDB:
         *,
         student_id: str,
         entity_type: str,
-        entity_identity: dict[str, str],
+        identity: dict[str, str],
         document_id: str,
     ) -> dict:
         """Create the coarse provenance edge (:Entity)-[:DERIVED_FROM]->(Document)."""
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
-        if not entity_identity:
-            raise ValueError("entity_identity is required")
+        if not identity:
+            raise ValueError("identity is required")
         where_parts: list[str] = ["ent.student_id = $student_id"]
         params: dict[str, Any] = {"student_id": student_id, "document_id": document_id}
-        for idx, (field, value) in enumerate(entity_identity.items()):
+        for idx, (field, value) in enumerate(identity.items()):
             safe_field = self._safe_identifier(field, "identity field")
             param_name = f"id_{idx}"
             where_parts.append(f"ent.{safe_field} = ${param_name}")
@@ -617,6 +896,33 @@ class GraphDB:
                 "sections": sections,
                 "entities": entities,
             })
+
+    async def get_graph_data(self, *, student_id: str) -> dict[str, Any]:
+        """Return a simple node/relationship graph view for visualization."""
+        student_graph = await self.get_full_student(student_id=student_id)
+        student = student_graph.get("student", {})
+        sections = student_graph.get("sections", [])
+        entities = student_graph.get("entities", [])
+        nodes: list[dict[str, Any]] = []
+        relationships: list[dict[str, Any]] = []
+        if isinstance(student, dict) and student:
+            nodes.append({"id": student.get("id"), "labels": ["Student"], **student})
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            section_id = f"section:{section.get('student_id')}:{section.get('key')}"
+            nodes.append({"id": section_id, "labels": ["Section"], **section})
+            relationships.append({"source": student.get("id"), "target": section_id, "type": "HAS_SECTION"})
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+            entity_id = str(entity.get("id") or entity.get("name") or entity.get("title") or entity.get("code") or "")
+            if not entity_id:
+                continue
+            nodes.append({"id": entity_id, "labels": ["Entity", str(entity.get("entity_type") or "Entity")], **entity})
+            section_id = f"section:{student.get('id')}:{entity.get('section_key')}"
+            relationships.append({"source": section_id, "target": entity_id, "type": "HAS_ITEM"})
+        return sanitize_neo4j_value({"nodes": nodes, "relationships": relationships})
 
     async def hybrid_search(
         self,
@@ -745,6 +1051,25 @@ class GraphDB:
             )
         return sanitize_neo4j_value(enriched)
 
+    async def reset_student_data(self, *, student_id: str) -> dict[str, Any]:
+        """Delete one student root and the nearby graph hanging off it."""
+        async with self.driver.session() as session:
+            await session.run(
+                """
+                MATCH (s:Student {id: $student_id})
+                OPTIONAL MATCH (s)-[*0..3]-(n)
+                DETACH DELETE s, n
+                """,
+                student_id=student_id,
+            )
+        return sanitize_neo4j_value({"status": "success", "student_id": student_id})
+
+    async def reset_all_data(self) -> dict[str, Any]:
+        """Delete the full graph. Use only for full reset/admin flows."""
+        async with self.driver.session() as session:
+            await session.run("MATCH (n) DETACH DELETE n")
+        return sanitize_neo4j_value({"status": "success"})
+
     def _entity_owner_key(self, student_id: str, entity_type: str, identity: dict[str, str]) -> str:
         normalized_identity = json.dumps(identity, sort_keys=True, ensure_ascii=True)
         return f"{student_id}:{entity_type}:{normalized_identity}"
@@ -815,3 +1140,9 @@ class GraphDB:
             for token in re.findall(r"[A-Za-z0-9_]+", str(value or ""))
             if token
         }
+
+
+# TODO(new-backend): Add get_relevant_memories(...) on GraphDB if durable
+# memory retrieval remains part of the new Neo4j backend after legacy removal.
+# TODO(new-backend): Add store_memory_item(...) on GraphDB if saved decisions
+# or recommendation memory should be stored in the new Student-centric graph.

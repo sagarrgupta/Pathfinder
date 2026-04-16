@@ -59,7 +59,7 @@ export default function InputArea({
 
   const placeholder = files.length > 0
     ? 'Tell Pathfinder what to do with these files...'
-    : 'Ask about courses, jobs, interviews, or anything tied to your profile and documents...';
+    : 'Ask about courses, jobs, interviews, or anything tied to your student graph and documents...';
 
   return (
     <div className="bg-card/70 px-3 py-5 backdrop-blur-sm md:px-4 lg:px-5">

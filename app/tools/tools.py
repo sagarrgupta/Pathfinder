@@ -1,10 +1,13 @@
 """Shared MCP/OpenAI-style tool registry."""
 
 from __future__ import annotations
+import json
 from datetime import date, datetime, time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from mcp.types import Tool
+
+_JSON_LIMIT = 8000
 
 try:
     from neo4j.time import Date as Neo4jDate
@@ -51,6 +54,7 @@ class ToolContext:
     student_id: str
     session_id: str = ""
     driver: Any | None = None
+    state: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -86,12 +90,14 @@ class ToolSpec:
 def get_tool_specs() -> list[ToolSpec]:
     """Return every registered tool spec """
     from app.tools.graph_tools import get_graph_tool_specs
+    from app.tools.utility_tools import get_utility_tool_specs
     from app.tools.vector_tools import get_vector_tool_specs
     from app.tools.web_tools import get_web_tool_specs
 
     return [
         *get_graph_tool_specs(),
         *get_vector_tool_specs(),
+        *get_utility_tool_specs(),
         *get_web_tool_specs(),
     ]
 
@@ -112,3 +118,13 @@ async def execute_tool(name: str, arguments: dict[str, Any], context: ToolContex
         if spec.name == name:
             return await spec.handler(arguments, context)
     return {"error": f"unknown tool: {name}"}
+
+
+def compact_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep tool messages bounded for tool-calling transcripts."""
+    if not isinstance(result, dict):
+        return {"value": str(result)[:_JSON_LIMIT]}
+    serialized = json.dumps(result, ensure_ascii=True, default=str)
+    if len(serialized) <= _JSON_LIMIT:
+        return result
+    return {"truncated": True, "preview": serialized[:_JSON_LIMIT]}

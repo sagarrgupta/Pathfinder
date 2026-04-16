@@ -13,9 +13,10 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
-from app.adapters.neo4j.graph_store import get_full_profile
+from app.adapters.neo4j.graphDB import GraphDB
 from app.core.quality import build_session_summary
 from app.core.state import PathfinderState
+from app.tools.graph_tools import get_driver as get_graph_driver
 from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.agents.orchestrator")
@@ -54,12 +55,42 @@ _LIGHT_CONVERSATION_RE = re.compile(
 )
 
 
+def _profile_student(profile: dict[str, Any]) -> dict[str, Any]:
+    student = profile.get("student")
+    if isinstance(student, dict):
+        return student
+    root = profile.get("root_properties")
+    return dict(root) if isinstance(root, dict) else {}
+
+
+def _profile_entity_groups(profile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    if isinstance(profile.get("all_entities"), dict):
+        return {
+            str(label): list(items)
+            for label, items in profile.get("all_entities", {}).items()
+            if isinstance(items, list)
+        }
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for entity in profile.get("entities", []) if isinstance(profile.get("entities"), list) else []:
+        if not isinstance(entity, dict):
+            continue
+        label = str(entity.get("entity_type") or "Entity")
+        groups.setdefault(label, []).append(entity)
+        for document in entity.get("documents", []) if isinstance(entity.get("documents"), list) else []:
+            if isinstance(document, dict):
+                groups.setdefault("Document", []).append(document)
+        for chunk in entity.get("chunks", []) if isinstance(entity.get("chunks"), list) else []:
+            if isinstance(chunk, dict):
+                groups.setdefault("Chunk", []).append(chunk)
+    return groups
+
+
 def _build_context_hint(profile: dict[str, Any], files: list[Any]) -> str:
     """Build a one-line context hint from the profile and request."""
     parts: list[str] = []
     if files:
         parts.append(f"User attached {len(files)} file(s)")
-    root = profile.get("root_properties", {}) if isinstance(profile.get("root_properties"), dict) else {}
+    root = _profile_student(profile)
     if root:
         fields = [f"{k}={v}" for k, v in list(root.items())[:4] if v]
         if fields:
@@ -112,8 +143,8 @@ def _heuristic_route(query: str, files: list[Any]) -> dict[str, float]:
 
 
 def _durable_context(profile: dict[str, object], session_summary: dict[str, object]) -> dict[str, object]:
-    personal = profile.get("root_properties", {}) if isinstance(profile.get("root_properties", {}), dict) else {}
-    all_entities = profile.get("all_entities", {}) if isinstance(profile.get("all_entities", {}), dict) else {}
+    personal = _profile_student(profile)
+    all_entities = _profile_entity_groups(profile)
     return {
         "sections_count": len(profile.get("sections", [])) if isinstance(profile.get("sections", []), list) else 0,
         "entity_types_count": sum(
@@ -136,7 +167,7 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     request_plan = state.get("request_plan", {}) if isinstance(state.get("request_plan", {}), dict) else {}
     student_id = str(state.get("student_id", "") or "")
 
-    profile = await get_full_profile(student_id)
+    profile = await GraphDB(await get_graph_driver()).get_full_student(student_id=student_id)
     session_summary = build_session_summary(profile, list(state.get("messages", [])), query)
     context_hint = _build_context_hint(profile, files)
 
@@ -182,7 +213,7 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         "routing_reason": routing_reason,
         "profile_data": profile,
         "session_summary": session_summary,
-        "durable_profile_facts": _durable_context(profile, session_summary),
+        "durable_student_facts": _durable_context(profile, session_summary),
         "next_node": "specialist_runner",
         "step_progress": step_progress,
     }

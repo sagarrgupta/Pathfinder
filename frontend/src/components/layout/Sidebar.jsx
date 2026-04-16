@@ -18,12 +18,12 @@ const COLLAPSED_WIDTH = 48;
 export default function Sidebar({ open, onToggle }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { state, dispatch, createSession, switchStudent, createProfile } = useApp();
+  const { state, dispatch, createSession, switchStudent, createStudent } = useApp();
   const toast = useToast();
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [isCreatingProfile, setIsCreatingProfile] = useState(false);
+  const [isCreatingStudent, setIsCreatingStudent] = useState(false);
   const editRef = useRef(null);
 
   // ── Resizable width ──
@@ -74,7 +74,7 @@ export default function Sidebar({ open, onToggle }) {
 
   const navItems = [
     { path: '/chat', label: 'Chat', icon: MessageSquare },
-    { path: '/profile', label: 'My Profile', icon: User },
+    { path: '/student', label: 'Student', icon: User },
     { path: '/replays', label: 'Replays', icon: History },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
@@ -95,22 +95,22 @@ export default function Sidebar({ open, onToggle }) {
       await switchStudent(nextStudentId);
       navigate('/chat');
     } catch (err) {
-      toast.error(`Failed to switch profile: ${err.message}`);
+      toast.error(`Failed to switch student: ${err.message}`);
     }
   };
 
-  const handleCreateProfile = async () => {
-    const name = window.prompt('Enter a name for the new profile');
+  const handleCreateStudent = async () => {
+    const name = window.prompt('Enter a name for the new student');
     if (!name?.trim()) return;
-    setIsCreatingProfile(true);
+    setIsCreatingStudent(true);
     try {
-      await createProfile({ name: name.trim() });
-      toast.success(`Created profile for ${name.trim()}`);
-      navigate('/profile');
+      await createStudent({ name: name.trim() });
+      toast.success(`Created student ${name.trim()}`);
+      navigate('/student');
     } catch (err) {
-      toast.error(`Failed to create profile: ${err.message}`);
+      toast.error(`Failed to create student: ${err.message}`);
     } finally {
-      setIsCreatingProfile(false);
+      setIsCreatingStudent(false);
     }
   };
 
@@ -292,9 +292,9 @@ export default function Sidebar({ open, onToggle }) {
             </div>
             <div className="min-w-0">
               <h1 className="font-semibold text-base whitespace-nowrap tracking-tight leading-tight">Pathfinder</h1>
-              {(state.profile?.personal?.name || state.activeStudentId) && (
+              {(state.student?.root_properties?.name || state.activeStudentId) && (
                 <p className="text-[10px] text-muted-foreground truncate leading-tight">
-                  {(state.profile?.personal?.name || state.activeStudentId).split(' ')[0]}'s Guide
+                  {(state.student?.root_properties?.name || state.activeStudentId).split(' ')[0]}'s Guide
                 </p>
               )}
             </div>
@@ -310,14 +310,14 @@ export default function Sidebar({ open, onToggle }) {
         <div className="p-3 pb-1 space-y-2">
           <div className="rounded-lg border bg-background/80 p-2.5">
             <div className="flex items-center justify-between gap-2 mb-2">
-              <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">
-                Active Profile
+                <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">
+                Active Student
               </p>
               <button
-                onClick={handleCreateProfile}
-                disabled={isCreatingProfile}
+                onClick={handleCreateStudent}
+                disabled={isCreatingStudent}
                 className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-primary hover:bg-accent disabled:opacity-50"
-                title="Create profile"
+                title="Create student"
               >
                 <Plus className="h-3 w-3" />
                 New
@@ -328,12 +328,12 @@ export default function Sidebar({ open, onToggle }) {
               onChange={handleStudentChange}
               className="w-full rounded-md border bg-background px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring/50"
             >
-              {state.profiles.length === 0 ? (
+              {state.students.length === 0 ? (
                 <option value={state.activeStudentId}>{state.activeStudentId}</option>
               ) : (
-                state.profiles.map((profile) => (
-                  <option key={profile.student_id} value={profile.student_id}>
-                    {profile.name || profile.student_id}
+                state.students.map((student) => (
+                  <option key={student.student_id} value={student.student_id}>
+                    {student.name || student.student_id}
                   </option>
                 ))
               )}

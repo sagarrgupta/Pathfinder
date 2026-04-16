@@ -10,7 +10,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.settings import settings
-from app.services.background_jobs import start_background_jobs, stop_background_jobs
 from app.adapters.neo4j.graphDB import GraphDB
 from app.tools.graph_tools import close_driver as close_graph_driver
 from app.tools.graph_tools import get_driver as get_graph_driver
@@ -50,7 +49,6 @@ async def lifespan(app: FastAPI):
             index_name="chunk_embeddings",
             dimensions=int(settings.EMBEDDING_DIMENSIONS),
         ).create_vector_index()
-        start_background_jobs()
         log.info("Neo4j initialized successfully")
     except Exception as exc:
         log.warning("Neo4j initialization failed (will retry on first use): %s", exc)
@@ -59,7 +57,6 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    await stop_background_jobs()
     await close_graph_driver()
     await close_vector_driver()
     log.info("Pathfinder stopped")
