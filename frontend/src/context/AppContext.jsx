@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
-import { createProfile as createProfileRequest, getProfile, getProfiles } from '@/services/api';
+import { createStudent as createStudentRequest, getStudent, getStudents } from '@/services/api';
 
 const AppContext = createContext(null);
 
@@ -33,7 +33,7 @@ function loadPersistedState() {
     if (raw) {
       const saved = JSON.parse(raw);
       return {
-        profiles: saved.profiles || [],
+        students: saved.students || [],
         activeStudentId: saved.activeStudentId || null,
         sessions: saved.sessions || [],
         activeSessionId: saved.activeSessionId || null,
@@ -51,7 +51,7 @@ function loadPersistedState() {
 function persistState(state) {
   try {
     const toSave = {
-      profiles: state.profiles,
+      students: state.students,
       activeStudentId: state.activeStudentId,
       sessions: state.sessions,
       activeSessionId: state.activeSessionId,
@@ -79,7 +79,7 @@ function applyTheme(theme) {
 const persisted = loadPersistedState();
 
 const initialState = {
-  profiles: persisted?.profiles || [],
+  students: persisted?.students || [],
   activeStudentId: persisted?.activeStudentId || getOrCreateRuntimeStudentId(),
   // Sessions (restored from localStorage if available)
   sessions: persisted?.sessions || [],
@@ -88,9 +88,9 @@ const initialState = {
   // Messages per session: { [sessionId]: [{role, content, metadata}] }
   messagesBySession: persisted?.messagesBySession || {},
 
-  // Profile
-  profile: null,
-  profileLoading: false,
+  // Student graph
+  student: null,
+  studentLoading: false,
 
   // Settings
   settings: persisted?.settings || { topic_guard_enabled: true, reasoning: 'medium' },
@@ -108,8 +108,8 @@ const initialState = {
 
 function appReducer(state, action) {
   switch (action.type) {
-    case 'SET_PROFILES':
-      return { ...state, profiles: action.payload };
+    case 'SET_STUDENTS':
+      return { ...state, students: action.payload };
 
     case 'SET_SESSIONS':
       return { ...state, sessions: action.payload };
@@ -174,13 +174,13 @@ function appReducer(state, action) {
       const runtimeId = getOrCreateRuntimeStudentId();
       return {
         ...state,
-        profiles: [],
+        students: [],
         activeStudentId: runtimeId,
         sessions: [],
         activeSessionId: null,
         messagesBySession: {},
-        profile: null,
-        profileLoading: false,
+        student: null,
+        studentLoading: false,
         streamProgress: [],
       };
     }
@@ -249,11 +249,11 @@ function appReducer(state, action) {
     case 'CLEAR_PROGRESS':
       return { ...state, streamProgress: [] };
 
-    case 'SET_PROFILE':
-      return { ...state, profile: action.payload, profileLoading: false };
+    case 'SET_STUDENT':
+      return { ...state, student: action.payload, studentLoading: false };
 
-    case 'SET_PROFILE_LOADING':
-      return { ...state, profileLoading: action.payload };
+    case 'SET_STUDENT_LOADING':
+      return { ...state, studentLoading: action.payload };
 
     case 'SET_SETTINGS':
       return { ...state, settings: { ...state.settings, ...action.payload } };
@@ -277,7 +277,7 @@ export function AppProvider({ children }) {
   // Persist to localStorage whenever sessions/messages/settings/theme change
   useEffect(() => {
     persistState(state);
-  }, [state.profiles, state.activeStudentId, state.sessions, state.activeSessionId, state.messagesBySession, state.settings, state.theme]);
+  }, [state.students, state.activeStudentId, state.sessions, state.activeSessionId, state.messagesBySession, state.settings, state.theme]);
 
   // Apply theme on change
   useEffect(() => {
@@ -292,69 +292,69 @@ export function AppProvider({ children }) {
     }
   }, [state.theme]);
 
-  // ── Load profiles list once on mount ──
-  const profileLoaded = useRef(false);
+  // ── Load students list once on mount ──
+  const studentLoaded = useRef(false);
   useEffect(() => {
-    if (profileLoaded.current) return;
+    if (studentLoaded.current) return;
     (async () => {
       try {
-        const profiles = await getProfiles();
-        dispatch({ type: 'SET_PROFILES', payload: profiles });
-        profileLoaded.current = true;
+        const students = await getStudents();
+        dispatch({ type: 'SET_STUDENTS', payload: students });
+        studentLoaded.current = true;
 
-        const hasActive = profiles.some((p) => p.student_id === state.activeStudentId);
+        const hasActive = students.some((item) => item.student_id === state.activeStudentId);
         const preferredStudentId = hasActive
           ? state.activeStudentId
-          : (profiles[0]?.student_id || state.activeStudentId || getOrCreateRuntimeStudentId());
+          : (students[0]?.student_id || state.activeStudentId || getOrCreateRuntimeStudentId());
 
         if (preferredStudentId !== state.activeStudentId) {
           dispatch({ type: 'SET_ACTIVE_STUDENT', payload: preferredStudentId });
         }
       } catch {
-        // profiles failed to load; profile effect will surface its own error
+        // students failed to load; student effect will surface its own error
       }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Fetch profile whenever the active student changes ──
+  // ── Fetch student whenever the active student changes ──
   useEffect(() => {
     if (!state.activeStudentId) return;
     (async () => {
       try {
-        dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
-        const data = await getProfile(state.activeStudentId);
-        dispatch({ type: 'SET_PROFILE', payload: data });
+        dispatch({ type: 'SET_STUDENT_LOADING', payload: true });
+        const data = await getStudent(state.activeStudentId);
+        dispatch({ type: 'SET_STUDENT', payload: data });
       } catch {
-        dispatch({ type: 'SET_PROFILE_LOADING', payload: false });
+        dispatch({ type: 'SET_STUDENT_LOADING', payload: false });
       }
     })();
   }, [state.activeStudentId]);
 
-  const refreshProfile = useCallback(async (studentId) => {
-    dispatch({ type: 'SET_PROFILE_LOADING', payload: true });
-    const data = await getProfile(studentId);
-    dispatch({ type: 'SET_PROFILE', payload: data });
+  const refreshStudent = useCallback(async (studentId) => {
+    dispatch({ type: 'SET_STUDENT_LOADING', payload: true });
+    const data = await getStudent(studentId);
+    dispatch({ type: 'SET_STUDENT', payload: data });
     return data;
   }, []);
 
-  const refreshProfiles = useCallback(async () => {
-    const profiles = await getProfiles();
-    dispatch({ type: 'SET_PROFILES', payload: profiles });
-    return profiles;
+  const refreshStudents = useCallback(async () => {
+    const students = await getStudents();
+    dispatch({ type: 'SET_STUDENTS', payload: students });
+    return students;
   }, []);
 
   const switchStudent = useCallback((studentId) => {
-    // Dispatching SET_ACTIVE_STUDENT triggers the activeStudentId effect to load the profile.
+    // Dispatching SET_ACTIVE_STUDENT triggers the activeStudentId effect to load the student snapshot.
     dispatch({ type: 'SET_ACTIVE_STUDENT', payload: studentId });
   }, []);
 
-  const createProfile = useCallback(async (profileInput) => {
-    const created = await createProfileRequest(profileInput);
-    await refreshProfiles();
+  const createStudent = useCallback(async (studentInput) => {
+    const created = await createStudentRequest(studentInput);
+    await refreshStudents();
     dispatch({ type: 'SET_ACTIVE_STUDENT', payload: created.student_id });
-    // The activeStudentId effect will load the new profile automatically.
+    // The activeStudentId effect will load the new student automatically.
     return created;
-  }, [refreshProfiles]);
+  }, [refreshStudents]);
 
   const createSession = useCallback(() => {
     const sessionId = `session_${Date.now().toString(36)}`;
@@ -370,7 +370,7 @@ export function AppProvider({ children }) {
     return sessionId;
   }, [state.activeStudentId]);
 
-  const value = { state, dispatch, createSession, refreshProfile, refreshProfiles, switchStudent, createProfile };
+  const value = { state, dispatch, createSession, refreshStudent, refreshStudents, switchStudent, createStudent };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

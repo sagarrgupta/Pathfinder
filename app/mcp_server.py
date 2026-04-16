@@ -1,4 +1,4 @@
-"""Pathfinder MCP server backed by the canonical tool registry."""
+"""Pathfinder MCP server    """
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent
 
-from app.tools.registry import ToolContext, execute_tool, get_mcp_tools
+from app.tools.tools import ToolContext, execute_tool, get_mcp_tools
 from app.utils.ids import generate_student_id
 
 log = logging.getLogger("pathfinder.mcp")
@@ -19,13 +19,13 @@ server = Server("pathfinder")
 
 @server.list_tools()
 async def list_tools():
-    """Expose the canonical registry as MCP tools."""
+    """Expose the shared tool surface as MCP tools."""
     return get_mcp_tools()
 
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, object]):
-    """Dispatch one tool through the shared registry."""
+    """Dispatch one tool through the shared tool surface."""
     try:
         student_id = str(arguments.get("student_id", "") or generate_student_id())
         session_id = str(arguments.get("session_id", "") or "")

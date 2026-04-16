@@ -6,8 +6,7 @@ LangGraph manages message accumulation via the ``add_messages`` reducer.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Annotated, Any, Optional, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langgraph.graph.message import add_messages
 
@@ -37,21 +36,20 @@ class PathfinderState(TypedDict, total=False):
     routing_scores: dict[str, float]          # Raw specialist routing scores
     routing_reason: str                       # Human-readable routing explanation
     next_node: str                            # Next node to route to
-    session_summary: dict[str, Any]           # Normalized summary of session/profile context
+    session_summary: dict[str, Any]           # Normalized summary of session/student context
     dependency_status: dict[str, Any]         # Health snapshot for external dependencies
     recovery_events: list[dict[str, Any]]     # Structured recovery/degradation events for this turn
     stop_reason: str                          # Why a turn stopped early or partially
-    durable_profile_facts: dict[str, Any]     # Small durable fact snapshot exposed up front
+    durable_student_facts: dict[str, Any]     # Small durable fact snapshot exposed up front
 
     # ── Data gathered by nodes ──────────────────────────────────
-    profile_data: dict[str, Any]              # Student profile from Neo4j KG
-    retrieved_documents: list[dict[str, Any]] # Chunks from Neo4j vector search
+    profile_data: dict[str, Any]              # Current student graph snapshot from Neo4j
+    retrieved_documents: list[dict[str, Any]] # Retrieved chunk evidence from vector/graph search
     web_results: list[dict[str, Any]]         # Results from web search
-    semantic_memory: dict[str, Any]           # Retrieved candidate facts/memory items/evidence
-    latest_ingestion_result: dict[str, Any]   # Last in-turn memory ingestion summary for debugging/tracing
-    extracted_entities: list[dict[str, Any]]  # Entities extracted from documents
-    document_roles: list[dict[str, Any]]      # Inferred semantic roles for uploaded documents
-    transcript_states: list[dict[str, Any]]   # Structured transcript state derived from uploaded transcripts
+    semantic_memory: dict[str, Any]           # Reserved semantic retrieval bucket for specialist context
+    latest_ingestion_result: dict[str, Any]   # Last document-ingestion summary for debugging/replays
+    extracted_entities: list[dict[str, Any]]  # Entities extracted during in-turn document ingestion
+    transcript_states: list[dict[str, Any]]   # Structured transcript summaries when transcript parsing is available
     tool_call_log: list[dict[str, Any]]       # Provenance log of tool calls/results used this turn
     specialist_output: dict[str, Any]         # Structured result from the selected specialist
     long_context_payload: dict[str, Any]      # Durable long-context payload passed to the specialist
@@ -59,7 +57,6 @@ class PathfinderState(TypedDict, total=False):
     # ── Evaluation ──────────────────────────────────────────────
     draft_answer: str                         # Answer before evaluation
     confidence_score: float                   # 0.0 to 1.0
-    is_grounded: bool                         # Whether answer is grounded in sources
     citations: list[dict[str, Any]]           # Sources for the answer
 
     # ── Output ──────────────────────────────────────────────────

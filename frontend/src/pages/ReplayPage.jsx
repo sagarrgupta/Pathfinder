@@ -127,7 +127,7 @@ export default function ReplayPage() {
                 onChange={(e) => setShowCurrentStudentOnly(e.target.checked)}
                 className="rounded border-border"
               />
-              Current profile only
+              Current student only
             </label>
             <button
               onClick={() => void loadList()}
@@ -250,11 +250,11 @@ export default function ReplayPage() {
                 </div>
 
                 <div className="rounded-xl border bg-muted/20 p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <FileText className="h-4 w-4 text-primary" />
-                    <p className="font-medium">Profile Schema</p>
-                  </div>
-                  <JsonBlock value={selectedReplay.profile_schema || {}} />
+                    <div className="flex items-center gap-2 mb-2">
+                      <FileText className="h-4 w-4 text-primary" />
+                      <p className="font-medium">Student Schema</p>
+                    </div>
+                  <JsonBlock value={selectedReplay.student_schema || {}} />
                 </div>
 
                 {documentExtractions.length > 0 ? (

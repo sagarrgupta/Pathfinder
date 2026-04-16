@@ -132,7 +132,6 @@ class EvidencePack(TypedDict, total=False):
     student_operating_model: dict[str, Any]
     recommendation_outcome_profile: dict[str, Any]
     decision_continuity: dict[str, Any]
-    profile_facts: list[dict[str, Any]]
     profile_records: dict[str, Any]
     document_records: list[dict[str, Any]]
     web_records: list[dict[str, Any]]
@@ -179,7 +178,6 @@ class SourcePolicy(TypedDict, total=False):
     max_search_queries: int
     search_retries: int
     prefer_profile_documents: bool
-    preferred_document_roles: list[str]
     governing_state_sources: list[str]
     web_research_mode: str
     targeted_web_questions: list[str]
@@ -589,7 +587,6 @@ def build_evidence_pack(
     evidence_groups = group_evidence_records(normalized_records, normalized_profile)
     retrieval_summary = {
         "strategy": str(normalized_memory_pack.get("strategy", "")),
-        "profile_fact_count": len(normalized_profile.get("profile_facts", []) or []),
         "document_count": len(normalized_documents),
         "web_count": len(normalized_web),
         "candidate_fact_count": len(normalized_semantic.get("candidate_facts", []) or []),
@@ -606,7 +603,6 @@ def build_evidence_pack(
         "student_operating_model": dict(student_operating_model) if isinstance(student_operating_model, dict) else {},
         "recommendation_outcome_profile": dict(recommendation_outcome_profile) if isinstance(recommendation_outcome_profile, dict) else {},
         "decision_continuity": dict(decision_continuity) if isinstance(decision_continuity, dict) else {},
-        "profile_facts": list(normalized_profile.get("profile_facts", []) or []),
         "profile_records": normalized_profile,
         "document_records": normalized_documents,
         "web_records": normalized_web,
@@ -1548,7 +1544,6 @@ def build_source_policy(
     is_application_targeting = bool(query_focus.get("wants_application_targeting"))
     wants_university_selection = bool(query_focus.get("wants_university_selection"))
     prefer_profile_documents = False
-    preferred_document_roles: list[str] = []
     governing_state_sources: list[str] = []
     web_research_mode = "broad"
     targeted_web_questions: list[str] = []
@@ -1563,7 +1558,6 @@ def build_source_policy(
         fetch_budget = 5
         strict_primary_only = False
         prefer_profile_documents = True
-        preferred_document_roles = ["resume"]
         governing_state_sources = ["profile_state", "job_requirements"]
         web_research_mode = "broad"
     elif workflow == "document_guidance" or kind in {"webpage", "document"}:
@@ -1583,7 +1577,6 @@ def build_source_policy(
         rationale = "Enrollment-style questions should prioritize live schedules first, then official program pages, while still considering transcript/degree documents."
         fetch_budget = 8
         strict_primary_only = True
-        preferred_document_roles = ["transcript", "degree_plan"]
         governing_state_sources = ["live_schedule", "official_requirements", "transcript_state"]
         web_research_mode = "targeted"
         max_web_passes = 2
@@ -1596,7 +1589,6 @@ def build_source_policy(
         fetch_budget = 6
         strict_primary_only = False
         prefer_profile_documents = True
-        preferred_document_roles = ["transcript", "degree_plan"]
         governing_state_sources = ["transcript_state", "profile_state", "official_requirements"]
         web_research_mode = "targeted"
         max_web_passes = 2
@@ -1614,11 +1606,10 @@ def build_source_policy(
         secondary_source_types = ["schedule_page", "certificate_page", "general_web"]
         prefer_pdfs = True
         tier_order = ["primary", "secondary"]
-        rationale = "Eligibility questions should prefer transcript/profile documents first, then use targeted official requirement checks to resolve blockers."
+        rationale = "Eligibility questions should prefer student documents first, then use targeted official requirement checks to resolve blockers."
         fetch_budget = 7
         strict_primary_only = False
         prefer_profile_documents = True
-        preferred_document_roles = ["transcript", "degree_plan"]
         governing_state_sources = ["transcript_state", "official_requirements", "profile_state"]
         web_research_mode = "targeted"
         max_web_passes = 2
@@ -1673,7 +1664,6 @@ def build_source_policy(
         "max_search_queries": 6 if primary == "academic" else 5,
         "search_retries": 2 if primary in {"academic", "career", "comparison"} else 1,
         "prefer_profile_documents": prefer_profile_documents,
-        "preferred_document_roles": preferred_document_roles,
         "governing_state_sources": governing_state_sources,
         "web_research_mode": web_research_mode,
         "targeted_web_questions": targeted_web_questions,
@@ -1797,7 +1787,7 @@ def infer_quality_path(state: dict[str, Any]) -> str:
     path = []
     if any(
         name in {
-            "get_profile_summary",
+            "get_student_summary",
             "list_entity_types",
             "typed_node_lookup",
             "typed_relation_lookup",

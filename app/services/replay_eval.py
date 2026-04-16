@@ -96,7 +96,6 @@ def evaluate_replay_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
             "document_result_count": int(context_overview.get("document_result_count", 0) or 0),
             "web_result_count": int(context_overview.get("web_result_count", 0) or 0),
             "memory_bucket_count": int(context_overview.get("memory_bucket_count", 0) or 0),
-            "document_role_count": int(context_overview.get("document_role_count", 0) or 0),
             "transcript_state_count": int(context_overview.get("transcript_state_count", 0) or 0),
         },
         "score_components": score_components,

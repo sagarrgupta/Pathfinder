@@ -36,7 +36,6 @@ def build_replay_artifact(
     artifact_id = generate_replay_id()
     tool_call_log = list(final_state.get("tool_call_log", []) or [])
     specialist_output = final_state.get("specialist_output", {}) or {}
-    document_roles = list(done_payload.get("document_roles", []) or [])
     transcript_states = list(done_payload.get("transcript_states", []) or [])
     latest_ingestion_result = dict(final_state.get("latest_ingestion_result", {}) or {})
     return {
@@ -75,7 +74,6 @@ def build_replay_artifact(
             "document_result_count": len(final_state.get("retrieved_documents", []) or []),
             "web_result_count": len(final_state.get("web_results", []) or []),
             "memory_bucket_count": len((final_state.get("semantic_memory", {}) or {}).keys()),
-            "document_role_count": len(document_roles),
             "transcript_state_count": len(transcript_states),
         },
     }

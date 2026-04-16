@@ -72,7 +72,7 @@ export default function ChatPage() {
     const existingNames = new Set(files.map((f) => f.name));
     const justAdded = newFiles.filter((f) => !existingNames.has(f.name));
 
-    // Check each newly added file for duplicates in the profile
+    // Check each newly added file for duplicates for the active student
     for (const file of justAdded) {
       try {
         const { exists } = await checkDocumentExists(file.name, state.activeStudentId);
@@ -169,6 +169,7 @@ export default function ChatPage() {
           });
         },
         onDone: (data) => {
+          const runtimeSnapshot = data.runtime_snapshot || {};
           dispatch({
             type: 'UPDATE_LAST_MESSAGE',
             payload: {
@@ -188,9 +189,8 @@ export default function ChatPage() {
                   routingReason: data.routing_reason,
                   toolCallLog: data.tool_call_log,
                   specialistOutput: data.specialist_output,
-                  documentRoles: data.document_roles,
                   transcriptStates: data.transcript_states,
-                  reasoning: state.settings.reasoning || 'medium',
+                  reasoning: runtimeSnapshot.reasoning || state.settings.reasoning || 'medium',
                 },
               },
             },
@@ -231,49 +231,16 @@ export default function ChatPage() {
     setTimeout(() => handleSend(text), 50);
   };
 
-  // ── Personalization ──
-  const profile = state.profile;
-  const studentName = profile?.personal?.name?.split(' ')[0] || '';
-  const hasProfile = !!(profile?.skills?.length || profile?.courses?.length);
-
-  // Build personalized suggestions based on profile
-  const suggestions = React.useMemo(() => {
-    if (!hasProfile) return DEFAULT_SUGGESTIONS;
-
-    const custom = [];
-
-    // Course suggestion based on their program
-    const program = profile?.personal?.program;
-    if (program) {
-      custom.push({
-        icon: BookOpen,
-        text: `What courses should I take next for my ${program}?`,
-        color: 'text-blue-500 dark:text-blue-400',
-      });
-    } else {
-      custom.push(DEFAULT_SUGGESTIONS[0]);
-    }
-
-    // Career suggestion based on skills
-    const skills = profile?.skills?.slice(0, 3)?.map(s => s.name).join(', ');
-    if (skills) {
-      custom.push({
-        icon: Briefcase,
-        text: `Find jobs matching my skills: ${skills}`,
-        color: 'text-emerald-500 dark:text-emerald-400',
-      });
-    } else {
-      custom.push(DEFAULT_SUGGESTIONS[1]);
-    }
-
-    // Interview prep
-    custom.push(DEFAULT_SUGGESTIONS[2]);
-
-    // Web research
-    custom.push(DEFAULT_SUGGESTIONS[3]);
-
-    return custom;
-  }, [hasProfile, profile]);
+  // ── Student context ──
+  const student = state.student;
+  const studentName = (student?.root_properties?.name || '').split(' ')[0] || '';
+  const studentSections = Array.isArray(student?.sections) ? student.sections : [];
+  const studentEntityTotal = Object.values(student?.section_items || {}).reduce(
+    (sum, items) => sum + (Array.isArray(items) ? items.length : 0),
+    0,
+  );
+  const hasStudentContext = studentSections.length > 0 || studentEntityTotal > 0;
+  const suggestions = DEFAULT_SUGGESTIONS;
 
   // Time-aware greeting
   const timeGreeting = React.useMemo(() => {
@@ -298,17 +265,17 @@ export default function ChatPage() {
               ? `${timeGreeting}, ${studentName}`
               : 'Welcome to Pathfinder'}
           </h1>
-          <p className="text-muted-foreground text-lg mb-8 max-w-md mx-auto">
-            {hasProfile
+            <p className="text-muted-foreground text-lg mb-8 max-w-md mx-auto">
+            {hasStudentContext
               ? 'Your personalized academic and career assistant is ready. What would you like to explore today?'
               : 'Your AI-powered academic and career guidance assistant. Upload your resume or transcript to get started!'}
           </p>
 
-          {/* Profile status badge */}
-          {hasProfile && (
+          {/* Student status badge */}
+          {hasStudentContext && (
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-medium mb-6">
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              Profile loaded — {profile?.courses?.length || 0} courses, {profile?.skills?.length || 0} skills
+              Student loaded — {studentSections.length} sections, {studentEntityTotal} entities
             </div>
           )}
 
@@ -356,7 +323,7 @@ export default function ChatPage() {
               <div>
                 <h3 className="text-sm font-semibold">Duplicate Document</h3>
                 <p className="text-sm text-muted-foreground mt-1">
-                  "{dupDialog.filename}" already exists in your profile. Would you like to replace it with the new version?
+                  "{dupDialog.filename}" already exists for this student. Would you like to replace it with the new version?
                 </p>
               </div>
             </div>

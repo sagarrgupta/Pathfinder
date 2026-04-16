@@ -81,6 +81,15 @@ async def _upsert_section(arguments: dict[str, Any], context: ToolContext) -> di
     return {"section": section}
 
 
+async def _update_student(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    student = await graph_db.update_student(
+        student_id=_student_id(context),
+        updates=dict(arguments.get("updates") or {}),
+    )
+    return {"student": student}
+
+
 async def _upsert_graph_node(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     graph_db = await _graph_db(context)
     node = await graph_db.upsert_graph_node(
@@ -137,7 +146,7 @@ async def _upsert_entity_field(arguments: dict[str, Any], context: ToolContext) 
     field = await graph_db.upsert_entity_field(
         student_id=_student_id(context),
         entity_type=str(arguments.get("entity_type", "") or "").strip(),
-        entity_identity=dict(arguments.get("entity_identity") or {}),
+        identity=dict(arguments.get("identity") or {}),
         field_name=str(arguments.get("field_name", "") or "").strip(),
         field_value=arguments.get("field_value"),
     )
@@ -149,7 +158,7 @@ async def _list_entity_fields(arguments: dict[str, Any], context: ToolContext) -
     fields = await graph_db.list_entity_fields(
         student_id=_student_id(context),
         entity_type=str(arguments.get("entity_type", "") or "").strip(),
-        entity_identity=dict(arguments.get("entity_identity") or {}),
+        identity=dict(arguments.get("identity") or {}),
     )
     return {"fields": fields}
 
@@ -170,7 +179,7 @@ async def _link_entity_to_chunk(arguments: dict[str, Any], context: ToolContext)
     entity = await graph_db.link_entity_to_chunk(
         student_id=_student_id(context),
         entity_type=str(arguments.get("entity_type", "") or "").strip(),
-        entity_identity=dict(arguments.get("entity_identity") or {}),
+        identity=dict(arguments.get("identity") or {}),
         chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
     )
     return {"entity": entity}
@@ -181,7 +190,7 @@ async def _link_entity_to_document(arguments: dict[str, Any], context: ToolConte
     entity = await graph_db.link_entity_to_document(
         student_id=_student_id(context),
         entity_type=str(arguments.get("entity_type", "") or "").strip(),
-        entity_identity=dict(arguments.get("entity_identity") or {}),
+        identity=dict(arguments.get("identity") or {}),
         document_id=str(arguments.get("document_id", "") or "").strip(),
     )
     return {"entity": entity}
@@ -212,6 +221,75 @@ async def _get_full_student(arguments: dict[str, Any], context: ToolContext) -> 
     return {"student_graph": student_graph}
 
 
+async def _get_graph_data(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    graph_data = await graph_db.get_graph_data(student_id=_student_id(context))
+    return {"graph_data": graph_data}
+
+
+async def _get_student_summary(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    summary = await graph_db.get_student_summary(student_id=_student_id(context))
+    return {"student_summary": summary}
+
+
+async def _get_student_schema(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    schema = await graph_db.get_student_schema(student_id=_student_id(context))
+    return {"student_schema": schema}
+
+
+async def _list_entity_types(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    entity_types = await graph_db.list_entity_types(student_id=_student_id(context))
+    return entity_types
+
+
+async def _typed_node_lookup(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    results = await graph_db.typed_node_lookup(
+        student_id=_student_id(context),
+        entity_type=str(arguments.get("entity_type", "") or "").strip(),
+        filters=dict(arguments.get("filters") or {}),
+        limit=int(arguments.get("limit", 20) or 20),
+    )
+    return {"results": results}
+
+
+async def _typed_relation_lookup(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    results = await graph_db.typed_relation_lookup(
+        student_id=_student_id(context),
+        relationship_type=str(arguments.get("relationship_type", "") or "").strip(),
+        target_entity_type=str(arguments.get("target_entity_type", "") or "").strip(),
+        target_filters=dict(arguments.get("target_filters") or {}),
+        limit=int(arguments.get("limit", 20) or 20),
+    )
+    return {"results": results}
+
+
+async def _fetch_node_by_id(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    node = await graph_db.fetch_node_by_id(
+        student_id=_student_id(context),
+        entity_type=str(arguments.get("entity_type", "") or "").strip(),
+        node_id=str(arguments.get("node_id", "") or "").strip(),
+    )
+    return {"node": node}
+
+
+async def _fetch_relation_detail(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    relation = await graph_db.fetch_relation_detail(
+        student_id=_student_id(context),
+        relationship_type=str(arguments.get("relationship_type", "") or "").strip(),
+        target_entity_type=str(arguments.get("target_entity_type", "") or "").strip(),
+        target_field=str(arguments.get("target_field", "id") or "id").strip(),
+        target_value=str(arguments.get("target_value", "") or "").strip(),
+    )
+    return {"relation": relation}
+
+
 async def _hybrid_search(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     graph_db = await _graph_db(context)
     results = await graph_db.hybrid_search(
@@ -225,6 +303,23 @@ async def _hybrid_search(arguments: dict[str, Any], context: ToolContext) -> dic
 def get_graph_tool_specs() -> list[ToolSpec]:
     """Graph tool definitions exposed to the ingestion/runtime LLM."""
     return [
+        ToolSpec(
+            name="update_student",
+            description="Create the root student node if needed and update scalar student properties in one step. Use this for student-level attributes such as name, summaries, preferences, or other root properties that belong directly on the student node rather than in a section entity.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "updates": {
+                        "type": "object",
+                        "description": "Scalar student properties to create or update on the root student node.",
+                        "additionalProperties": JSON_VALUE_SCHEMA,
+                    },
+                },
+                "required": ["updates"],
+                "additionalProperties": False,
+            },
+            handler=_update_student,
+        ),
         ToolSpec(
             name="upsert_section",
             description="Create or update one student-owned section that groups related entities. Use this to organize graph content under a stable section key and to reuse an existing section when new evidence belongs to the same part of the student graph.",
@@ -357,7 +452,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
                         "type": "string",
                         "description": "Dynamic entity type that owns the field.",
                     },
-                    "entity_identity": IDENTITY_SCHEMA,
+                    "identity": IDENTITY_SCHEMA,
                     "field_name": {
                         "type": "string",
                         "description": "Field key to create or update under the entity.",
@@ -367,7 +462,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
                         "description": "Optional field value. Leave it null when the field will act mainly as a container for child fields.",
                     },
                 },
-                "required": ["entity_type", "entity_identity", "field_name"],
+                "required": ["entity_type", "identity", "field_name"],
                 "additionalProperties": False,
             },
             handler=_upsert_entity_field,
@@ -382,9 +477,9 @@ def get_graph_tool_specs() -> list[ToolSpec]:
                         "type": "string",
                         "description": "Dynamic entity type that owns the fields.",
                     },
-                    "entity_identity": IDENTITY_SCHEMA,
+                    "identity": IDENTITY_SCHEMA,
                 },
-                "required": ["entity_type", "entity_identity"],
+                "required": ["entity_type", "identity"],
                 "additionalProperties": False,
             },
             handler=_list_entity_fields,
@@ -423,13 +518,13 @@ def get_graph_tool_specs() -> list[ToolSpec]:
                         "type": "string",
                         "description": "Dynamic entity type to link.",
                     },
-                    "entity_identity": IDENTITY_SCHEMA,
+                    "identity": IDENTITY_SCHEMA,
                     "chunk_id": {
                         "type": "string",
                         "description": "Chunk id that directly mentions or supports the entity.",
                     },
                 },
-                "required": ["entity_type", "entity_identity", "chunk_id"],
+                "required": ["entity_type", "identity", "chunk_id"],
                 "additionalProperties": False,
             },
             handler=_link_entity_to_chunk,
@@ -444,13 +539,13 @@ def get_graph_tool_specs() -> list[ToolSpec]:
                         "type": "string",
                         "description": "Dynamic entity type to link.",
                     },
-                    "entity_identity": IDENTITY_SCHEMA,
+                    "identity": IDENTITY_SCHEMA,
                     "document_id": {
                         "type": "string",
                         "description": "Document id that the entity was derived from.",
                     },
                 },
-                "required": ["entity_type", "entity_identity", "document_id"],
+                "required": ["entity_type", "identity", "document_id"],
                 "additionalProperties": False,
             },
             handler=_link_entity_to_document,
@@ -492,6 +587,36 @@ def get_graph_tool_specs() -> list[ToolSpec]:
             handler=_bfs_neighbors,
         ),
         ToolSpec(
+            name="get_student_summary",
+            description="Return a compact student graph summary for planning. Use this when the model needs a lightweight overview of the current student node, section keys, entity types, and graph counts before choosing more specific read or write tools.",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            handler=_get_student_summary,
+        ),
+        ToolSpec(
+            name="get_student_schema",
+            description="Return the current student section schema as a lightweight structured object. Use this when the model only needs the section layout and should avoid fetching the entire student graph.",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            handler=_get_student_schema,
+        ),
+        ToolSpec(
+            name="list_entity_types",
+            description="Return the entity types currently present in the student graph along with counts for each type. Use this when the model needs to know what kinds of graph entities already exist before deciding which type to read or update.",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            handler=_list_entity_types,
+        ),
+        ToolSpec(
             name="get_full_student",
             description="Return the full student graph snapshot, including the root student node, all sections, all entities, field trees attached to those entities, and provenance links attached to each entity. Use this when a broad read of the current graph state is needed before making graph updates.",
             input_schema={
@@ -500,6 +625,118 @@ def get_graph_tool_specs() -> list[ToolSpec]:
                 "additionalProperties": False,
             },
             handler=_get_full_student,
+        ),
+        ToolSpec(
+            name="get_graph_data",
+            description="Return a lightweight node-and-relationship graph view for visualization or structural inspection. Use this when the model needs the student graph as simple `nodes` and `relationships` arrays instead of the richer full student snapshot.",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            handler=_get_graph_data,
+        ),
+        ToolSpec(
+            name="typed_node_lookup",
+            description="Return matching student-owned entities of one dynamic entity type using exact-match property filters. Use this when the model needs a list search within one entity type instead of one exact identity match.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "entity_type": {
+                        "type": "string",
+                        "description": "Dynamic entity type to search within.",
+                    },
+                    "filters": {
+                        "type": "object",
+                        "description": "Optional exact-match filters to apply on entity properties.",
+                        "additionalProperties": JSON_VALUE_SCHEMA,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of matching nodes to return.",
+                    },
+                },
+                "required": ["entity_type"],
+                "additionalProperties": False,
+            },
+            handler=_typed_node_lookup,
+        ),
+        ToolSpec(
+            name="typed_relation_lookup",
+            description="Return student-owned graph relationships of one specific type whose target matches one dynamic entity type. Use this when the model needs to inspect existing semantic edges before creating duplicate relationships or when it wants entities that are already connected in a particular way.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "relationship_type": {
+                        "type": "string",
+                        "description": "Relationship type to inspect.",
+                    },
+                    "target_entity_type": {
+                        "type": "string",
+                        "description": "Dynamic entity type expected on the target side of the relationship.",
+                    },
+                    "target_filters": {
+                        "type": "object",
+                        "description": "Optional exact-match filters to apply on target entity properties.",
+                        "additionalProperties": JSON_VALUE_SCHEMA,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of matching relations to return.",
+                    },
+                },
+                "required": ["relationship_type", "target_entity_type"],
+                "additionalProperties": False,
+            },
+            handler=_typed_relation_lookup,
+        ),
+        ToolSpec(
+            name="fetch_node_by_id",
+            description="Fetch one existing entity by a stable id-like value within a specific entity type. Use this when the model already has one exact identifier-like string and wants the matching entity record without scanning an entire section.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "entity_type": {
+                        "type": "string",
+                        "description": "Dynamic entity type to search within.",
+                    },
+                    "node_id": {
+                        "type": "string",
+                        "description": "Stable id-like value to match against common identifier properties such as id, name, code, key, or title.",
+                    },
+                },
+                "required": ["entity_type", "node_id"],
+                "additionalProperties": False,
+            },
+            handler=_fetch_node_by_id,
+        ),
+        ToolSpec(
+            name="fetch_relation_detail",
+            description="Fetch one specific relationship detail using an exact target-entity field match. Use this when the model needs one precise relation record, including source entity, target entity, section keys, and relationship properties, instead of a broader list search.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "relationship_type": {
+                        "type": "string",
+                        "description": "Relationship type to match.",
+                    },
+                    "target_entity_type": {
+                        "type": "string",
+                        "description": "Dynamic entity type expected on the target side.",
+                    },
+                    "target_field": {
+                        "type": "string",
+                        "description": "Target entity property to match exactly. Defaults to id.",
+                    },
+                    "target_value": {
+                        "type": "string",
+                        "description": "Exact target property value to look up.",
+                    },
+                },
+                "required": ["relationship_type", "target_entity_type", "target_value"],
+                "additionalProperties": False,
+            },
+            handler=_fetch_relation_detail,
         ),
         ToolSpec(
             name="hybrid_search",

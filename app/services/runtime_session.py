@@ -81,7 +81,7 @@ class ChatRuntimeSession:
             "routing_scores": {},
             "routing_reason": "",
             "session_summary": {},
-            "durable_profile_facts": {},
+            "durable_student_facts": {},
             "dependency_status": asdict(self.dependency_status),
             "recovery_events": [],
             "stop_reason": "",
@@ -92,7 +92,6 @@ class ChatRuntimeSession:
             "confidence_score": 0.0,
             "is_grounded": True,
             "extracted_entities": [],
-            "document_roles": [],
             "transcript_states": [],
             "retrieved_documents": [],
             "web_results": [],
@@ -125,7 +124,6 @@ class ChatRuntimeSession:
             "selected_specialist": final_state.get("selected_specialist", ""),
             "routing_scores": final_state.get("routing_scores", {}),
             "routing_reason": final_state.get("routing_reason", ""),
-            "document_roles": final_state.get("document_roles", []),
             "transcript_states": final_state.get("transcript_states", []),
             "tool_call_log": final_state.get("tool_call_log", []),
             "specialist_output": final_state.get("specialist_output", {}),
@@ -194,7 +192,7 @@ def determine_method(state: dict[str, Any]) -> str:
         methods.append("rag")
     if any(
         name in {
-            "get_profile_summary",
+            "get_student_summary",
             "list_entity_types",
             "typed_node_lookup",
             "typed_relation_lookup",
@@ -218,7 +216,7 @@ async def get_dependency_status() -> dict[str, str]:
     embeddings_status = "unknown"
 
     try:
-        from app.adapters.neo4j.graph_store import get_driver
+        from app.tools.graph_tools import get_driver
 
         driver = await get_driver()
         async with driver.session() as session:

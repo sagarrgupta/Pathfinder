@@ -102,76 +102,48 @@ export async function uploadDocument(file, replace = false, studentId = null) {
   return response.json();
 }
 
-// ── Profile ─────────────────────────────────────────────────────
+// ── Student ─────────────────────────────────────────────────────
 
-export async function getProfiles() {
-  const response = await fetch(`${API_BASE}/profiles`);
-  if (!response.ok) throw new Error(`Failed to load profiles: ${response.status}`);
+export async function getStudents() {
+  const response = await fetch(`${API_BASE}/students`);
+  if (!response.ok) throw new Error(`Failed to load students: ${response.status}`);
   return response.json();
 }
 
-export async function createProfile(profile) {
-  const response = await fetch(`${API_BASE}/profiles`, {
+export async function createStudent(student) {
+  const response = await fetch(`${API_BASE}/students`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(profile),
+    body: JSON.stringify(student),
   });
-  if (!response.ok) throw new Error(`Failed to create profile: ${response.status}`);
+  if (!response.ok) throw new Error(`Failed to create student: ${response.status}`);
   return response.json();
 }
 
-export async function getProfile(studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile`, studentId));
-  if (!response.ok) throw new Error(`Failed to load profile: ${response.status}`);
+export async function getStudent(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/student`, studentId));
+  if (!response.ok) throw new Error(`Failed to load student: ${response.status}`);
   return response.json();
 }
 
-export async function updateProfile(field, value, studentId) {
-  const response = await fetch(`${API_BASE}/profile`, {
+export async function updateStudent(field, value, studentId) {
+  const response = await fetch(`${API_BASE}/student`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ field, value, student_id: studentId }),
   });
-  if (!response.ok) throw new Error(`Failed to update profile: ${response.status}`);
+  if (!response.ok) throw new Error(`Failed to update student: ${response.status}`);
   return response.json();
 }
 
-export async function deleteProfileEntity(label, name, studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile/entity/${label}/${name}`, studentId), {
-    method: 'DELETE',
-  });
-  if (!response.ok) throw new Error(`Failed to delete entity: ${response.status}`);
-  return response.json();
-}
-
-export async function updateProfileEntity(label, name, properties, studentId) {
-  const response = await fetch(`${API_BASE}/profile/entity`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label, name, properties, student_id: studentId }),
-  });
-  if (!response.ok) throw new Error(`Failed to update entity: ${response.status}`);
-  return response.json();
-}
-
-export async function addProfileText(text, studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile/text`, studentId), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  });
-  if (!response.ok) throw new Error(`Failed to add profile text: ${response.status}`);
-  return response.json();
-}
-
-export async function getProfileGraph(studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile/graph`, studentId));
+export async function getStudentGraph(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/student/graph`, studentId));
   if (!response.ok) throw new Error(`Failed to load graph: ${response.status}`);
   return response.json();
 }
 
-export async function resetAllData(studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile/reset`, studentId), { method: 'DELETE' });
+export async function resetStudentData(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/student/reset`, studentId), { method: 'DELETE' });
   if (!response.ok) throw new Error(`Failed to reset data: ${response.status}`);
   return response.json();
 }
@@ -246,46 +218,5 @@ export async function evaluateRecentReplays(limit = 25, studentId = null) {
   const base = `${API_BASE}/replays/evaluate/recent?limit=${encodeURIComponent(limit)}`;
   const response = await fetch(withStudentId(base, studentId));
   if (!response.ok) throw new Error(`Failed to evaluate recent replays: ${response.status}`);
-  return response.json();
-}
-
-export async function getEvalBenchmarks() {
-  const response = await fetch(`${API_BASE}/eval/benchmarks`);
-  if (!response.ok) throw new Error(`Failed to load benchmark sets: ${response.status}`);
-  return response.json();
-}
-
-export async function getEvalAnalytics(limit = 50, studentId = null) {
-  const base = `${API_BASE}/eval/analytics?limit=${encodeURIComponent(limit)}`;
-  const response = await fetch(withStudentId(base, studentId));
-  if (!response.ok) throw new Error(`Failed to load eval analytics: ${response.status}`);
-  return response.json();
-}
-
-// ── Saved Recommendations ──────────────────────────────────────
-
-export async function getRecommendations(studentId = null) {
-  const response = await fetch(withStudentId(`${API_BASE}/recommendations`, studentId));
-  if (!response.ok) throw new Error(`Failed to load recommendations: ${response.status}`);
-  return response.json();
-}
-
-export async function saveRecommendation(payload) {
-  const response = await fetch(`${API_BASE}/recommendations`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) throw new Error(`Failed to save recommendation: ${response.status}`);
-  return response.json();
-}
-
-export async function updateRecommendationOutcome(recommendationId, payload) {
-  const response = await fetch(`${API_BASE}/recommendations/${encodeURIComponent(recommendationId)}/outcome`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) throw new Error(`Failed to update recommendation outcome: ${response.status}`);
   return response.json();
 }

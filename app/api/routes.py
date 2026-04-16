@@ -10,38 +10,15 @@ import logging
 import os
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi import Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.adapters.neo4j.graph_store import (
-    create_student,
-    delete_document_cascade,
-    delete_entity_for_student,
-    delete_entity,
-    ensure_student,
-    get_student,
-    find_document_by_filename,
-    get_full_profile,
-    get_graph_data,
-    list_students,
-    list_saved_recommendations,
-    reset_student_data,
-    reset_all_data,
-    run_cypher,
-    store_memory_item,
-    update_saved_recommendation_outcome,
-    update_entity,
-    update_student,
-)
+from app.adapters.neo4j.graphDB import GraphDB
 from app.config.settings import settings
 from app.core.graph import get_compiled_graph
 from app.core.memory import reset_checkpointer_storage
 from app.services.runtime_session import build_chat_runtime_session, get_dependency_status
 from app.services.long_context import build_long_context_payload, normalize_long_context_summary
-from app.services.profile_text import process_free_text
-from app.services.consolidation import maybe_consolidate_memory
-from app.services.background_jobs import get_background_status
 from app.services.execution_registry import get_active_retrieval_strategy, get_active_text_model
 from app.services.replay_store import (
     build_replay_artifact,
@@ -52,52 +29,30 @@ from app.services.replay_store import (
     save_replay_artifact,
 )
 from app.services.replay_eval import evaluate_recent_replays, evaluate_replay_by_id
-from app.services.decision_memory import persist_decision_record
-from app.services.eval_analytics import build_eval_analytics, list_benchmark_sets
 from app.schemas.models import (
     ChatResponse,
     DocumentUploadResponse,
-    EntityUpdate,
     GraphDataResponse,
     HealthResponse,
-    ProfileCreate,
-    ProfileInfo,
-    ProfileResponse,
-    ProfileTextInput,
-    ProfileUpdate,
+    StudentCreate,
+    StudentInfo,
+    StudentResponse,
+    StudentUpdate,
     ReplayArtifactInfo,
-    EvalAnalyticsResponse,
-    EvalBenchmarkInfo,
     ReplayEvaluationBatch,
     ReplayEvaluationInfo,
     SessionInfo,
-    SavedRecommendationCreate,
-    SavedRecommendationInfo,
-    SavedRecommendationOutcomeUpdate,
     SettingsResponse,
     SettingsUpdate,
 )
+from app.tools.graph_tools import get_driver as get_graph_driver
 from app.utils.ids import generate_session_id, generate_student_id
 
 log = logging.getLogger("pathfinder.api")
 
 router = APIRouter()
 
-
-def _metadata_dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    if isinstance(value, str) and value.strip():
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            return {}
-    return {}
-
-
-def _profile_info_from_student(student: dict[str, Any]) -> ProfileInfo:
+def _student_info(student: dict[str, Any]) -> StudentInfo:
     """Normalize a raw student record into the API response shape."""
     extra = {
         k: v for k, v in student.items()
@@ -105,9 +60,9 @@ def _profile_info_from_student(student: dict[str, Any]) -> ProfileInfo:
                       "long_context_summary", "long_context_notes"}
         and v is not None and str(v).strip()
     }
-    return ProfileInfo(
+    return StudentInfo(
         student_id=student.get("id", ""),
-        name=student.get("name", "Profile"),
+        name=student.get("name", "Student"),
         created_at=student.get("created_at"),
         updated_at=student.get("updated_at"),
         completeness=float(student.get("completeness", 0.0) or 0.0),
@@ -115,37 +70,13 @@ def _profile_info_from_student(student: dict[str, Any]) -> ProfileInfo:
     )
 
 
-def _saved_recommendation_info_from_record(
-    record: dict[str, Any],
-    *,
-    fallback_student_id: str,
-    default_title: str | None = None,
-    default_recommendation_type: str | None = None,
-    default_actions: list[str] | None = None,
-    default_source_session_id: str | None = None,
-    default_source_query: str | None = None,
-) -> SavedRecommendationInfo:
-    """Normalize a stored memory record into a saved recommendation response."""
-    metadata = _metadata_dict(record.get("metadata"))
-    status = metadata.get("status", "active")
-    return SavedRecommendationInfo(
-        id=record.get("id", ""),
-        student_id=record.get("student_id", fallback_student_id),
-        title=metadata.get("title") or default_title or record.get("summary", "Saved recommendation"),
-        summary=record.get("summary", ""),
-        recommendation_type=default_recommendation_type or str(record.get("memory_type", "saved_plan")).replace("saved_", ""),
-        actions=metadata.get("actions", default_actions or []),
-        source_session_id=metadata.get("source_session_id", default_source_session_id),
-        source_query=metadata.get("source_query", default_source_query),
-        created_at=record.get("created_at"),
-        status=status,
-        next_review_at=metadata.get("next_review_at"),
-        follow_up_prompt=metadata.get("follow_up_prompt"),
-        outcome_status=metadata.get("outcome_status", status),
-        outcome_notes=metadata.get("outcome_notes"),
-        outcome_updated_at=metadata.get("outcome_updated_at"),
-        metadata=metadata,
-    )
+async def _graph_db() -> GraphDB:
+    return GraphDB(await get_graph_driver())
+
+
+async def _ensure_student(student_id: str) -> dict[str, Any]:
+    return await (await _graph_db()).update_student(student_id=student_id, updates={})
+
 
 
 def _parse_replace_filenames(value: str) -> set[str]:
@@ -183,35 +114,6 @@ async def _read_upload_file(file: UploadFile) -> dict[str, Any]:
     }
 
 
-def _profile_confidence(profile: dict[str, Any]) -> float:
-    """Estimate profile confidence from resolved candidate facts first."""
-    candidate_facts = profile.get("candidate_fact_ledger", [])
-    resolved_candidates = [item for item in candidate_facts if item.get("status") == "resolved"]
-    confidence_values = [float(item.get("confidence", 0.0) or 0.0) for item in resolved_candidates] or [
-        float(item.get("confidence", 0.0) or 0.0) for item in candidate_facts
-    ]
-    return round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else 0.0
-
-
-def _profile_memory_overview(profile: dict[str, Any]) -> dict[str, Any]:
-    """Build the profile memory summary returned to the frontend."""
-    candidate_facts = profile.get("candidate_fact_ledger", [])
-    memory_items = profile.get("memory_items", [])
-    evidence_items = profile.get("evidence", [])
-    fact_summary = profile.get("fact_summary", {})
-    return {
-        "support_records": len(candidate_facts) + len(memory_items),
-        "evidence_records": len(evidence_items),
-        "breakdown": {
-            "candidate_facts": len(candidate_facts),
-            "memory_items": len(memory_items),
-            "evidence": len(evidence_items),
-        },
-        "confirmed": int(fact_summary.get("confirmed_candidate_facts", 0) or 0),
-        "reinforced": int(fact_summary.get("reinforced_candidate_facts", 0) or 0),
-        "inferred": int(fact_summary.get("inferred_candidate_facts", 0) or 0),
-    }
-
 # ── Runtime state ────────────────────────────────────────────────
 _topic_guard_enabled: bool = settings.TOPIC_GUARD_ENABLED
 _reasoning: str = "medium"
@@ -240,9 +142,12 @@ async def chat(
 
     # Delete existing documents that are being replaced
     for fname in replace_set:
-        existing = await find_document_by_filename(fname, resolved_student_id)
+        existing = await (await _graph_db()).find_document_by_filename(
+            student_id=resolved_student_id,
+            filename=fname,
+        )
         if existing and existing.get("id"):
-            await delete_document_cascade(existing["id"], resolved_student_id)
+            await (await _graph_db()).delete_document_cascade(document_id=existing["id"])
             log.info("Chat: replaced existing document before re-upload: %s", fname)
 
     # Read uploaded files
@@ -289,16 +194,6 @@ async def chat(
             # Done event
             done_payload = runtime_session.build_done_payload(final_state)
             try:
-                await persist_decision_record(
-                    query=query,
-                    final_state=final_state,
-                    done_payload=done_payload,
-                    student_id=resolved_student_id,
-                    session_id=session_id,
-                )
-            except Exception as exc:
-                log.warning("Failed to persist decision record for session %s: %s", session_id, exc)
-            try:
                 artifact = build_replay_artifact(
                     query=query,
                     done_payload=done_payload,
@@ -319,19 +214,30 @@ async def chat(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@router.get("/profiles", response_model=list[ProfileInfo])
-async def get_profiles():
-    """List local student profiles."""
-    students = await list_students()
-    return [_profile_info_from_student(student) for student in students]
+@router.get("/students", response_model=list[StudentInfo])
+async def get_students():
+    """List local students."""
+    driver = await get_graph_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (s:Student)
+            RETURN s {.*} AS student
+            ORDER BY coalesce(s.updated_at, s.created_at) DESC
+            """
+        )
+        students = [dict(record["student"]) async for record in result]
+    return [_student_info(student) for student in students]
 
 
-@router.post("/profiles", response_model=ProfileInfo)
-async def create_profile(body: ProfileCreate):
-    """Create a new local student profile."""
+@router.post("/students", response_model=StudentInfo)
+async def create_student(body: StudentCreate):
+    """Create a new local student."""
     extra = body.model_extra or {}
-    student = await create_student(name=body.name, **extra)
-    return _profile_info_from_student(student)
+    student_id = generate_student_id()
+    await _ensure_student(student_id)
+    student = await (await _graph_db()).update_student(student_id=student_id, updates={"name": body.name, **extra})
+    return _student_info(student)
 
 
 # ── Document Upload ──────────────────────────────────────────────
@@ -339,9 +245,9 @@ async def create_profile(body: ProfileCreate):
 
 @router.get("/documents/check")
 async def check_document_exists(filename: str, student_id: Optional[str] = Query(default=None)):
-    """Check if a document with this filename already exists in the profile."""
+    """Check if a document with this filename already exists for the student."""
     resolved_student_id = await _resolve_student_id(student_id)
-    existing = await find_document_by_filename(filename, resolved_student_id)
+    existing = await (await _graph_db()).find_document_by_filename(student_id=resolved_student_id, filename=filename)
     return {"exists": existing is not None, "document": existing}
 
 
@@ -351,15 +257,18 @@ async def upload_document(
     student_id: Optional[str] = Form(None),
     replace: str = Form("false"),
 ):
-    """Upload a document to the student profile (stored on the profile graph)."""
+    """Upload a document for the student graph."""
     resolved_student_id = await _resolve_student_id(student_id)
     upload = await _read_upload_file(file)
 
     # If replacing, delete the existing document first
     if replace.lower() == "true":
-        existing = await find_document_by_filename(upload["filename"], resolved_student_id)
+        existing = await (await _graph_db()).find_document_by_filename(
+            student_id=resolved_student_id,
+            filename=upload["filename"],
+        )
         if existing and existing.get("id"):
-            await delete_document_cascade(existing["id"], resolved_student_id)
+            await (await _graph_db()).delete_document_cascade(document_id=existing["id"])
             log.info("Replaced existing document: %s", upload["filename"])
 
     # Process through the registered document ingestion pipeline
@@ -373,52 +282,66 @@ async def upload_document(
     }
 
     result = await process_doc(state)
-    document_roles = result.get("document_roles", []) if isinstance(result.get("document_roles", []), list) else []
-    first_role = document_roles[0] if document_roles and isinstance(document_roles[0], dict) else {}
-    await maybe_consolidate_memory(resolved_student_id, "document_upload")
-
     return DocumentUploadResponse(
         document_id=f"doc_uploaded",
         filename=upload["filename"],
-        document_role=first_role.get("role", "general_document"),
-        role_confidence=float(first_role.get("confidence", 0.0) or 0.0),
         entities_extracted=len(result.get("extracted_entities", [])),
         chunks_stored=int(result.get("latest_ingestion_result", {}).get("chunk_count", 0) or 0),
     )
 
 
-# ── Profile ──────────────────────────────────────────────────────
+# ── Student ──────────────────────────────────────────────────────
 
-
-@router.get("/profile", response_model=ProfileResponse)
-async def get_profile(student_id: Optional[str] = Query(default=None)):
-    """Get the student's full profile from the knowledge graph."""
+@router.get("/student", response_model=StudentResponse)
+async def get_student(student_id: Optional[str] = Query(default=None)):
+    """Get the student's full graph snapshot."""
     resolved_student_id = await _resolve_student_id(student_id)
-    profile = await get_full_profile(resolved_student_id)
-    long_context_preview = build_long_context_payload(profile, {})
-    return ProfileResponse(
-        root_properties=profile.get("root_properties", {}),
-        sections=profile.get("sections", []),
-        section_items=profile.get("section_items", {}),
-        unsectioned_items=profile.get("unsectioned_items", []),
-        support_records=profile.get("support_records", {}),
-        profile_facts=profile.get("profile_facts", []),
-        candidate_fact_ledger=profile.get("candidate_fact_ledger", []),
-        completeness_breakdown=profile.get("completeness_breakdown", {}),
-        fact_summary=profile.get("fact_summary", {}),
-        temporal_profile=profile.get("temporal_profile", {}),
+    student_graph = await (await _graph_db()).get_full_student(student_id=resolved_student_id)
+    student = dict(student_graph.get("student") or {})
+    sections = list(student_graph.get("sections") or [])
+    entities = list(student_graph.get("entities") or [])
+    section_items: dict[str, list[dict[str, Any]]] = {}
+    all_entities: dict[str, list[dict[str, Any]]] = {"Document": [], "Chunk": []}
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        section_key = str(entity.get("section_key") or "")
+        if section_key:
+            section_items.setdefault(section_key, []).append(entity)
+        entity_type = str(entity.get("entity_type") or "Entity")
+        all_entities.setdefault(entity_type, []).append(entity)
+        for document in entity.get("documents", []) if isinstance(entity.get("documents"), list) else []:
+            if isinstance(document, dict):
+                all_entities["Document"].append(document)
+        for chunk in entity.get("chunks", []) if isinstance(entity.get("chunks"), list) else []:
+            if isinstance(chunk, dict):
+                all_entities["Chunk"].append(chunk)
+    student_snapshot = {
+        "student": student,
+        "root_properties": student,
+        "sections": sections,
+        "entities": entities,
+        "section_items": section_items,
+        "student_schema": {"sections": sections},
+        "all_entities": all_entities,
+        "completeness": float(student.get("completeness", 0.0) or 0.0),
+    }
+    long_context_preview = build_long_context_payload(student_snapshot, {})
+    return StudentResponse(
+        root_properties=student_snapshot.get("root_properties", {}),
+        sections=student_snapshot.get("sections", []),
+        section_items=student_snapshot.get("section_items", {}),
         long_context_preview=long_context_preview,
-        profile_schema=profile.get("profile_schema", {}),
-        all_entities=profile.get("all_entities", {}),
-        completeness=float(profile.get("completeness", 0.0) or 0.0),
-        confidence=_profile_confidence(profile),
-        memory_overview=_profile_memory_overview(profile),
+        student_schema=student_snapshot.get("student_schema", {}),
+        all_entities=student_snapshot.get("all_entities", {}),
+        completeness=float(student_snapshot.get("completeness", 0.0) or 0.0),
+        confidence=0.0,
     )
 
 
-@router.put("/profile")
-async def update_profile(update: ProfileUpdate):
-    """Update a specific profile field."""
+@router.put("/student")
+async def update_student(update: StudentUpdate):
+    """Update a specific student field."""
     resolved_student_id = await _resolve_student_id(update.student_id)
     value = update.value
     if update.field == "long_context_summary":
@@ -426,89 +349,44 @@ async def update_profile(update: ProfileUpdate):
             value = normalize_long_context_summary(str(update.value or ""))
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-    result = await update_student(resolved_student_id, **{update.field: value})
-    return {"updated": True, "data": result}
-
-
-@router.delete("/profile/entity/{entity_label}/{entity_name}")
-async def delete_profile_entity(entity_label: str, entity_name: str, student_id: Optional[str] = Query(default=None)):
-    """Delete a specific entity from the profile."""
-    resolved_student_id = await _resolve_student_id(student_id)
-    if entity_label == "Document":
-        # Documents use 'filename', not 'name' — also cascade-delete chunks
-        records = await run_cypher(
-            "MATCH (s:Profile {id: $sid})-[:UPLOADED]->(d:Document {filename: $fname}) RETURN d.id AS doc_id",
-            {"fname": entity_name, "sid": resolved_student_id},
-        )
-        if records and records[0].get("doc_id"):
-            deleted = await delete_document_cascade(records[0]["doc_id"], resolved_student_id)
-        else:
-            deleted = await delete_entity_for_student("Document", {"filename": entity_name}, resolved_student_id)
-    else:
-        deleted = await delete_entity_for_student(entity_label, {"name": entity_name}, resolved_student_id)
-    return {"deleted": deleted}
-
-
-@router.put("/profile/entity")
-async def update_profile_entity(body: EntityUpdate):
-    """Update properties on a profile entity by any identity key(s)."""
-    resolved_student_id = await _resolve_student_id(body.student_id)
-    resolved_match = dict(body.match_props) if body.match_props else {}
-    if body.name and "name" not in resolved_match:
-        resolved_match["name"] = body.name
-    if not resolved_match:
-        raise HTTPException(400, "Provide match_props or name to identify the entity")
-    result = await update_entity(
-        label=body.label,
-        match_props=resolved_match,
-        new_props=body.properties,
+    result = await (await _graph_db()).update_student(
         student_id=resolved_student_id,
+        updates={update.field: value},
     )
-    if not result:
-        raise HTTPException(404, f"{body.label} matching {resolved_match} not found")
     return {"updated": True, "data": result}
 
 
-@router.delete("/profile/reset")
-async def reset_all_profile_data(student_id: Optional[str] = Query(default=None)):
-    """Delete ALL student data from the knowledge graph."""
+@router.delete("/student/reset")
+async def reset_all_student_data(student_id: Optional[str] = Query(default=None)):
+    """Delete all student data from the knowledge graph."""
     resolved_student_id = await _resolve_student_id(student_id)
-    deleted = await reset_student_data(resolved_student_id)
+    deleted = await (await _graph_db()).reset_student_data(student_id=resolved_student_id)
     deleted_replays = delete_replay_artifacts_for_student(resolved_student_id)
     return {
         "deleted": deleted,
         "deleted_replays": deleted_replays,
-        "message": "All profile data and replay artifacts for this profile have been reset.",
+        "message": "All student data and replay artifacts for this student have been reset.",
     }
 
 
 @router.delete("/settings/delete-all-data")
 async def delete_all_data_everywhere():
-    """Delete all profiles, graph data, and persisted chat sessions for all profiles."""
-    deleted_nodes = await reset_all_data()
+    """Delete all students, graph data, and persisted chat sessions."""
+    deleted_nodes = await (await _graph_db()).reset_all_data()
     await reset_checkpointer_storage()
     deleted_replays = delete_all_replay_artifacts()
     return {
         "deleted_nodes": deleted_nodes,
         "deleted_replays": deleted_replays,
-        "message": "All profiles, Neo4j data, chat sessions, and replay artifacts have been deleted.",
+        "message": "All students, Neo4j data, chat sessions, and replay artifacts have been deleted.",
     }
 
 
-@router.post("/profile/text")
-async def add_profile_text(input_data: ProfileTextInput, student_id: Optional[str] = Query(default=None)):
-    """Process free-text input and add extracted entities to profile."""
-    resolved_student_id = await _resolve_student_id(student_id)
-    result = await process_free_text(input_data.text, resolved_student_id)
-    await maybe_consolidate_memory(resolved_student_id, "profile_text")
-    return result
-
-
-@router.get("/profile/graph", response_model=GraphDataResponse)
-async def get_profile_graph(student_id: Optional[str] = Query(default=None)):
+@router.get("/student/graph", response_model=GraphDataResponse)
+async def get_student_graph(student_id: Optional[str] = Query(default=None)):
     """Get knowledge graph data for visualization."""
     resolved_student_id = await _resolve_student_id(student_id)
-    data = await get_graph_data(resolved_student_id)
+    data = await (await _graph_db()).get_graph_data(student_id=resolved_student_id)
     return GraphDataResponse(nodes=data["nodes"], relationships=data["relationships"])
 
 
@@ -561,90 +439,9 @@ async def evaluate_recent_replay_batch(
     return ReplayEvaluationBatch(**evaluation)
 
 
-@router.get("/eval/benchmarks", response_model=list[EvalBenchmarkInfo])
-async def get_eval_benchmarks():
-    """List benchmark datasets available for continuous evaluation."""
-    return [EvalBenchmarkInfo(**item) for item in list_benchmark_sets()]
-
-
-@router.get("/eval/analytics", response_model=EvalAnalyticsResponse)
-async def get_eval_analytics(
-    limit: int = Query(default=50, ge=1, le=200),
-    student_id: Optional[str] = Query(default=None),
-):
-    """Return grouped replay analytics, benchmark coverage, and trend summary."""
-    resolved_student_id = None
-    if student_id:
-        resolved_student_id = await _resolve_student_id(student_id)
-    analytics = build_eval_analytics(limit=limit, student_id=resolved_student_id)
-    return EvalAnalyticsResponse(**analytics)
-
-
-@router.get("/recommendations", response_model=list[SavedRecommendationInfo])
-async def get_saved_recommendations(student_id: Optional[str] = Query(default=None)):
-    """List saved plans and recommendations for the active profile."""
-    resolved_student_id = await _resolve_student_id(student_id)
-    items = await list_saved_recommendations(resolved_student_id)
-    return [
-        _saved_recommendation_info_from_record(item, fallback_student_id=resolved_student_id)
-        for item in items
-    ]
-
-
-@router.post("/recommendations", response_model=SavedRecommendationInfo)
-async def save_recommendation(body: SavedRecommendationCreate):
-    """Save a recommendation or plan explicitly."""
-    resolved_student_id = await _resolve_student_id(body.student_id)
-    stored = await store_memory_item(
-        resolved_student_id,
-        f"saved_{body.recommendation_type}",
-        body.summary,
-        source_ref=body.source_session_id or "manual",
-        confidence=0.8,
-        salience=0.85,
-        status="resolved",
-        time_scope="long_term",
-        tags=[body.recommendation_type, "saved"],
-        metadata={
-            **body.metadata,
-            "title": body.title,
-            "actions": body.actions,
-            "source_session_id": body.source_session_id,
-            "source_query": body.source_query,
-        },
-    )
-    return _saved_recommendation_info_from_record(
-        stored,
-        fallback_student_id=resolved_student_id,
-        default_title=body.title,
-        default_recommendation_type=body.recommendation_type,
-        default_actions=body.actions,
-        default_source_session_id=body.source_session_id,
-        default_source_query=body.source_query,
-    )
-
-
-@router.put("/recommendations/{recommendation_id}/outcome", response_model=SavedRecommendationInfo)
-async def update_recommendation_outcome(recommendation_id: str, body: SavedRecommendationOutcomeUpdate):
-    """Update outcome/feedback for a saved recommendation."""
-    resolved_student_id = await _resolve_student_id(body.student_id)
-    stored = await update_saved_recommendation_outcome(
-        resolved_student_id,
-        recommendation_id,
-        outcome_status=body.outcome_status,
-        outcome_notes=body.outcome_notes,
-        next_review_at=body.next_review_at,
-        follow_up_prompt=body.follow_up_prompt,
-        metadata_patch=body.metadata,
-    )
-    if not stored:
-        raise HTTPException(404, "Saved recommendation not found")
-    return _saved_recommendation_info_from_record(stored, fallback_student_id=resolved_student_id)
-
-
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str, student_id: Optional[str] = Query(default=None)):
-    """Acknowledge discarding a chat session id; profile documents are not removed."""
+    """Acknowledge discarding a chat session id; student documents are not removed."""
     resolved_student_id = await _resolve_student_id(student_id)
     return {"deleted": True, "session_id": session_id, "student_id": resolved_student_id}
 
@@ -693,20 +490,25 @@ async def health_check():
 @router.get("/background/status")
 async def background_status():
     """Get lightweight background-job status for observability."""
-    return get_background_status()
+    return {
+        "running": False,
+        "active_task": False,
+        "disabled": True,
+        "reason": "legacy background consolidation removed",
+    }
 
 
 # ── Helpers ──────────────────────────────────────────────────────
 
 
 async def _resolve_student_id(student_id: str | None, create_if_missing: bool = True) -> str:
-    """Resolve the active student profile, creating a runtime ID if needed."""
+    """Resolve the active student id, creating a runtime id if needed."""
     if student_id:
         if create_if_missing:
-            await ensure_student(student_id)
+            await _ensure_student(student_id)
         return student_id
     if not create_if_missing:
         return ""
     runtime_student_id = generate_student_id()
-    await ensure_student(runtime_student_id)
+    await _ensure_student(runtime_student_id)
     return runtime_student_id
