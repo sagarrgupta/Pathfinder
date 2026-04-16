@@ -26,6 +26,7 @@ log = logging.getLogger("pathfinder.services.document_ingestion")
 
 _QUERY_LIMIT = 400
 _DOCUMENT_LIMIT = 12000
+_CHUNK_PROMPT_LIMIT = 24000
 _SCALAR_TYPES = (str, int, float, bool)
 _INGESTION_TOOL_LIMIT = 30
 _INGESTION_ROUNDS = 20
@@ -73,21 +74,19 @@ async def execute_document_ingestion_agent(
     document_id: str,
     query: str,
     filename: str,
-    document_role: str,
     file_type: str,
     full_text: str,
+    chunks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Use the MCP-style tool registry to ingest one document into profile state."""
     evidence = await store_evidence(
         student_id=student_id,
         source_type="document_ingestion",
         content=full_text[:_DOCUMENT_LIMIT],
-        source_ref=f"doc:{document_id}",
         session_id=session_id,
         metadata={
             "document_id": document_id,
             "filename": filename,
-            "document_role": document_role,
             "patch_kind": "document_ingestion",
         },
         embedding=await aembed_query(full_text[:4000]),
@@ -100,20 +99,19 @@ async def execute_document_ingestion_agent(
             "document_ingestion_context": {
                 "document_id": document_id,
                 "filename": filename,
-                "document_role": document_role,
-                "source_ref": evidence.get("id", ""),
             }
         },
     )
     current_schema = await get_profile_schema(student_id)
     schema_text = json.dumps(current_schema, indent=2, ensure_ascii=True, default=str)
+    chunk_text = json.dumps(chunks or [], ensure_ascii=True, default=str)[:_CHUNK_PROMPT_LIMIT]
     prompt = DOCUMENT_INGESTION_AGENT_USER_PROMPT.format(
         current_schema=schema_text,
         query=(query or "").strip()[:_QUERY_LIMIT],
+        document_id=document_id,
         filename=filename,
-        document_role=document_role,
         file_type=file_type,
-        source_ref=evidence.get("id", ""),
+        document_chunks=chunk_text,
         document_text=full_text[:_DOCUMENT_LIMIT],
     )
     messages: list[Any] = [

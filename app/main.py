@@ -9,10 +9,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.adapters.neo4j.graph_store import close_driver, init_schema
-from app.adapters.neo4j.vector_store import ensure_vector_index
 from app.config.settings import settings
 from app.services.background_jobs import start_background_jobs, stop_background_jobs
+from app.adapters.neo4j.graphDB import GraphDB
+from app.tools.graph_tools import close_driver as close_graph_driver
+from app.tools.graph_tools import get_driver as get_graph_driver
+from app.tools.vector_tools import close_driver as close_vector_driver
+from app.tools.vector_tools import get_driver as get_vector_driver
+from app.adapters.neo4j.vectorDB import VectorDB
 
 # ── Logging ──────────────────────────────────────────────────────
 
@@ -37,8 +41,15 @@ async def lifespan(app: FastAPI):
 
     # Initialize Neo4j schema and vector index
     try:
-        await init_schema()
-        await ensure_vector_index()
+        graph_driver = await get_graph_driver()
+        await GraphDB(graph_driver).init_schema()
+
+        vector_driver = await get_vector_driver()
+        await VectorDB(
+            vector_driver,
+            index_name="chunk_embeddings",
+            dimensions=int(settings.EMBEDDING_DIMENSIONS),
+        ).create_vector_index()
         start_background_jobs()
         log.info("Neo4j initialized successfully")
     except Exception as exc:
@@ -49,7 +60,8 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     await stop_background_jobs()
-    await close_driver()
+    await close_graph_driver()
+    await close_vector_driver()
     log.info("Pathfinder stopped")
 
 

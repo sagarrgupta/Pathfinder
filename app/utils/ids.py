@@ -23,6 +23,11 @@ def generate_chunk_id(document_id: str, index: int) -> str:
     return f"{document_id}_chunk_{index}"
 
 
+def generate_field_id() -> str:
+    """Generate a unique field ID."""
+    return f"field_{uuid.uuid4().hex[:12]}"
+
+
 def generate_evidence_id() -> str:
     """Generate a unique evidence ID."""
     return f"evidence_{uuid.uuid4().hex[:12]}"
