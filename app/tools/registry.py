@@ -30,6 +30,8 @@ from app.adapters.web_search.fallback_chain import search as web_search
 from app.adapters.web_search.url_fetcher import fetch_url_content
 from app.core.quality import build_session_summary
 from app.core.state import PathfinderState
+from app.tools.graph_tools import get_graph_tool_specs as get_new_graph_tool_specs
+from app.tools.vector_tools import get_vector_tool_specs as get_new_vector_tool_specs
 
 log = logging.getLogger("pathfinder.tools.registry")
 
@@ -83,9 +85,19 @@ def get_tool_specs() -> list[ToolSpec]:
     return list(_TOOL_SPECS)
 
 
+def get_new_neo4j_test_tool_specs() -> list[Any]:
+    """Return a tool surface that keeps non-Neo4j utilities and swaps in the new graph/vector backend."""
+    return list(_NEW_NEO4J_TEST_TOOL_SPECS)
+
+
 def get_tool_schemas() -> list[dict[str, Any]]:
     """Return OpenAI-compatible tool schemas."""
     return [spec.as_openai_schema() for spec in _TOOL_SPECS]
+
+
+def get_new_neo4j_test_tool_schemas() -> list[dict[str, Any]]:
+    """Return OpenAI-compatible tool schemas for the new Neo4j test surface."""
+    return [spec.as_openai_schema() for spec in _NEW_NEO4J_TEST_TOOL_SPECS]
 
 
 def get_mcp_tools() -> list[Tool]:
@@ -93,10 +105,27 @@ def get_mcp_tools() -> list[Tool]:
     return [spec.as_mcp_tool() for spec in _TOOL_SPECS]
 
 
+def get_new_neo4j_test_mcp_tools() -> list[Tool]:
+    """Return MCP tool definitions for the new Neo4j test surface."""
+    return [spec.as_mcp_tool() for spec in _NEW_NEO4J_TEST_TOOL_SPECS]
+
+
 async def execute_tool(name: str, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     """Execute one registered tool, catching runtime errors so one bad call
     does not abort the entire agentic loop."""
     for spec in _TOOL_SPECS:
+        if spec.name == name:
+            try:
+                return await spec.handler(arguments, context)
+            except Exception as exc:
+                log.warning("Tool %s raised %s: %s", name, type(exc).__name__, exc)
+                return {"error": f"{type(exc).__name__}: {exc}"}
+    return {"error": f"unknown tool: {name}"}
+
+
+async def execute_new_neo4j_test_tool(name: str, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Execute one tool from the new Neo4j test surface."""
+    for spec in _NEW_NEO4J_TEST_TOOL_SPECS:
         if spec.name == name:
             try:
                 return await spec.handler(arguments, context)
@@ -1309,6 +1338,34 @@ _TOOL_SPECS: tuple[ToolSpec, ...] = (
         },
         _respond,
     ),
+)
+
+_NON_NEO4J_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "search_web",
+        "fetch_url",
+        "find_official_sources",
+        "get_recent_conversation_window",
+        "get_session_summary",
+        "list_context_categories",
+        "respond",
+    }
+)
+
+_NON_NEO4J_TOOL_SPECS: tuple[ToolSpec, ...] = tuple(
+    spec for spec in _TOOL_SPECS if spec.name in _NON_NEO4J_TOOL_NAMES
+)
+
+_NEW_NEO4J_TOOL_SPECS: tuple[Any, ...] = tuple(
+    [
+        *get_new_graph_tool_specs(),
+        *get_new_vector_tool_specs(),
+    ]
+)
+
+_NEW_NEO4J_TEST_TOOL_SPECS: tuple[Any, ...] = (
+    *_NON_NEO4J_TOOL_SPECS,
+    *_NEW_NEO4J_TOOL_SPECS,
 )
 
 

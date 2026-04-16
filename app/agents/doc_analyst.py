@@ -9,7 +9,6 @@ Processes uploaded documents through the adaptive pipeline:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -35,6 +34,8 @@ from app.services.runtime_recovery import (
     recovery_for_entity_extraction_failure,
 )
 from app.utils.ids import generate_document_id, generate_chunk_id
+
+import json
 
 log = logging.getLogger("pathfinder.agents.doc_analyst")
 
@@ -182,6 +183,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
             if text.strip()
         ]
 
+        prompt_chunks: list[dict[str, Any]] = []
         if chunk_specs:
             try:
                 chunk_texts = [chunk["text"] for chunk in chunk_specs]
@@ -189,12 +191,19 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
 
                 chunks_to_store = []
                 for chunk_spec, embedding in zip(chunk_specs, chunk_embeddings):
+                    chunk_id = generate_chunk_id(doc_id, int(chunk_spec["chunk_index"]))
                     chunks_to_store.append({
-                        "id": generate_chunk_id(doc_id, int(chunk_spec["chunk_index"])),
+                        "id": chunk_id,
                         "text": chunk_spec["text"],
                         "embedding": embedding,
                         "chunk_index": int(chunk_spec["chunk_index"]),
                         "page_number": chunk_spec.get("page_number"),
+                    })
+                    prompt_chunks.append({
+                        "chunk_id": chunk_id,
+                        "chunk_index": int(chunk_spec["chunk_index"]),
+                        "page_number": chunk_spec.get("page_number"),
+                        "text": chunk_spec["text"],
                     })
 
                 stored = await store_chunks(chunks_to_store, doc_id)
@@ -202,6 +211,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                 step_progress.append(f"Stored {stored} text chunks from {filename}")
             except EmbeddingServiceError as exc:
                 log.warning("Chunk embedding/storage failed for %s: %s", filename, exc)
+                prompt_chunks = []
                 step_progress.append(f"Stored document metadata for {filename}, but chunk retrieval failed")
                 recovery_events.append(
                     recovery_for_document_embedding_failure(filename, str(exc)).as_dict()
@@ -216,9 +226,9 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                 document_id=doc_id,
                 query=query,
                 filename=filename,
-                document_role=inferred_role.get("role", "general_document"),
                 file_type=file_type,
                 full_text=full_text,
+                chunks=prompt_chunks,
             )
             profile_summary = applied.get("profile_summary", {}) if isinstance(applied.get("profile_summary", {}), dict) else {}
             schema_sections = list((profile_summary.get("profile_schema", {}) or {}).get("sections", []) or [])
