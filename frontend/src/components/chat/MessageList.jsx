@@ -33,7 +33,7 @@ function EmptyState() {
   );
 }
 
-export default function MessageList({ messages, isStreaming, onConflictAction }) {
+export default function MessageList({ messages, isStreaming }) {
   const endRef = useRef(null);
 
   useEffect(() => {
@@ -53,11 +53,9 @@ export default function MessageList({ messages, isStreaming, onConflictAction })
       {messages.map((msg, idx) => (
         <div key={idx} className="animate-fade-in-up" style={{ animationDelay: `${Math.min(idx * 30, 300)}ms` }}>
           <Message
-            key={idx}
             message={msg}
             isLast={idx === messages.length - 1}
             isStreaming={isStreaming}
-            onConflictAction={onConflictAction}
           />
         </div>
       ))}

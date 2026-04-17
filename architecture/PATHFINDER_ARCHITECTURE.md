@@ -2,7 +2,7 @@
 
 > Architecture reference for the Pathfinder codebase. For a **single end-to-end flow diagram** (every branch, tool surface, and SSE step), see [`PATHFINDER_ARCHITECTURE_FLOW.md`](PATHFINDER_ARCHITECTURE_FLOW.md).
 
-Last updated: 2026-04-12
+Last updated: 2026-04-17
 
 ---
 
@@ -25,7 +25,7 @@ flowchart TB
     end
 
     subgraph runtime [Chat runtime]
-        RS[runtime_session.py<br/>deps + initial PathfinderState]
+        RS[runtime_session.py<br/>dependency snapshot + runtime metadata<br/>+ minimal initial PathfinderState]
         G[graph.py<br/>5-node StateGraph + SqliteSaver]
     end
 
@@ -65,10 +65,10 @@ flowchart TB
 ## 3. One Chat Turn (summary)
 
 1. `POST /api/v1/chat` resolves `student_id` / `session_id`, optional document replace, validates uploads.
-2. `build_chat_runtime_session()` records dependency snapshot and builds initial `PathfinderState`.
+2. `build_chat_runtime_session()` records dependency/runtime metadata and builds the minimal initial `PathfinderState` needed to start the graph.
 3. Compiled graph runs with config `thread_id = "{student_id}:{session_id}"`, `recursion_limit = 15`.
 4. Route streams **SSE**: `progress` (from `step_progress`), `token` (word-split `final_answer`), then `done` (`build_done_payload`).
-5. **Best-effort** after streaming: `persist_decision_record`, `build_replay_artifact` / `save_replay_artifact` (failures are logged; user answer is not rolled back).
+5. **Best-effort** after streaming: `build_replay_artifact` / `save_replay_artifact` (failures are logged; user answer is not rolled back).
 
 ---
 
@@ -93,7 +93,7 @@ flowchart LR
 |---|---|
 | `input_guard` | Empty / max length / SQL-injection-style patterns when topic guard is on. Sets `is_blocked` + `block_reason`. |
 | `orchestrator` | Loads profile, builds session summary, **LLM scores** `academic` / `career` / `general` (fast `reasoning=none`), **heuristic fallback** if the LLM fails; boosts for files and certain `request_plan` hints; writes `routing_*` and `next_node`. |
-| `specialist_runner` | Optional `doc_analyst` pre-ingest; reload profile; `get_relevant_memories`; `hybrid_search`; builds short + long context; **binds canonical tools** from `app/tools/registry.py`; agent loop with optional one-shot web-search retry nudge. |
+| `specialist_runner` | Optional `doc_analyst` pre-ingest; reuses orchestrator profile/session summary when possible; runs `hybrid_search`; builds short + long context; **binds canonical tools** from `app/tools/tools.py`; agent loop with optional one-shot web-search retry nudge. |
 | `light_validator` | Normalizes output, citations from successful `tool_call_log`, fixed confidence heuristic. |
 | `responder` | Block path → `block_reason`; else `final_answer` ≈ `draft_answer`, minimal rewrite. |
 
@@ -107,9 +107,9 @@ flowchart LR
 |---|---|
 | Workflow | `langgraph.graph.StateGraph` + `PathfinderState` (`app/core/state.py`) |
 | Checkpointing | SQLite via `app/core/memory.py` |
-| Tools | Same registry for chat and MCP (`app/tools/registry.py`, `app/mcp_server.py`) |
+| Tools | Same tool surface for chat and MCP (`app/tools/tools.py`, `app/mcp_server.py`) |
 | Streaming | SSE from `POST /api/v1/chat` |
-| Consolidation | Simplified vs older conflict UI; `maybe_consolidate_memory` after document/profile text paths |
+| Replay persistence | Filesystem JSON artifacts via `app/services/replay_store.py` |
 
 ---
 
@@ -118,30 +118,29 @@ flowchart LR
 ```mermaid
 flowchart LR
     subgraph turn [Per turn specialist_runner]
-        P[get_full_profile]
+        P[get_full_student]
         S[build_session_summary]
-        M[get_relevant_memories]
         H[hybrid_search k=5]
         LC[build_long_context_payload<br/>notes · manifest · small_facts]
-        T[MCP-style tools<br/>RAG · graph · web · memory writes]
+        T[MCP-style tools<br/>RAG · graph · web · utility writes]
     end
 
     N4j[(Neo4j)]
-    P & S & M & H & LC --> N4j
+    P & S & H & LC --> N4j
     T <--> N4j
 ```
 
 - **Conversation continuity:** LangGraph checkpoints in SQLite, keyed by `student_id:session_id`.
-- **Durable student memory:** Neo4j (entities, documents/chunks, candidate facts, memory items, evidence, recommendations).
+- **Durable student memory:** Neo4j (entities, documents/chunks, candidate facts, evidence, recommendations).
 - **Long context:** `app/services/long_context.py` — surfaced on Profile, editable `long_context_notes`, included in specialist payload. Consolidation: `app/services/consolidation.py`.
 
 ---
 
 ## 7. Neo4j and Ingestion (concise)
 
-**Neo4j** (`app/adapters/neo4j/graph_store.py`): student lifecycle, full profile reads, entity/document CRUD, facts/memory/evidence/recommendations, graph export for UI.
+**Neo4j** (`app/adapters/neo4j/graphDB.py`): student lifecycle, full profile reads, entity/document CRUD, facts/evidence/recommendations, graph export for UI.
 
-**Ingestion:** PDF / image / DOCX via `doc_analyst` + `app/adapters/pdf/extractor.py`; free text via `app/services/profile_text.py`. Chat uploads: pre-ingest inside `specialist_runner`. Direct upload: `POST /api/v1/documents` calls `doc_analyst` then `maybe_consolidate_memory`.
+**Ingestion:** PDF / image / DOCX via `doc_analyst` + `app/adapters/pdf/extractor.py`; free text via `app/services/profile_text.py`. Chat uploads: pre-ingest inside `specialist_runner`. Direct upload: `POST /api/v1/documents` calls `doc_analyst`.
 
 ---
 
@@ -186,7 +185,7 @@ app/
   core/         graph, state, memory, quality helpers
   schemas/
   services/     runtime_session, consolidation, long_context, replay/eval, …
-  tools/        canonical tool registry
+  tools/        shared MCP/OpenAI-style tool surface
   utils/
   main.py
   mcp_server.py

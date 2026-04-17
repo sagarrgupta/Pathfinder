@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from app.adapters.neo4j.graphDB import GraphDB
 from app.adapters.llm.lmstudio import get_text_llm
 from app.agents.doc_analyst import doc_analyst
-from app.core.memory import build_session_summary
+from app.core.memory import build_recent_conversation_window, build_session_summary
 from app.core.prompts import (
     ACADEMIC_SPECIALIST_SYSTEM_PROMPT,
     CAREER_SPECIALIST_SYSTEM_PROMPT,
@@ -33,81 +33,6 @@ _SPECIALIST_CONFIG = {
 }
 _MESSAGE_FIELD_RE = re.compile(r'"message"\s*:\s*"((?:\\.|[^"])*)"', re.DOTALL)
 _SPECIAL_TOKEN_RE = re.compile(r"<\|.*?\|>")
-
-
-def _profile_student(profile: dict[str, Any]) -> dict[str, Any]:
-    student = profile.get("student")
-    if isinstance(student, dict):
-        return student
-    root = profile.get("root_properties")
-    return dict(root) if isinstance(root, dict) else {}
-
-
-def _profile_entity_groups(profile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    if isinstance(profile.get("all_entities"), dict):
-        return {
-            str(label): list(items)
-            for label, items in profile.get("all_entities", {}).items()
-            if isinstance(items, list)
-        }
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for entity in profile.get("entities", []) if isinstance(profile.get("entities"), list) else []:
-        if not isinstance(entity, dict):
-            continue
-        label = str(entity.get("entity_type") or "Entity")
-        groups.setdefault(label, []).append(entity)
-        for document in entity.get("documents", []) if isinstance(entity.get("documents"), list) else []:
-            if isinstance(document, dict):
-                groups.setdefault("Document", []).append(document)
-        for chunk in entity.get("chunks", []) if isinstance(entity.get("chunks"), list) else []:
-            if isinstance(chunk, dict):
-                groups.setdefault("Chunk", []).append(chunk)
-    return groups
-
-
-def _recent_messages(messages: list[Any], limit: int = 8) -> list[dict[str, str]]:
-    recent = []
-    for msg in messages[-limit:]:
-        if isinstance(msg, tuple) and len(msg) == 2:
-            role = "user" if str(msg[0]) in {"human", "user"} else "assistant"
-            recent.append({"role": role, "content": str(msg[1])})
-        elif hasattr(msg, "content"):
-            role_name = str(getattr(msg, "type", "") or getattr(msg, "role", ""))
-            role = "user" if role_name in {"human", "user"} else "assistant"
-            recent.append({"role": role, "content": str(getattr(msg, "content", "") or "")})
-    return recent
-
-
-def _manifest(profile: dict[str, Any], memories: dict[str, Any]) -> dict[str, Any]:
-    all_entities = _profile_entity_groups(profile)
-    documents = all_entities.get("Document", []) if isinstance(all_entities.get("Document", []), list) else []
-    document_groups: dict[str, int] = {}
-    for doc in documents:
-        if not isinstance(doc, dict):
-            continue
-        group = str(doc.get("file_type") or "unknown")
-        document_groups[group] = document_groups.get(group, 0) + 1
-    return {
-        "graph_entity_types": {
-            label: len(items)
-            for label, items in all_entities.items()
-            if isinstance(items, list) and items
-        },
-        "documents": {
-            "count": len(documents),
-            "groups": document_groups,
-        },
-        "memory_buckets": {
-            key: len(value)
-            for key, value in memories.items()
-            if isinstance(value, list)
-        },
-    }
-
-
-def _small_facts(profile: dict[str, Any], session_summary: dict[str, Any]) -> dict[str, Any]:
-    from app.services.long_context import _small_facts as _shared_small_facts
-    return _shared_small_facts(profile, session_summary)
 
 
 def _system_prompt(selected_specialist: str) -> str:
@@ -202,7 +127,6 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
 
     working_state = dict(state)
     files = list(state.get("files", []))
-    profile = working_state.get("profile_data", {}) if isinstance(working_state.get("profile_data", {}), dict) else {}
     reasoning = str(state.get("reasoning", "medium") or "medium").strip().lower() or "medium"
 
     if files:
@@ -214,7 +138,6 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
     profile = await (await _graph_db()).get_full_student(student_id=student_id)
     session_messages = list(working_state.get("messages", []))
     session_summary = build_session_summary(profile, session_messages, query)
-    memories = {}
     retrieved_documents = await (await _graph_db()).hybrid_search(
         query=query,
         k=5,
@@ -222,7 +145,7 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
     )
 
     short_context = {
-        "recent_messages": _recent_messages(session_messages),
+        "recent_messages": build_recent_conversation_window(session_messages),
         "session_summary": session_summary,
         "profile_schema": profile.get("profile_schema", {"sections": profile.get("sections", [])}),
     }
@@ -242,13 +165,6 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
         ]
     long_context = {
         **build_long_context_payload(profile, session_summary),
-        "memory_buckets": {
-            key: len(value)
-            for key, value in memories.items()
-            if isinstance(value, list)
-        },
-        "manifest": _manifest(profile, memories),
-        "small_facts": _small_facts(profile, session_summary),
     }
     long_term_points: list[str] = []
     for item in patch_summaries[:4]:
@@ -270,7 +186,6 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
             **working_state,
             "profile_data": profile,
             "session_summary": session_summary,
-            "semantic_memory": memories,
             "retrieved_documents": retrieved_documents,
         },
     )
@@ -369,7 +284,6 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
         **working_state,
         "profile_data": profile,
         "session_summary": session_summary,
-        "semantic_memory": memories,
         "retrieved_documents": retrieved_documents,
         "selected_specialist": selected_specialist,
         "draft_answer": message,

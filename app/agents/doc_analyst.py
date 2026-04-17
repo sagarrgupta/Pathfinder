@@ -44,13 +44,9 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
     query = str(state.get("query", "") or "")
 
     step_progress = list(state.get("step_progress", []))
-    all_entities: list[dict[str, Any]] = []
-    all_relationships: list[dict[str, Any]] = []
-    all_candidate_facts: list[dict[str, Any]] = []
-    all_memory_items: list[dict[str, Any]] = []
-    all_promoted_entities: list[dict[str, Any]] = []
+    total_entities = 0
+    total_relationships = 0
     total_chunks = 0
-    transcript_states: list[dict[str, Any]] = []
     extracted_documents: list[dict[str, Any]] = []
     patch_summaries: list[dict[str, Any]] = []
     recovery_events = list(state.get("recovery_events", []))
@@ -213,9 +209,8 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                 and item.get("status") == "ok"
                 and item.get("tool") == "upsert_profile_schema_section"
             )
-            all_entities.extend([{}] * entity_count)
-            all_relationships.extend([{}] * relationship_count)
-            all_candidate_facts.extend([{}] * candidate_fact_count)
+            total_entities += entity_count
+            total_relationships += relationship_count
             patch_summaries.append(
                 {
                     "document_id": doc_id,
@@ -232,9 +227,6 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                     "entity_count": entity_count,
                     "relationship_count": relationship_count,
                     "support_record_count": support_record_count,
-                    "candidate_fact_count": candidate_fact_count,
-                    "memory_item_count": 0,
-                    "promoted_entity_count": 0,
                 }
             )
             step_progress.append(
@@ -250,35 +242,28 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
             )
 
     step_progress.append(
-        f"Document processing complete: {total_chunks} chunks, {len(all_entities)} entities, "
-        f"{len(all_relationships)} relationships"
+        f"Document processing complete: {total_chunks} chunks, {total_entities} entities, "
+        f"{total_relationships} relationships"
     )
     log.info(
         "Doc analyst: %d chunks, %d entities, %d relationships",
         total_chunks,
-        len(all_entities),
-        len(all_relationships),
+        total_entities,
+        total_relationships,
     )
 
     return {
         **state,
         "files": [],  # Clear binary file data — no longer needed after processing
-        "extracted_entities": all_entities,
-        "transcript_states": transcript_states,
         "latest_ingestion_result": {
             "documents": extracted_documents,
             "chunk_count": total_chunks,
-            "entity_count": len(all_entities),
-            "relationship_count": len(all_relationships),
-            "support_record_count": len(all_candidate_facts) + len(all_memory_items),
-            "candidate_fact_count": len(all_candidate_facts),
-            "memory_item_count": len(all_memory_items),
-            "promoted_entity_count": len(all_promoted_entities),
+            "entity_count": total_entities,
+            "relationship_count": total_relationships,
             "patch_summaries": patch_summaries,
         },
         "recovery_events": recovery_events,
         "step_progress": step_progress,
-        "next_node": _determine_next(state),
     }
 
 
@@ -288,8 +273,3 @@ def _page_for_chunk(chunk_text: str, pages: list[dict]) -> int | None:
         if chunk_text[:50] in page.get("text", ""):
             return page.get("page")
     return None
-
-
-def _determine_next(state: PathfinderState) -> str:
-    """Document processing is now a leaf pre-ingestion step."""
-    return "responder"

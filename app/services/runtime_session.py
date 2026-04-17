@@ -12,8 +12,6 @@ from typing import Any
 from app.config.settings import settings
 from app.core.memory import infer_quality_path
 from app.services.execution_registry import (
-    get_active_retrieval_strategy,
-    get_active_text_model,
     get_execution_registry,
 )
 
@@ -67,39 +65,8 @@ class ChatRuntimeSession:
             "session_id": self.session_id,
             "student_id": self.student_id,
             "topic_guard_enabled": self.topic_guard_enabled,
-            "request_plan": {
-                "reasoning": self.reasoning,
-                "has_files": bool(self.files),
-                "has_url": ("http://" in self.query.lower() or "https://" in self.query.lower()),
-                "reasons": [],
-            },
+            "request_plan": dict(self.runtime_snapshot.request_plan),
             "reasoning": self.reasoning,
-            "step_progress": [],
-            "citations": [],
-            "next_node": "",
-            "selected_specialist": "",
-            "routing_scores": {},
-            "routing_reason": "",
-            "session_summary": {},
-            "durable_student_facts": {},
-            "dependency_status": asdict(self.dependency_status),
-            "recovery_events": [],
-            "stop_reason": "",
-            "draft_answer": "",
-            "final_answer": "",
-            "is_blocked": False,
-            "block_reason": "",
-            "confidence_score": 0.0,
-            "is_grounded": True,
-            "extracted_entities": [],
-            "transcript_states": [],
-            "retrieved_documents": [],
-            "web_results": [],
-            "profile_data": {},
-            "semantic_memory": {},
-            "tool_call_log": [],
-            "specialist_output": {},
-            "long_context_payload": {},
         }
 
     def build_graph_config(self) -> dict[str, Any]:
@@ -118,7 +85,7 @@ class ChatRuntimeSession:
             "citations": final_state.get("citations", []),
             "method": determine_method(final_state),
             "quality_path": infer_quality_path(final_state),
-            "dependency_status": final_state.get("dependency_status", asdict(self.dependency_status)),
+            "dependency_status": asdict(self.dependency_status),
             "recovery_events": final_state.get("recovery_events", []),
             "stop_reason": final_state.get("stop_reason", ""),
             "selected_specialist": final_state.get("selected_specialist", ""),
@@ -154,9 +121,9 @@ async def build_chat_runtime_session(
     snapshot = RuntimeSnapshot(
         session_id=session_id,
         student_id=student_id,
-        selected_text_model=get_active_text_model(),
+        selected_text_model=registry.text_model,
         reasoning=normalized_reasoning,
-        selected_retrieval_mode=get_active_retrieval_strategy(),
+        selected_retrieval_mode=registry.retrieval_strategy,
         compare_mode=False,
         uploaded_file_count=len(files),
         request_plan=request_plan,

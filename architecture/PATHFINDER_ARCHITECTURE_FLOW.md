@@ -10,7 +10,7 @@ Key implementation entry points:
 - Graph assembly: `app/core/graph.py`
 - Shared state: `app/core/state.py`
 - Specialist execution: `app/agents/specialist_runner.py`
-- Tool registry: `app/tools/registry.py`
+- Tool registry: `app/tools/tools.py`
 
 ---
 
@@ -40,7 +40,7 @@ flowchart TD
     DEP_CHECK --> WEB_HEALTH["Web search<br/>API key presence check"]
     NEO4J_HEALTH & LLM_HEALTH & EMB_HEALTH & WEB_HEALTH --> SNAPSHOT["DependencySnapshot<br/>+ RuntimeSnapshot<br/>text model, reasoning, retrieval mode,<br/>web provider chain, document ingestors"]
 
-    SNAPSHOT --> INIT_STATE["Build initial PathfinderState<br/>messages, query, files, session_id,<br/>student_id, request_plan,<br/>topic_guard_enabled, reasoning"]
+    SNAPSHOT --> INIT_STATE["Build minimal initial PathfinderState<br/>messages, query, files, session_id,<br/>student_id, request_plan,<br/>topic_guard_enabled, reasoning"]
 
     INIT_STATE --> COMPILE["Compile 5-node LangGraph StateGraph<br/>with SqliteSaver checkpointer<br/>thread_id = student_id:session_id<br/>recursion_limit = 15"]
 
@@ -64,7 +64,7 @@ flowchart TD
     %% ── LangGraph Node 2: Orchestrator ─────────────────────────
     ROUTE_GUARD_OK --> ORCH["NODE 2: orchestrator<br/>app/agents/orchestrator.py"]
 
-    ORCH --> ORCH_PROFILE["get_full_profile(student_id)<br/>from Neo4j"]
+    ORCH --> ORCH_PROFILE["get_full_student(student_id)<br/>from Neo4j"]
     ORCH_PROFILE --> ORCH_SESSION["build_session_summary()<br/>profile + messages + query"]
     ORCH_SESSION --> ORCH_CONTEXT["Build context hint<br/>file count + profile root fields"]
 
@@ -91,14 +91,12 @@ flowchart TD
     FILES_CHECK -- No --> CONTEXT_LOAD
     DOC_INGEST --> CONTEXT_LOAD["Context loading phase"]
 
-    CONTEXT_LOAD --> CL1["get_full_profile()<br/>reload from Neo4j"]
-    CL1 --> CL2["build_session_summary()<br/>profile + messages + query"]
-    CL2 --> CL3["get_relevant_memories()<br/>semantic memory search<br/>limit=6"]
-    CL3 --> CL4["hybrid_search()<br/>Neo4j vector + keyword<br/>k=5 document chunks"]
+    CONTEXT_LOAD --> CL1["Reuse orchestrator profile/session summary<br/>when still valid; otherwise reload/rebuild"]
+    CL1 --> CL2["hybrid_search()<br/>Neo4j vector + keyword<br/>k=5 document chunks"]
 
-    CL4 --> BUILD_CTX["Assemble context payloads"]
+    CL2 --> BUILD_CTX["Assemble context payloads"]
     BUILD_CTX --> SHORT_CTX["Short-term context<br/>recent 8 messages<br/>session summary<br/>profile schema<br/>document ingestion patches"]
-    BUILD_CTX --> LONG_CTX["Long-term context<br/>long_context_payload<br/>manifest of entity types<br/>memory bucket counts<br/>small durable facts<br/>recent document highlights<br/>long_context_notes"]
+    BUILD_CTX --> LONG_CTX["Long-term context<br/>long_context_payload<br/>manifest of entity types<br/>small durable facts<br/>recent document highlights<br/>long_context_notes"]
 
     SHORT_CTX & LONG_CTX --> BIND_TOOLS["Bind 30 MCP-style tools to LLM<br/>get_text_llm(reasoning).bind_tools()"]
 
@@ -148,7 +146,7 @@ flowchart TD
     CONF --> CONF_STOP["stop_reason == 'stop'<br/>(no tools used)?<br/>→ confidence = 0.90"]
     CONF --> CONF_LOW["Otherwise<br/>→ confidence = 0.62"]
 
-    CONF_TOOL & CONF_STOP & CONF_LOW --> VALID_OUT["Set state:<br/>citations, confidence_score,<br/>is_grounded, next_node = responder"]
+    CONF_TOOL & CONF_STOP & CONF_LOW --> VALID_OUT["Set state:<br/>citations, confidence_score,<br/>stop_reason, next_node = responder"]
 
     %% ── LangGraph Node 5: Responder ───────────────────────────
     VALID_OUT --> ROUTE_VALID["route_after_validator<br/>→ responder"]
@@ -159,17 +157,16 @@ flowchart TD
     RESP_CHECK -- Yes --> RESP_BLOCK["final_answer = block_reason"]
     RESP_CHECK -- No --> RESP_OK["final_answer = draft_answer<br/>minimal rewriting,<br/>fallback 'could not generate'"]
 
-    RESP_BLOCK & RESP_OK --> RESP_OUT["Append AIMessage<br/>to conversation history"]
+    RESP_BLOCK & RESP_OK --> RESP_OUT["Append one AIMessage<br/>via add_messages reducer"]
 
     %% ── Post-Graph: SSE Output & Persistence ───────────────────
     RESP_OUT --> SSE_PROGRESS["Emit SSE progress events<br/>per-node step_progress messages"]
 
     SSE_PROGRESS --> SSE_TOKENS["Emit SSE token events<br/>split final_answer into words<br/>word-by-word streaming for UX"]
 
-    SSE_TOKENS --> DONE_PAYLOAD["build_done_payload()<br/>session_id, student_id, confidence,<br/>citations, method (direct|rag|graph|web),<br/>quality_path, dependency_status,<br/>selected_specialist, routing_scores,<br/>tool_call_log, specialist_output,<br/>long_context_payload, runtime_snapshot"]
+    SSE_TOKENS --> DONE_PAYLOAD["build_done_payload()<br/>session_id, student_id, confidence,<br/>citations, method (direct|rag|graph|web),<br/>quality_path, dependency_status snapshot,<br/>selected_specialist, routing_scores,<br/>tool_call_log, specialist_output,<br/>long_context_payload, runtime_snapshot"]
 
-    DONE_PAYLOAD --> PERSIST_DECISION["Best-effort:<br/>persist_decision_record()<br/>query + final_state + done_payload"]
-    PERSIST_DECISION --> PERSIST_REPLAY["Best-effort:<br/>build_replay_artifact()<br/>save_replay_artifact()<br/>attach replay_id to done_payload"]
+    DONE_PAYLOAD --> PERSIST_REPLAY["Best-effort:<br/>build_replay_artifact()<br/>save_replay_artifact()<br/>attach replay_id to done_payload"]
     PERSIST_REPLAY --> SSE_DONE["Emit SSE done event<br/>with full done_payload"]
 
     SSE_DONE --> USER_FINAL["fa:fa-user Response delivered to user"]
@@ -187,8 +184,7 @@ flowchart TD
 
     ORCH_PROFILE -.-> NEO4J_DB
     CL1 -.-> NEO4J_DB
-    CL3 -.-> NEO4J_DB
-    CL4 -.-> NEO4J_DB
+    CL2 -.-> NEO4J_DB
     DOC_INGEST -.-> NEO4J_DB
     DOC_INGEST -.-> LM_STUDIO
     DOC_INGEST -.-> OLLAMA
@@ -200,7 +196,6 @@ flowchart TD
     T_PROFILE -.-> NEO4J_DB
     T_DOC -.-> NEO4J_DB
     T_MEMORY -.-> NEO4J_DB
-    CL4 -.-> OLLAMA
     PERSIST_REPLAY -.-> FILESYSTEM
 
     %% ── Styling ────────────────────────────────────────────────
@@ -216,7 +211,7 @@ flowchart TD
 
     class IG,IG_EMPTY,IG_LEN,IG_SQLI node1
     class ORCH,ORCH_PROFILE,ORCH_SESSION,ORCH_CONTEXT,ORCH_LLM,LLM_ROUTE,HEURISTIC,BOOSTS,PICK_SPECIALIST node2
-    class SPEC,FILES_CHECK,DOC_INGEST,CONTEXT_LOAD,CL1,CL2,CL3,CL4,BUILD_CTX,SHORT_CTX,LONG_CTX,BIND_TOOLS,SPEC_PROMPT,AGENTIC_LOOP,TOOL_DECISION,TOOL_EXEC,PARSE_JSON,LOOP_DONE,SPEC_OUT,RESPOND_CHECK,WEB_RETRY node3
+    class SPEC,FILES_CHECK,DOC_INGEST,CONTEXT_LOAD,CL1,CL2,BUILD_CTX,SHORT_CTX,LONG_CTX,BIND_TOOLS,SPEC_PROMPT,AGENTIC_LOOP,TOOL_DECISION,TOOL_EXEC,PARSE_JSON,LOOP_DONE,SPEC_OUT,RESPOND_CHECK,WEB_RETRY node3
     class VALID,VALID_SHAPE,CITE,CONF,CONF_TOOL,CONF_STOP,CONF_LOW,VALID_OUT node4
     class RESP,RESP_CHECK,RESP_BLOCK,RESP_OK,RESP_OUT node5
     class REPLACE,RESPOND_CHECK,FILES_CHECK,ORCH_LLM,IG_EMPTY,IG_LEN,IG_SQLI,RESP_CHECK,CONF decision
@@ -246,6 +241,6 @@ flowchart TD
 - **Agentic tool loop** caps at 12 LLM iterations with up to 6 tool calls per iteration; 30 canonical MCP-style tools span graph, document, memory, web, session, and response categories.
 - **Web-search retry nudge** automatically fires once if the LLM produces a "not found" answer without exhausting search/fetch capacity.
 - **Confidence scoring** is deterministic and tool-provenance-based (0.82 with tools, 0.90 with clean stop, 0.62 otherwise) — no LLM-based evaluation.
-- **SSE streaming** delivers progress, word-level tokens, and a done payload; decision records and replay artifacts are persisted on a best-effort basis after the answer is already emitted.
+- **SSE streaming** delivers progress, word-level tokens, and a done payload; replay artifacts are persisted on a best-effort basis after the answer is already emitted.
 - **SQLite checkpointer** keyed by `student_id:session_id` provides per-session conversation continuity across turns.
 - **Neo4j** serves as the unified durable store for profiles, entities, documents, chunks, candidate facts, memory items, evidence links, and recommendations.

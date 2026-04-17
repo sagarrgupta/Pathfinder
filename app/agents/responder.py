@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import logging
-
 from langchain_core.messages import AIMessage
 
 from app.core.state import PathfinderState
-
-log = logging.getLogger("pathfinder.agents.responder")
 
 
 async def responder(state: PathfinderState) -> PathfinderState:

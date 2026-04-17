@@ -136,12 +136,6 @@ export async function updateStudent(field, value, studentId) {
   return response.json();
 }
 
-export async function getStudentGraph(studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/student/graph`, studentId));
-  if (!response.ok) throw new Error(`Failed to load graph: ${response.status}`);
-  return response.json();
-}
-
 export async function resetStudentData(studentId) {
   const response = await fetch(withStudentId(`${API_BASE}/student/reset`, studentId), { method: 'DELETE' });
   if (!response.ok) throw new Error(`Failed to reset data: ${response.status}`);
@@ -151,20 +145,6 @@ export async function resetStudentData(studentId) {
 export async function deleteAllDataEverywhere() {
   const response = await fetch(`${API_BASE}/settings/delete-all-data`, { method: 'DELETE' });
   if (!response.ok) throw new Error(`Failed to delete all data: ${response.status}`);
-  return response.json();
-}
-
-// ── Sessions ────────────────────────────────────────────────────
-
-export async function getSessions(studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/sessions`, studentId));
-  if (!response.ok) throw new Error(`Failed to load sessions: ${response.status}`);
-  return response.json();
-}
-
-export async function deleteSession(sessionId, studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/sessions/${sessionId}`, studentId), { method: 'DELETE' });
-  if (!response.ok) throw new Error(`Failed to delete session: ${response.status}`);
   return response.json();
 }
 
@@ -205,18 +185,5 @@ export async function getReplays(limit = 25) {
 export async function getReplay(replayId) {
   const response = await fetch(`${API_BASE}/replays/${encodeURIComponent(replayId)}`);
   if (!response.ok) throw new Error(`Failed to load replay: ${response.status}`);
-  return response.json();
-}
-
-export async function evaluateReplay(replayId) {
-  const response = await fetch(`${API_BASE}/replays/${encodeURIComponent(replayId)}/evaluate`);
-  if (!response.ok) throw new Error(`Failed to evaluate replay: ${response.status}`);
-  return response.json();
-}
-
-export async function evaluateRecentReplays(limit = 25, studentId = null) {
-  const base = `${API_BASE}/replays/evaluate/recent?limit=${encodeURIComponent(limit)}`;
-  const response = await fetch(withStudentId(base, studentId));
-  if (!response.ok) throw new Error(`Failed to evaluate recent replays: ${response.status}`);
   return response.json();
 }
