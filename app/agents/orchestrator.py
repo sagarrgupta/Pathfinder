@@ -14,7 +14,7 @@ from langchain_core.messages import HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graphDB import GraphDB
-from app.core.quality import build_session_summary
+from app.core.memory import build_session_summary
 from app.core.state import PathfinderState
 from app.tools.graph_tools import get_driver as get_graph_driver
 from app.utils.json_extract import parse_json_object

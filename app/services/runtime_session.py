@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from app.config.settings import settings
-from app.core.quality import infer_quality_path
+from app.core.memory import infer_quality_path
 from app.services.execution_registry import (
     get_active_retrieval_strategy,
     get_active_text_model,

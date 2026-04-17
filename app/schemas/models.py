@@ -209,26 +209,6 @@ class ReplayArtifactInfo(ResponseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
-class ReplayEvaluationInfo(ResponseModel):
-    """Lightweight replay evaluation result."""
-    replay_id: str = Field(..., min_length=1, max_length=120)
-    query: str = Field(default="", max_length=4000)
-    selected_specialist: str = Field(default="", max_length=120)
-    method: str = Field(default="", max_length=120)
-    score: float = Field(default=0.0)
-    status: str = Field(default="warn", min_length=1, max_length=40)
-    checks: dict[str, bool] = Field(default_factory=dict)
-    issues: list[str] = Field(default_factory=list)
-    metrics: dict[str, int] = Field(default_factory=dict)
-    score_components: dict[str, float] = Field(default_factory=dict)
-
-
-class ReplayEvaluationBatch(ResponseModel):
-    """Summary and results for replay regression checks."""
-    summary: dict[str, Any] = Field(default_factory=dict)
-    evaluations: list[ReplayEvaluationInfo] = Field(default_factory=list)
-
-
 class EvalBenchmarkInfo(ResponseModel):
     """Benchmark-set metadata for continuous evaluation."""
     id: str = Field(..., min_length=1, max_length=120)

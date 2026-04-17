@@ -18,11 +18,10 @@ _text_llms: dict[str, "LoggingChatOpenAI"] = {}
 _vision_llm: Optional["LoggingChatOpenAI"] = None
 _REASONING_KEYS = ("reasoning_content", "thinking", "reasoning", "refusal")
 _DEBUG_LOG_PATH = Path(settings.LLM_DEBUG_LOG_PATH)
-_SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+_SUPPORTED_REASONING_EFFORTS = {"none", "low", "medium", "high"}
 _REASONING_ALIASES = {
     "off": "none",
     "false": "none",
-    "0": "none",
     "on": "medium",
     "true": "medium",
     "1": "medium",

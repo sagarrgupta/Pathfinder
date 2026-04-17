@@ -12,12 +12,12 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from app.adapters.neo4j.graphDB import GraphDB
 from app.adapters.llm.lmstudio import get_text_llm
 from app.agents.doc_analyst import doc_analyst
+from app.core.memory import build_session_summary
 from app.core.prompts import (
     ACADEMIC_SPECIALIST_SYSTEM_PROMPT,
     CAREER_SPECIALIST_SYSTEM_PROMPT,
     GENERAL_SPECIALIST_SYSTEM_PROMPT,
 )
-from app.core.quality import build_session_summary
 from app.core.state import PathfinderState
 from app.services.long_context import build_long_context_payload
 from app.tools.graph_tools import get_driver as get_graph_driver

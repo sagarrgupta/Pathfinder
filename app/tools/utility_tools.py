@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.quality import build_session_summary
+from app.core.memory import build_session_summary
 from app.tools.tools import ToolContext, ToolSpec
 
 JSON_VALUE_SCHEMA: dict[str, Any] = {
