@@ -14,6 +14,7 @@ import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from app.config.settings import settings
+from app.services.long_context import get_profile_entity_groups, get_profile_student
 
 _checkpointer: Optional[AsyncSqliteSaver] = None
 
@@ -95,40 +96,8 @@ async def reset_checkpointer_storage() -> None:
         except Exception:
             pass
 
-
-def _profile_student(profile: dict[str, Any]) -> dict[str, Any]:
-    student = profile.get("student")
-    if isinstance(student, dict):
-        return student
-    root = profile.get("root_properties")
-    return dict(root) if isinstance(root, dict) else {}
-
-
-def _profile_entity_groups(profile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    if isinstance(profile.get("all_entities"), dict):
-        return {
-            str(label): list(items)
-            for label, items in profile.get("all_entities", {}).items()
-            if isinstance(items, list)
-        }
-
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for entity in profile.get("entities", []) if isinstance(profile.get("entities"), list) else []:
-        if not isinstance(entity, dict):
-            continue
-        label = str(entity.get("entity_type") or "Entity")
-        groups.setdefault(label, []).append(entity)
-        for document in entity.get("documents", []) if isinstance(entity.get("documents"), list) else []:
-            if isinstance(document, dict):
-                groups.setdefault("Document", []).append(document)
-        for chunk in entity.get("chunks", []) if isinstance(entity.get("chunks"), list) else []:
-            if isinstance(chunk, dict):
-                groups.setdefault("Chunk", []).append(chunk)
-    return groups
-
-
 def _summary_root_properties(profile: dict[str, Any]) -> dict[str, Any]:
-    root = _profile_student(profile)
+    root = get_profile_student(profile)
     summary: dict[str, Any] = {}
     for key, value in root.items():
         if key in _SUMMARY_EXCLUDE_KEYS:
@@ -154,7 +123,7 @@ def _summary_sections(profile: dict[str, Any]) -> list[str]:
 
 
 def _summary_entity_types(profile: dict[str, Any]) -> dict[str, int]:
-    groups = _profile_entity_groups(profile)
+    groups = get_profile_entity_groups(profile)
     return {
         str(label): len(items)
         for label, items in groups.items()
@@ -163,7 +132,7 @@ def _summary_entity_types(profile: dict[str, Any]) -> dict[str, int]:
 
 
 def _summary_documents(profile: dict[str, Any]) -> dict[str, Any]:
-    groups = _profile_entity_groups(profile)
+    groups = get_profile_entity_groups(profile)
     documents = groups.get("Document", []) if isinstance(groups.get("Document"), list) else []
     file_groups: dict[str, int] = {}
     for item in documents:
@@ -174,21 +143,36 @@ def _summary_documents(profile: dict[str, Any]) -> dict[str, Any]:
     return {"count": len(documents), "groups": file_groups}
 
 
+def _message_role_and_content(message: Any) -> tuple[str, str]:
+    if isinstance(message, tuple) and len(message) == 2:
+        return str(message[0] or ""), str(message[1] or "").strip()
+    if hasattr(message, "content"):
+        role = str(getattr(message, "type", "") or getattr(message, "role", "") or "")
+        content = str(getattr(message, "content", "") or "").strip()
+        return role, content
+    return "", ""
+
+
 def _recent_messages(messages: list[Any], *, roles: set[str], limit: int = 6) -> list[str]:
     values: list[str] = []
     for msg in messages[-12:]:
-        role = ""
-        content = ""
-        if isinstance(msg, tuple) and len(msg) == 2:
-            role = str(msg[0] or "")
-            content = str(msg[1] or "").strip()
-        elif hasattr(msg, "content"):
-            role = str(getattr(msg, "type", "") or getattr(msg, "role", "") or "")
-            content = str(getattr(msg, "content", "") or "").strip()
+        role, content = _message_role_and_content(msg)
         if role not in roles or not content or content in values:
             continue
         values.append(content)
     return values[-limit:]
+
+
+def build_recent_conversation_window(messages: list[Any], limit: int = 8) -> list[dict[str, str]]:
+    """Normalize recent turns into a role/content list for tools and prompts."""
+    recent_messages: list[dict[str, str]] = []
+    for message in messages[-limit:]:
+        role_name, content = _message_role_and_content(message)
+        if not role_name:
+            continue
+        role = "user" if role_name in {"human", "user"} else "assistant"
+        recent_messages.append({"role": role, "content": content})
+    return recent_messages
 
 
 def build_session_summary(profile: dict[str, Any], messages: list[Any], query: str) -> dict[str, Any]:

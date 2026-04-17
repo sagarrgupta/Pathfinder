@@ -42,8 +42,7 @@ def route_after_specialist(state: PathfinderState) -> str:
 
 def route_after_validator(state: PathfinderState) -> str:
     """The validator can only forward to the responder."""
-    next_node = str(state.get("next_node", "responder") or "responder")
-    return "responder" if next_node != "responder" else next_node
+    return "responder"
 
 
 def build_graph() -> StateGraph:

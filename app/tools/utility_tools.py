@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.memory import build_session_summary
+from app.core.memory import build_recent_conversation_window, build_session_summary
+from app.services.long_context import get_profile_entity_groups
 from app.tools.tools import ToolContext, ToolSpec
+from app.utils import coerce_bounded_int
 
 JSON_VALUE_SCHEMA: dict[str, Any] = {
     "anyOf": [
@@ -20,54 +22,15 @@ JSON_VALUE_SCHEMA: dict[str, Any] = {
 }
 
 
-def _tool_limit(value: Any, default: int = 8, maximum: int = 20) -> int:
-    try:
-        parsed = int(value)
-    except Exception:
-        parsed = default
-    return max(1, min(parsed, maximum))
-
-
 def _context_state(context: ToolContext) -> dict[str, Any]:
     return dict(context.state or {})
 
 
-def _profile_entity_groups(profile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    if isinstance(profile.get("all_entities"), dict):
-        return {
-            str(label): list(items)
-            for label, items in profile.get("all_entities", {}).items()
-            if isinstance(items, list)
-        }
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for entity in profile.get("entities", []) if isinstance(profile.get("entities"), list) else []:
-        if not isinstance(entity, dict):
-            continue
-        label = str(entity.get("entity_type") or "Entity")
-        groups.setdefault(label, []).append(entity)
-        for document in entity.get("documents", []) if isinstance(entity.get("documents"), list) else []:
-            if isinstance(document, dict):
-                groups.setdefault("Document", []).append(document)
-        for chunk in entity.get("chunks", []) if isinstance(entity.get("chunks"), list) else []:
-            if isinstance(chunk, dict):
-                groups.setdefault("Chunk", []).append(chunk)
-    return groups
-
-
 async def _get_recent_conversation_window(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     state = _context_state(context)
-    limit = _tool_limit(arguments.get("limit", 8), default=8, maximum=20)
+    limit = coerce_bounded_int(arguments.get("limit", 8), default=8, maximum=20)
     messages = list(state.get("messages", []))
-    window = []
-    for msg in messages[-limit:]:
-        if isinstance(msg, tuple) and len(msg) == 2:
-            role = "user" if str(msg[0]) in {"human", "user"} else "assistant"
-            window.append({"role": role, "content": str(msg[1])})
-        elif hasattr(msg, "content"):
-            role_name = str(getattr(msg, "type", "") or getattr(msg, "role", ""))
-            role = "user" if role_name in {"human", "user"} else "assistant"
-            window.append({"role": role, "content": str(getattr(msg, "content", "") or "")})
-    return {"recent_messages": window}
+    return {"recent_messages": build_recent_conversation_window(messages, limit=limit)}
 
 
 async def _get_session_summary(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -86,15 +49,11 @@ async def _get_session_summary(_: dict[str, Any], context: ToolContext) -> dict[
 async def _list_context_categories(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     state = _context_state(context)
     profile = dict(state.get("profile_data", {}) or {})
-    memories = dict(state.get("semantic_memory", {}) or {})
-    all_entities = _profile_entity_groups(profile)
+    all_entities = get_profile_entity_groups(profile)
     return {
         "categories": {
             "graph_entity_types": sorted(all_entities.keys()),
             "documents_available": len(all_entities.get("Document", [])),
-            "memory_buckets": sorted(
-                key for key, value in memories.items() if isinstance(value, list)
-            ),
             "session_context_available": bool(state),
         }
     }
@@ -141,7 +100,7 @@ def get_utility_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="list_context_categories",
-            description="List which categories of context are currently available in runtime state, including graph entity types, document presence, memory buckets, and whether session context exists. Use this as a lightweight planning tool before fetching more detailed context.",
+            description="List which categories of context are currently available in runtime state, including graph entity types, document presence, and whether session context exists. Use this as a lightweight planning tool before fetching more detailed context.",
             input_schema={
                 "type": "object",
                 "properties": {},

@@ -37,19 +37,13 @@ class PathfinderState(TypedDict, total=False):
     routing_reason: str                       # Human-readable routing explanation
     next_node: str                            # Next node to route to
     session_summary: dict[str, Any]           # Normalized summary of session/student context
-    dependency_status: dict[str, Any]         # Health snapshot for external dependencies
     recovery_events: list[dict[str, Any]]     # Structured recovery/degradation events for this turn
     stop_reason: str                          # Why a turn stopped early or partially
-    durable_student_facts: dict[str, Any]     # Small durable fact snapshot exposed up front
 
     # ── Data gathered by nodes ──────────────────────────────────
     profile_data: dict[str, Any]              # Current student graph snapshot from Neo4j
     retrieved_documents: list[dict[str, Any]] # Retrieved chunk evidence from vector/graph search
-    web_results: list[dict[str, Any]]         # Results from web search
-    semantic_memory: dict[str, Any]           # Reserved semantic retrieval bucket for specialist context
     latest_ingestion_result: dict[str, Any]   # Last document-ingestion summary for debugging/replays
-    extracted_entities: list[dict[str, Any]]  # Entities extracted during in-turn document ingestion
-    transcript_states: list[dict[str, Any]]   # Structured transcript summaries when transcript parsing is available
     tool_call_log: list[dict[str, Any]]       # Provenance log of tool calls/results used this turn
     specialist_output: dict[str, Any]         # Structured result from the selected specialist
     long_context_payload: dict[str, Any]      # Durable long-context payload passed to the specialist

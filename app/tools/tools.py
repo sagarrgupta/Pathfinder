@@ -1,10 +1,12 @@
 """Shared MCP/OpenAI-style tool registry."""
 
 from __future__ import annotations
+
 import json
-from datetime import date, datetime, time
 from dataclasses import dataclass
+from datetime import date, datetime, time
 from typing import Any, Awaitable, Callable
+
 from mcp.types import Tool
 
 _JSON_LIMIT = 8000
@@ -47,19 +49,19 @@ def _wrap_handler(
 
     return _wrapped
 
+
 @dataclass(frozen=True)
 class ToolContext:
     """Execution context shared by tool handlers."""
 
     student_id: str
     session_id: str = ""
-    driver: Any | None = None
     state: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """ tool definition used by MCP and internal callers."""
+    """Tool definition used by MCP and internal callers."""
     name: str
     description: str
     input_schema: dict[str, Any]
@@ -88,7 +90,7 @@ class ToolSpec:
 
 
 def get_tool_specs() -> list[ToolSpec]:
-    """Return every registered tool spec """
+    """Return every registered tool spec."""
     from app.tools.graph_tools import get_graph_tool_specs
     from app.tools.utility_tools import get_utility_tool_specs
     from app.tools.vector_tools import get_vector_tool_specs

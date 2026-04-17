@@ -37,14 +37,6 @@ def get_execution_registry() -> ExecutionRegistry:
     )
 
 
-def get_active_text_model() -> str:
-    return get_execution_registry().text_model
-
-
-def get_active_retrieval_strategy() -> str:
-    return get_execution_registry().retrieval_strategy
-
-
 async def execute_document_ingestion(file_type: str, content: bytes, filename: str) -> list[dict[str, Any]]:
     """Dispatch document extraction by file type."""
     ingestor = _document_ingestors().get(file_type)

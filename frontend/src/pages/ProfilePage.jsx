@@ -50,7 +50,7 @@ function entityName(item) {
   );
 }
 
-export default function StudentPage() {
+export default function ProfilePage() {
   const { state, dispatch } = useApp();
   const toast = useToast();
   const [isUploading, setIsUploading] = useState(false);

@@ -4,7 +4,7 @@ import { useToast } from '@/components/shared/Toast';
 import { getSettings, updateSettings, getHealth, resetStudentData, deleteAllDataEverywhere } from '@/services/api';
 import {
   Settings, Shield, Monitor, Server, Loader2,
-  CheckCircle2, XCircle, Trash2, AlertTriangle, X,
+  Trash2, AlertTriangle, X,
   Sun, Moon, SunMoon, Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -397,7 +397,6 @@ export default function SettingsPage() {
 function ResetModal({ studentId, onClose, onSuccess }) {
   const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState('');
-  const backdropRef = useRef(null);
 
   const handleReset = async () => {
     setIsResetting(true);
@@ -413,94 +412,33 @@ function ResetModal({ studentId, onClose, onSuccess }) {
     }
   };
 
-  const handleBackdropClick = (e) => {
-    if (e.target === backdropRef.current) onClose();
-  };
-
-  useEffect(() => {
-    const handleKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
-
   return (
-    <div
-      ref={backdropRef}
-      onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
-    >
-      <div className="bg-card border rounded-2xl shadow-2xl max-w-md w-full mx-4 animate-fade-in-up">
-        {/* Header */}
-        <div className="flex items-center justify-between p-5 pb-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
-              <AlertTriangle className="h-5 w-5 text-destructive" />
-            </div>
-            <h3 className="text-lg font-bold">Reset All Data</h3>
-          </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="p-5 space-y-4">
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            This action will <strong className="text-destructive">permanently delete</strong> all of the following:
-          </p>
-
-          <ul className="text-sm space-y-2 pl-1">
-            {[
-              'This student node and its stored properties',
-              'All uploaded documents and extracted text',
-              'All sections, entities, fields, and relationships',
-              'The complete student graph for this student id',
-            ].map((text, i) => (
-              <li key={i} className="flex items-center gap-2.5 text-muted-foreground">
-                <span className="w-1.5 h-1.5 rounded-full bg-destructive flex-shrink-0" />
-                {text}
-              </li>
-            ))}
-          </ul>
-
-          <div className="p-3 rounded-lg bg-destructive/5 border border-destructive/20">
-            <p className="text-xs text-destructive font-medium flex items-center gap-1.5">
-              <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-              This action cannot be undone.
-            </p>
-          </div>
-
-          {error && (
-            <p className="text-sm text-destructive">{error}</p>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex justify-end gap-2 p-5 pt-0">
-          <button
-            onClick={onClose}
-            className="px-4 py-2.5 text-sm rounded-lg border hover:bg-accent transition-colors font-medium"
-          >
-            No
-          </button>
-          <button
-            onClick={handleReset}
-            disabled={isResetting}
-            className="px-4 py-2.5 text-sm rounded-lg bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-40 transition-all flex items-center gap-1.5 font-medium active:scale-95"
-          >
-            {isResetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-            {isResetting ? 'Deleting...' : 'Yes'}
-          </button>
-        </div>
-      </div>
-    </div>
+    <DangerModal
+      title="Reset All Data"
+      intro={(
+        <>
+          This action will <strong className="text-destructive">permanently delete</strong> all of the following:
+        </>
+      )}
+      items={[
+        'This student node and its stored properties',
+        'All uploaded documents and extracted text',
+        'All sections, entities, fields, and relationships',
+        'The complete student graph for this student id',
+      ]}
+      error={error}
+      isSubmitting={isResetting}
+      confirmLabel="Yes"
+      pendingLabel="Deleting..."
+      onClose={onClose}
+      onConfirm={handleReset}
+    />
   );
 }
 
 function DeleteAllModal({ onClose, onSuccess }) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState('');
-  const backdropRef = useRef(null);
 
   const handleDeleteAll = async () => {
     setIsDeleting(true);
@@ -516,6 +454,43 @@ function DeleteAllModal({ onClose, onSuccess }) {
     }
   };
 
+  return (
+    <DangerModal
+      title="Delete All Data"
+      intro={(
+        <>
+          This will permanently delete <strong className="text-destructive">everything for all students</strong>:
+        </>
+      )}
+      items={[
+        'All student records',
+        'All Neo4j nodes and relationships',
+        'All persisted chat history',
+        'All uploaded documents and extracted entities',
+      ]}
+      error={error}
+      isSubmitting={isDeleting}
+      confirmLabel="Yes, Delete All"
+      pendingLabel="Deleting..."
+      onClose={onClose}
+      onConfirm={handleDeleteAll}
+    />
+  );
+}
+
+function DangerModal({
+  title,
+  intro,
+  items,
+  error,
+  isSubmitting,
+  confirmLabel,
+  pendingLabel,
+  onClose,
+  onConfirm,
+}) {
+  const backdropRef = useRef(null);
+
   const handleBackdropClick = (e) => {
     if (e.target === backdropRef.current) onClose();
   };
@@ -538,7 +513,7 @@ function DeleteAllModal({ onClose, onSuccess }) {
             <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
               <AlertTriangle className="h-5 w-5 text-destructive" />
             </div>
-            <h3 className="text-lg font-bold">Delete All Data</h3>
+            <h3 className="text-lg font-bold">{title}</h3>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
             <X className="h-5 w-5" />
@@ -546,16 +521,9 @@ function DeleteAllModal({ onClose, onSuccess }) {
         </div>
 
         <div className="p-5 space-y-4">
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            This will permanently delete <strong className="text-destructive">everything for all students</strong>:
-          </p>
+          <p className="text-sm text-muted-foreground leading-relaxed">{intro}</p>
           <ul className="text-sm space-y-2 pl-1">
-            {[
-              'All student records',
-              'All Neo4j nodes and relationships',
-              'All persisted chat history',
-              'All uploaded documents and extracted entities',
-            ].map((text, i) => (
+            {items.map((text, i) => (
               <li key={i} className="flex items-center gap-2.5 text-muted-foreground">
                 <span className="w-1.5 h-1.5 rounded-full bg-destructive flex-shrink-0" />
                 {text}
@@ -579,12 +547,12 @@ function DeleteAllModal({ onClose, onSuccess }) {
             No
           </button>
           <button
-            onClick={handleDeleteAll}
-            disabled={isDeleting}
+            onClick={onConfirm}
+            disabled={isSubmitting}
             className="px-4 py-2.5 text-sm rounded-lg bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-40 transition-all flex items-center gap-1.5 font-medium active:scale-95"
           >
-            {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-            {isDeleting ? 'Deleting...' : 'Yes, Delete All'}
+            {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+            {isSubmitting ? pendingLabel : confirmLabel}
           </button>
         </div>
       </div>

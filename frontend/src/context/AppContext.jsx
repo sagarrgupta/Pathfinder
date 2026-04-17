@@ -101,7 +101,6 @@ const initialState = {
   // UI (never persisted)
   sidebarOpen: true,
   isStreaming: false,
-  streamProgress: [],
 };
 
 // ── Reducer ─────────────────────────────────────────────────────
@@ -111,9 +110,6 @@ function appReducer(state, action) {
     case 'SET_STUDENTS':
       return { ...state, students: action.payload };
 
-    case 'SET_SESSIONS':
-      return { ...state, sessions: action.payload };
-
     case 'SET_ACTIVE_STUDENT': {
       const nextStudentId = action.payload;
       const nextSessions = state.sessions.filter((s) => s.student_id === nextStudentId);
@@ -121,12 +117,11 @@ function appReducer(state, action) {
         ...state,
         activeStudentId: nextStudentId,
         activeSessionId: nextSessions[0]?.session_id || null,
-        streamProgress: [],
       };
     }
 
     case 'SET_ACTIVE_SESSION':
-      return { ...state, activeSessionId: action.payload, streamProgress: [] };
+      return { ...state, activeSessionId: action.payload };
 
     case 'ADD_SESSION': {
       const newSession = action.payload;
@@ -166,7 +161,6 @@ function appReducer(state, action) {
         sessions: remainingSessions,
         messagesBySession: nextMessagesBySession,
         activeSessionId: nextActiveSessionId,
-        streamProgress: [],
       };
     }
 
@@ -181,7 +175,6 @@ function appReducer(state, action) {
         messagesBySession: {},
         student: null,
         studentLoading: false,
-        streamProgress: [],
       };
     }
 
@@ -242,12 +235,6 @@ function appReducer(state, action) {
 
     case 'SET_STREAMING':
       return { ...state, isStreaming: action.payload };
-
-    case 'ADD_PROGRESS':
-      return { ...state, streamProgress: [...state.streamProgress, action.payload] };
-
-    case 'CLEAR_PROGRESS':
-      return { ...state, streamProgress: [] };
 
     case 'SET_STUDENT':
       return { ...state, student: action.payload, studentLoading: false };

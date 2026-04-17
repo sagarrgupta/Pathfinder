@@ -2,29 +2,17 @@
 
 from __future__ import annotations
 
-import logging
-from typing import Any
-
 from app.adapters.web_search.fallback_chain import search as web_search
 from app.adapters.web_search.url_fetcher import fetch_url_content
 from app.tools.tools import ToolContext, ToolSpec
-
-log = logging.getLogger("pathfinder.tools.web")
-
-
-def _tool_limit(value: Any, default: int = 5, maximum: int = 10) -> int:
-    try:
-        parsed = int(value)
-    except Exception:
-        parsed = default
-    return max(1, min(parsed, maximum))
+from app.utils import coerce_bounded_int
 
 
 async def _search_web(arguments: dict[str, Any], _: ToolContext) -> dict[str, Any]:
     query = str(arguments.get("query", "") or "").strip()
     if not query:
         return {"error": "query is required"}
-    max_results = _tool_limit(arguments.get("max_results", 5), default=5, maximum=10)
+    max_results = coerce_bounded_int(arguments.get("max_results", 5), default=5, maximum=10)
     results = await web_search(query, max_results=max_results)
     return {"results": results[:max_results]}
 

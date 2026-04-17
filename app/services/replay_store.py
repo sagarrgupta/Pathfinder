@@ -72,8 +72,6 @@ def build_replay_artifact(
         },
         "context_overview": {
             "document_result_count": len(final_state.get("retrieved_documents", []) or []),
-            "web_result_count": len(final_state.get("web_results", []) or []),
-            "memory_bucket_count": len((final_state.get("semantic_memory", {}) or {}).keys()),
             "transcript_state_count": len(transcript_states),
         },
     }

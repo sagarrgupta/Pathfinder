@@ -1,11 +1,11 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { chatSSE, checkDocumentExists } from '@/services/api';
 import MessageList from '@/components/chat/MessageList';
 import InputArea from '@/components/chat/InputArea';
 import {
-  Sparkles, MessageSquare, BookOpen, Briefcase, FileText,
-  GraduationCap, ArrowRight, AlertTriangle, Globe, Search,
+  MessageSquare, BookOpen, Briefcase,
+  GraduationCap, ArrowRight, AlertTriangle, Globe,
 } from 'lucide-react';
 
 const DEFAULT_SUGGESTIONS = [
@@ -202,10 +202,8 @@ export default function ChatPage() {
           if (currentMessages.length <= 1) {
             const title = generateSmartTitle(query);
             dispatch({
-              type: 'SET_SESSIONS',
-              payload: state.sessions.map((s) =>
-                s.session_id === sid ? { ...s, title } : s
-              ),
+              type: 'RENAME_SESSION',
+              payload: { sessionId: sid, title },
             });
           }
         },
@@ -243,7 +241,7 @@ export default function ChatPage() {
   const suggestions = DEFAULT_SUGGESTIONS;
 
   // Time-aware greeting
-  const timeGreeting = React.useMemo(() => {
+  const timeGreeting = useMemo(() => {
     const hour = new Date().getHours();
     if (hour < 12) return 'Good morning';
     if (hour < 17) return 'Good afternoon';

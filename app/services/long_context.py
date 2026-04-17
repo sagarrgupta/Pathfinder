@@ -4,41 +4,136 @@ from __future__ import annotations
 
 from typing import Any
 
-INTERNAL_SUPPORT_LABELS = {"CandidateFact", "MemoryItem", "Evidence", "Section"}
 _ROOT_PROPERTY_EXCLUDE_KEYS = {
-    "id", "created_at", "updated_at",
-    "long_context_notes", "long_context_summary",
+    "id",
+    "created_at",
+    "updated_at",
+    "long_context_notes",
+    "long_context_summary",
 }
 
 
-def _profile_student(profile: dict[str, Any]) -> dict[str, Any]:
+def get_profile_student(profile: dict[str, Any]) -> dict[str, Any]:
+    """Return the canonical root student properties from either profile shape."""
     student = profile.get("student")
     if isinstance(student, dict):
         return student
+
     root = profile.get("root_properties")
     return dict(root) if isinstance(root, dict) else {}
 
 
-def _profile_entity_groups(profile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+def get_profile_entity_groups(profile: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Return entity groups keyed by label for current and legacy profile payloads."""
     if isinstance(profile.get("all_entities"), dict):
         return {
             str(label): list(items)
             for label, items in profile.get("all_entities", {}).items()
             if isinstance(items, list)
         }
+
     groups: dict[str, list[dict[str, Any]]] = {}
-    for entity in profile.get("entities", []) if isinstance(profile.get("entities"), list) else []:
+    entities = profile.get("entities", []) if isinstance(profile.get("entities"), list) else []
+    for entity in entities:
         if not isinstance(entity, dict):
             continue
+
         label = str(entity.get("entity_type") or "Entity")
         groups.setdefault(label, []).append(entity)
+
         for document in entity.get("documents", []) if isinstance(entity.get("documents"), list) else []:
             if isinstance(document, dict):
                 groups.setdefault("Document", []).append(document)
+
         for chunk in entity.get("chunks", []) if isinstance(entity.get("chunks"), list) else []:
             if isinstance(chunk, dict):
                 groups.setdefault("Chunk", []).append(chunk)
+
     return groups
+
+
+def build_profile_manifest(profile: dict[str, Any], memories: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build the compact manifest used by long-context and specialist runtime."""
+    all_entities = get_profile_entity_groups(profile)
+    documents = all_entities.get("Document", []) if isinstance(all_entities.get("Document"), list) else []
+    document_groups: dict[str, int] = {}
+    for doc in documents:
+        if not isinstance(doc, dict):
+            continue
+        group = str(doc.get("file_type") or "unknown")
+        document_groups[group] = document_groups.get(group, 0) + 1
+
+    manifest = {
+        "graph_entity_types": {
+            label: len(items)
+            for label, items in all_entities.items()
+            if isinstance(items, list) and items
+        },
+        "documents": {
+            "count": len(documents),
+            "groups": document_groups,
+        },
+    }
+
+    normalized_memories = memories if isinstance(memories, dict) else {}
+    if normalized_memories:
+        manifest["memory_buckets"] = {
+            key: len(value)
+            for key, value in normalized_memories.items()
+            if isinstance(value, list)
+        }
+
+    return manifest
+
+
+def build_profile_small_facts(
+    profile: dict[str, Any],
+    session_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Extract populated root fields, section labels, and entity types."""
+    summary_fields = _summary_bucket(session_summary, "root_properties")
+    if isinstance(summary_fields, dict) and summary_fields:
+        root_fields = dict(summary_fields)
+    else:
+        root_fields = get_profile_student(profile)
+
+    profile_fields: dict[str, str] = {}
+    for key, value in root_fields.items():
+        if key in _ROOT_PROPERTY_EXCLUDE_KEYS:
+            continue
+        text = str(value or "").strip()
+        if text:
+            profile_fields[key] = text
+
+    summary_sections = _summary_bucket(session_summary, "sections")
+    if isinstance(summary_sections, list) and summary_sections:
+        section_labels = [
+            str(item).strip()
+            for item in summary_sections
+            if str(item).strip()
+        ]
+    else:
+        sections = profile.get("sections", []) if isinstance(profile.get("sections"), list) else []
+        section_labels = [
+            str(item.get("label") or item.get("key") or "").strip()
+            for item in sections
+            if isinstance(item, dict) and str(item.get("label") or item.get("key") or "").strip()
+        ]
+
+    summary_entity_types = _summary_bucket(session_summary, "entity_types")
+    if isinstance(summary_entity_types, dict) and summary_entity_types:
+        entity_types = [
+            str(label).strip()
+            for label, count in summary_entity_types.items()
+            if str(label).strip()
+            and int(count or 0) > 0
+        ]
+
+    return {
+        "profile_fields": profile_fields,
+        "sections": section_labels,
+        "entity_types": entity_types,
+    }
 
 
 def _summary_bucket(summary: dict[str, Any], key: str) -> Any:
@@ -58,8 +153,8 @@ def build_long_context_payload(
     summary = _summary(normalized_profile, normalized_summary)
     return {
         "summary": summary,
-        "manifest": _manifest(normalized_profile),
-        "small_facts": _small_facts(normalized_profile, normalized_summary),
+        "manifest": build_profile_manifest(normalized_profile),
+        "small_facts": build_profile_small_facts(normalized_profile, normalized_summary),
     }
 
 
@@ -98,83 +193,8 @@ def normalize_long_context_summary(text: str) -> str:
     return "\n".join(f"{label}: {value}" for label, value in parsed.items())
 
 
-def _manifest(profile: dict[str, Any]) -> dict[str, Any]:
-    all_entities = _profile_entity_groups(profile)
-    documents = all_entities.get("Document", []) if isinstance(all_entities.get("Document", []), list) else []
-    document_groups: dict[str, int] = {}
-    for doc in documents:
-        if not isinstance(doc, dict):
-            continue
-        group = str(doc.get("file_type") or "unknown")
-        document_groups[group] = document_groups.get(group, 0) + 1
-    return {
-        "graph_entity_types": {
-            label: len(items)
-            for label, items in all_entities.items()
-            if isinstance(items, list) and items
-        },
-        "documents": {
-            "count": len(documents),
-            "groups": document_groups,
-        },
-    }
-
-
-def _small_facts(profile: dict[str, Any], session_summary: dict[str, Any]) -> dict[str, Any]:
-    """Dynamically extract all populated root properties and schema info."""
-    summary_fields = _summary_bucket(session_summary, "root_properties")
-    if isinstance(summary_fields, dict) and summary_fields:
-        root_fields = dict(summary_fields)
-    else:
-        root_fields = _profile_student(profile)
-
-    profile_fields: dict[str, str] = {}
-    for key, value in root_fields.items():
-        if key in _ROOT_PROPERTY_EXCLUDE_KEYS:
-            continue
-        text = str(value or "").strip()
-        if text:
-            profile_fields[key] = text
-
-    summary_sections = _summary_bucket(session_summary, "sections")
-    if isinstance(summary_sections, list) and summary_sections:
-        section_labels = [
-            str(item).strip()
-            for item in summary_sections
-            if str(item).strip()
-        ]
-    else:
-        sections = profile.get("sections", []) if isinstance(profile.get("sections", []), list) else []
-        section_labels = [
-            str(item.get("label") or item.get("key") or "").strip()
-            for item in sections
-            if isinstance(item, dict) and str(item.get("label") or item.get("key") or "").strip()
-        ]
-
-    summary_entity_types = _summary_bucket(session_summary, "entity_types")
-    if isinstance(summary_entity_types, dict) and summary_entity_types:
-        entity_types = [
-            str(label).strip()
-            for label, count in summary_entity_types.items()
-            if str(label).strip() and int(count or 0) > 0 and str(label).strip() not in INTERNAL_SUPPORT_LABELS
-        ]
-    else:
-        all_entities = _profile_entity_groups(profile)
-        entity_types = [
-            str(label).strip()
-            for label, items in all_entities.items()
-            if label not in INTERNAL_SUPPORT_LABELS and isinstance(items, list) and items
-        ]
-
-    return {
-        "profile_fields": profile_fields,
-        "sections": section_labels,
-        "entity_types": entity_types,
-    }
-
-
 def _summary(profile: dict[str, Any], session_summary: dict[str, Any]) -> str:
-    root = _profile_student(profile)
+    root = get_profile_student(profile)
     stored = str(root.get("long_context_summary", "") or "").strip()
     if stored:
         try:
@@ -192,7 +212,7 @@ def _default_summary(
     carried_notes: str = "",
 ) -> str:
     """Build a summary dynamically from whatever data exists in the profile."""
-    facts = _small_facts(profile, session_summary)
+    facts = build_profile_small_facts(profile, session_summary)
     profile_fields = facts.get("profile_fields", {})
     section_labels = facts.get("sections", [])
     entity_types = facts.get("entity_types", [])

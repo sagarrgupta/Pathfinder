@@ -23,7 +23,6 @@ export default function Sidebar({ open, onToggle }) {
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [isCreatingStudent, setIsCreatingStudent] = useState(false);
   const editRef = useRef(null);
 
   // ── Resizable width ──
@@ -34,7 +33,6 @@ export default function Sidebar({ open, onToggle }) {
     } catch { return DEFAULT_WIDTH; }
   });
   const [isResizing, setIsResizing] = useState(false);
-  const sidebarRef = useRef(null);
 
   // Persist width
   useEffect(() => {
@@ -74,7 +72,7 @@ export default function Sidebar({ open, onToggle }) {
 
   const navItems = [
     { path: '/chat', label: 'Chat', icon: MessageSquare },
-    { path: '/student', label: 'Student', icon: User },
+    { path: '/student', label: 'Profile', icon: User },
     { path: '/replays', label: 'Replays', icon: History },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
@@ -102,15 +100,12 @@ export default function Sidebar({ open, onToggle }) {
   const handleCreateStudent = async () => {
     const name = window.prompt('Enter a name for the new student');
     if (!name?.trim()) return;
-    setIsCreatingStudent(true);
     try {
       await createStudent({ name: name.trim() });
       toast.success(`Created student ${name.trim()}`);
       navigate('/student');
     } catch (err) {
       toast.error(`Failed to create student: ${err.message}`);
-    } finally {
-      setIsCreatingStudent(false);
     }
   };
 
@@ -171,22 +166,6 @@ export default function Sidebar({ open, onToggle }) {
   });
   const pinnedSessions = filteredSessions.filter((s) => s.pinned);
   const unpinnedSessions = filteredSessions.filter((s) => !s.pinned);
-
-  // ── Format relative time ──
-  const formatRelativeTime = (dateStr) => {
-    if (!dateStr) return '';
-    const now = new Date();
-    const date = new Date(dateStr);
-    const diffMs = now - date;
-    const diffMin = Math.floor(diffMs / 60000);
-    if (diffMin < 1) return 'just now';
-    if (diffMin < 60) return `${diffMin}m ago`;
-    const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr}h ago`;
-    const diffDay = Math.floor(diffHr / 24);
-    if (diffDay < 7) return `${diffDay}d ago`;
-    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  };
 
   const renderSession = (session) => {
     const isEditing = editingId === session.session_id;
@@ -275,7 +254,6 @@ export default function Sidebar({ open, onToggle }) {
 
   return (
     <div
-      ref={sidebarRef}
       className="relative border-r bg-card/50 backdrop-blur-sm flex flex-col flex-shrink-0 overflow-hidden"
       style={{
         width: currentWidth,
@@ -315,8 +293,7 @@ export default function Sidebar({ open, onToggle }) {
               </p>
               <button
                 onClick={handleCreateStudent}
-                disabled={isCreatingStudent}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-primary hover:bg-accent disabled:opacity-50"
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-primary hover:bg-accent"
                 title="Create student"
               >
                 <Plus className="h-3 w-3" />

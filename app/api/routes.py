@@ -19,7 +19,7 @@ from app.core.graph import get_compiled_graph
 from app.core.memory import reset_checkpointer_storage
 from app.services.runtime_session import build_chat_runtime_session, get_dependency_status
 from app.services.long_context import build_long_context_payload, normalize_long_context_summary
-from app.services.execution_registry import get_active_retrieval_strategy, get_active_text_model
+from app.services.execution_registry import get_execution_registry
 from app.services.replay_store import (
     build_replay_artifact,
     delete_all_replay_artifacts,
@@ -29,7 +29,6 @@ from app.services.replay_store import (
     save_replay_artifact,
 )
 from app.schemas.models import (
-    ChatResponse,
     DocumentUploadResponse,
     GraphDataResponse,
     HealthResponse,
@@ -38,7 +37,6 @@ from app.schemas.models import (
     StudentResponse,
     StudentUpdate,
     ReplayArtifactInfo,
-    SessionInfo,
     SettingsResponse,
     SettingsUpdate,
 )
@@ -279,11 +277,12 @@ async def upload_document(
     }
 
     result = await process_doc(state)
+    ingestion = result.get("latest_ingestion_result", {}) if isinstance(result.get("latest_ingestion_result", {}), dict) else {}
     return DocumentUploadResponse(
         document_id=f"doc_uploaded",
         filename=upload["filename"],
-        entities_extracted=len(result.get("extracted_entities", [])),
-        chunks_stored=int(result.get("latest_ingestion_result", {}).get("chunk_count", 0) or 0),
+        entities_extracted=int(ingestion.get("entity_count", 0) or 0),
+        chunks_stored=int(ingestion.get("chunk_count", 0) or 0),
     )
 
 
@@ -427,14 +426,15 @@ async def delete_session(session_id: str, student_id: Optional[str] = Query(defa
 @router.get("/settings", response_model=SettingsResponse)
 async def get_settings():
     """Get current application settings."""
+    registry = get_execution_registry()
     return SettingsResponse(
         topic_guard_enabled=_topic_guard_enabled,
         reasoning=_reasoning,
         models={
-            "text_llm": get_active_text_model(),
+            "text_llm": registry.text_model,
             "vision_llm": settings.VISION_MODEL,
             "embeddings": settings.EMBEDDING_MODEL,
-            "retrieval": get_active_retrieval_strategy(),
+            "retrieval": registry.retrieval_strategy,
         },
     )
 
