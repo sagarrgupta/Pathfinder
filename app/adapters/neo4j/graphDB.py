@@ -10,12 +10,6 @@ from app.utils.ids import generate_field_id
 log = logging.getLogger("pathfinder.neo4j.graph")
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# TODO(rewrite-plan): New backend phases for the Neo4j rewrite.
-# Phase 1: Add the required GraphDB/VectorDB functions for the new schema.
-# Phase 2: Expose those functions as MCP tools for the LLM.
-# Phase 3: Replace the current document-ingestion path so chunk-grounded graph
-# creation happens through the new MCP tools, then tighten the ingestion prompts.
-
 class GraphDB:
     """class for student-centric knowledge graph operations."""
 
@@ -335,6 +329,13 @@ class GraphDB:
         if not raw or not _IDENTIFIER.fullmatch(raw):
             raise ValueError(f"Invalid {field_name}: {value}")
         return raw
+
+    @staticmethod
+    def _safe_field_key(value: str, field_name: str = "field_name") -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            raise ValueError(f"Invalid {field_name}: {value}")
+        return raw
     
     async def get_student_sections(self, *, student_id: str) -> list[dict]:
         """Return all sections for a student."""
@@ -458,6 +459,48 @@ class GraphDB:
             "entity_types": sorted(entity_counts.keys()),
             "entity_counts": entity_counts,
         })
+
+    async def list_relationship_types(self, *, student_id: str) -> dict[str, Any]:
+        """Return relationship types currently present in the student graph with counts and patterns."""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (:Student {id: $student_id})-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(src:Entity)-[r]->(dst:Entity)
+                WHERE src.student_id = $student_id AND dst.student_id = $student_id
+                RETURN
+                    type(r) AS relationship_type,
+                    coalesce(src.entity_type, 'Entity') AS source_entity_type,
+                    coalesce(dst.entity_type, 'Entity') AS target_entity_type,
+                    count(r) AS relationship_count
+                ORDER BY relationship_type, source_entity_type, target_entity_type
+                """,
+                student_id=student_id,
+            )
+            relationship_counts: dict[str, int] = {}
+            patterns: list[dict[str, Any]] = []
+            async for record in result:
+                relationship_type = str(record.get("relationship_type") or "").strip()
+                if not relationship_type:
+                    continue
+                source_entity_type = str(record.get("source_entity_type") or "Entity").strip() or "Entity"
+                target_entity_type = str(record.get("target_entity_type") or "Entity").strip() or "Entity"
+                relationship_count = int(record.get("relationship_count", 0) or 0)
+                relationship_counts[relationship_type] = relationship_counts.get(relationship_type, 0) + relationship_count
+                patterns.append(
+                    {
+                        "relationship_type": relationship_type,
+                        "source_entity_type": source_entity_type,
+                        "target_entity_type": target_entity_type,
+                        "relationship_count": relationship_count,
+                    }
+                )
+        return sanitize_neo4j_value(
+            {
+                "relationship_types": sorted(relationship_counts.keys()),
+                "relationship_counts": relationship_counts,
+                "patterns": patterns,
+            }
+        )
 
     async def typed_node_lookup(
         self,
@@ -621,7 +664,7 @@ class GraphDB:
     ) -> dict:
         """Add/update one complex Field node under an Entity for expandable nested details."""
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
-        safe_field_name = self._safe_identifier(field_name, "field_name")
+        safe_field_name = self._safe_field_key(field_name, "field_name")
         if not identity:
             raise ValueError("identity is required")
         owner_key = self._entity_owner_key(student_id, safe_entity_type, identity)
@@ -700,7 +743,7 @@ class GraphDB:
         field_value: Any | None = None,
     ) -> dict:
         """Add or update one child Field node under an existing parent Field."""
-        safe_field_name = self._safe_identifier(field_name, "field_name")
+        safe_field_name = self._safe_field_key(field_name, "field_name")
         async with self.driver.session() as session:
             result = await session.run(
                 """

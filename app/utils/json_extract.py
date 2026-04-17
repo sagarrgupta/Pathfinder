@@ -16,12 +16,6 @@ def parse_json_object(content: Any) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def parse_json_array(content: Any) -> list[Any] | None:
-    """Parse a JSON array from raw model output."""
-    parsed = _parse_json_payload(content)
-    return parsed if isinstance(parsed, list) else None
-
-
 def _parse_json_payload(content: Any) -> Any | None:
     text = content if isinstance(content, str) else str(content or "")
     text = text.strip()

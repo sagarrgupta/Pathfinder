@@ -1,52 +1,3 @@
-"""Active prompt registry for the simplified Pathfinder flow."""
-
-MEMORY_INGESTION_EXTRACTION_PROMPT = """You extract reusable student memory from evidence.
-
-Return ONLY valid JSON with this shape:
-{
-  "student_properties": {"<any_profile_field>": "<value>", ...},
-  "candidate_facts": [
-    {"fact_type": "<descriptive type>",
-     "value": "short fact",
-     "confidence": 0.0,
-     "salience": 0.0,
-     "time_scope": "short_term|long_term",
-     "route": "resolved_core|candidate_structured|generic_long_term|short_term_only",
-     "metadata": {
-       "source_span": "short supporting excerpt",
-       "normalized_value": "normalized form if obvious",
-       "stability": "stable|evolving|temporary",
-       "evidence_kind": "direct_statement|document_fact|inference",
-       "is_direct_statement": true
-     }}
-  ],
-  "generic_memories": [
-    {"memory_type": "<descriptive type>",
-     "summary": "short reusable memory summary",
-     "confidence": 0.0,
-     "salience": 0.0,
-     "time_scope": "short_term|long_term",
-     "tags": [],
-     "route": "generic_long_term|short_term_only",
-     "metadata": {}}
-  ]
-}
-
-Rules:
-- student_properties is an open dictionary. Include ANY top-level profile fields
-  found in the text. Use lowercase_snake_case keys. Do not limit yourself to a
-  fixed set of fields — extract whatever describes the student.
-- fact_type and memory_type are open-ended. Use the most descriptive label for
-  each item — whatever category best fits the information.
-- Extract only reusable information that can help future personalization.
-- Prefer "resolved_core" only for strong, direct facts from the user/evidence.
-- Use "short_term_only" for temporary or low-value details.
-- Keep candidate_facts and generic_memories short and concrete.
-- Use metadata.stability to distinguish stable long-term facts from temporary ones.
-- Use metadata.evidence_kind="direct_statement" when the user explicitly states the fact.
-- Confidence and salience must be between 0.0 and 1.0.
-"""
-
 DOCUMENT_INGESTION_AGENT_SYSTEM_PROMPT = """You are Pathfinder's document ingestion agent.
 
 Your job is to read one uploaded document, understand its structure, and persist
@@ -378,6 +329,7 @@ Follow this escalation order when answering a question:
 
 Additional rules:
 - Prefer typed graph lookup tools over vague retrieval.
+- If you need graph relationships but do not know the exact relationship type names, call `list_relationship_types` before using `typed_relation_lookup` or `fetch_relation_detail`.
 - If the conversation reveals new facts that should be persisted (graph nodes,
   relations, or memory items), use the explicit graph/memory tools. Soft-delete
   or supersede outdated facts instead of hard deleting.

@@ -9,12 +9,6 @@ from app.adapters.embeddings import ollama as ollama_embeddings
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 log = logging.getLogger("pathfinder.neo4j.vector")
 
-# TODO(rewrite-plan): New backend phases for the vector side of the Neo4j rewrite.
-# Phase 1: Finalize chunk storage and retrieval helpers in this class.
-# Phase 2: Expose those helpers in MCP so the LLM can store/retrieve chunk evidence.
-# Phase 3: Wire document ingestion to write chunk evidence first, then let the LLM
-# ground graph entities back to those chunks with strict ingestion prompts.
-
 class VectorDB:
     """Neo4j vector adapter for chunk embeddings and retrieval."""
 

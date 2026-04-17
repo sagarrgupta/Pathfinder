@@ -245,6 +245,12 @@ async def _list_entity_types(arguments: dict[str, Any], context: ToolContext) ->
     return entity_types
 
 
+async def _list_relationship_types(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    relationship_types = await graph_db.list_relationship_types(student_id=_student_id(context))
+    return relationship_types
+
+
 async def _typed_node_lookup(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     graph_db = await _graph_db(context)
     results = await graph_db.typed_node_lookup(
@@ -455,7 +461,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
                     "identity": IDENTITY_SCHEMA,
                     "field_name": {
                         "type": "string",
-                        "description": "Field key to create or update under the entity.",
+                        "description": "Field key to create or update under the entity. This can be a human-readable label from the document, such as a course title or section heading.",
                     },
                     "field_value": {
                         **JSON_VALUE_SCHEMA,
@@ -496,7 +502,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
                     },
                     "field_name": {
                         "type": "string",
-                        "description": "Child field key to create below the parent field.",
+                        "description": "Child field key to create below the parent field. This can be a human-readable label from the document, such as a course title or subsection heading.",
                     },
                     "field_value": {
                         **JSON_VALUE_SCHEMA,
@@ -627,6 +633,16 @@ def get_graph_tool_specs() -> list[ToolSpec]:
             handler=_get_full_student,
         ),
         ToolSpec(
+            name="list_relationship_types",
+            description="Return the relationship types currently present in the active student graph, along with counts and simple source-to-target entity patterns. Use this before `typed_relation_lookup` or `fetch_relation_detail` whenever you do not already know the exact relationship type names.",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            handler=_list_relationship_types,
+        ),
+        ToolSpec(
             name="get_graph_data",
             description="Return a lightweight node-and-relationship graph view for visualization or structural inspection. Use this when the model needs the student graph as simple `nodes` and `relationships` arrays instead of the richer full student snapshot.",
             input_schema={
@@ -663,7 +679,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="typed_relation_lookup",
-            description="Return student-owned graph relationships of one specific type whose target matches one dynamic entity type. Use this when the model needs to inspect existing semantic edges before creating duplicate relationships or when it wants entities that are already connected in a particular way.",
+            description="Return student-owned graph relationships of one specific type whose target matches one dynamic entity type. Use this when the model needs to inspect existing semantic edges before creating duplicate relationships or when it wants entities that are already connected in a particular way. If the exact relationship type is unknown, call `list_relationship_types` first instead of guessing.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -712,7 +728,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="fetch_relation_detail",
-            description="Fetch one specific relationship detail using an exact target-entity field match. Use this when the model needs one precise relation record, including source entity, target entity, section keys, and relationship properties, instead of a broader list search.",
+            description="Fetch one specific relationship detail using an exact target-entity field match. Use this when the model needs one precise relation record, including source entity, target entity, section keys, and relationship properties, instead of a broader list search. If the exact relationship type is unknown, call `list_relationship_types` first instead of guessing.",
             input_schema={
                 "type": "object",
                 "properties": {

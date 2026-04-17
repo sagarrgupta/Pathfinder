@@ -28,7 +28,6 @@ from app.services.replay_store import (
     list_replay_artifacts,
     save_replay_artifact,
 )
-from app.services.replay_eval import evaluate_recent_replays, evaluate_replay_by_id
 from app.schemas.models import (
     ChatResponse,
     DocumentUploadResponse,
@@ -39,8 +38,6 @@ from app.schemas.models import (
     StudentResponse,
     StudentUpdate,
     ReplayArtifactInfo,
-    ReplayEvaluationBatch,
-    ReplayEvaluationInfo,
     SessionInfo,
     SettingsResponse,
     SettingsUpdate,
@@ -417,28 +414,6 @@ async def get_replay(replay_id: str):
     return artifact
 
 
-@router.get("/replays/{replay_id}/evaluate", response_model=ReplayEvaluationInfo)
-async def evaluate_replay(replay_id: str):
-    """Evaluate one replay artifact with lightweight regression checks."""
-    evaluation = evaluate_replay_by_id(replay_id)
-    if evaluation is None:
-        raise HTTPException(404, "Replay artifact not found")
-    return ReplayEvaluationInfo(**evaluation)
-
-
-@router.get("/replays/evaluate/recent", response_model=ReplayEvaluationBatch)
-async def evaluate_recent_replay_batch(
-    limit: int = Query(default=25, ge=1, le=100),
-    student_id: Optional[str] = Query(default=None),
-):
-    """Evaluate a batch of recent replay artifacts."""
-    resolved_student_id = None
-    if student_id:
-        resolved_student_id = await _resolve_student_id(student_id)
-    evaluation = evaluate_recent_replays(limit=limit, student_id=resolved_student_id)
-    return ReplayEvaluationBatch(**evaluation)
-
-
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str, student_id: Optional[str] = Query(default=None)):
     """Acknowledge discarding a chat session id; student documents are not removed."""
@@ -485,18 +460,6 @@ async def health_check():
     services = {name: str(status) for name, status in statuses.items()}
     overall = "ok" if all(s == "connected" for s in services.values()) else "degraded"
     return HealthResponse(status=overall, services=services)
-
-
-@router.get("/background/status")
-async def background_status():
-    """Get lightweight background-job status for observability."""
-    return {
-        "running": False,
-        "active_task": False,
-        "disabled": True,
-        "reason": "legacy background consolidation removed",
-    }
-
 
 # ── Helpers ──────────────────────────────────────────────────────
 
