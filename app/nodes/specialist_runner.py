@@ -26,17 +26,12 @@ from app.utils.runtime_utils import build_recent_conversation_window
 log = logging.getLogger("pathfinder.agents.specialist_runner")
 
 _SPECIALIST_CONFIG = {
-    "academic": {"title": "Academic Specialist", "prompt": ACADEMIC_SPECIALIST_SYSTEM_PROMPT},
-    "career": {"title": "Career Specialist", "prompt": CAREER_SPECIALIST_SYSTEM_PROMPT},
-    "general": {"title": "General Specialist", "prompt": GENERAL_SPECIALIST_SYSTEM_PROMPT},
+    "academic": ACADEMIC_SPECIALIST_SYSTEM_PROMPT,
+    "career": CAREER_SPECIALIST_SYSTEM_PROMPT,
+    "general": GENERAL_SPECIALIST_SYSTEM_PROMPT,
 }
 _MESSAGE_FIELD_RE = re.compile(r'"message"\s*:\s*"((?:\\.|[^"])*)"', re.DOTALL)
 _SPECIAL_TOKEN_RE = re.compile(r"<\|.*?\|>")
-
-
-def _system_prompt(selected_specialist: str) -> str:
-    specialist = _SPECIALIST_CONFIG.get(selected_specialist, _SPECIALIST_CONFIG["general"])
-    return str(specialist["prompt"])
 
 
 _NOT_FOUND_PHRASES = (
@@ -94,11 +89,6 @@ def _clean_message(content: str) -> str:
             return maybe
     return text.strip().strip('"').strip()
 
-
-async def _graph_db() -> GraphDB:
-    return GraphDB(await get_graph_driver())
-
-
 def _bounded_tool_value(value: Any, limit: int = 12000) -> Any:
     """Keep replay-facing tool payloads readable without dropping structure."""
     try:
@@ -150,7 +140,7 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
         working_state.update(doc_state)
         step_progress = list(doc_state.get("step_progress", step_progress))
 
-    graph_db = await _graph_db()
+    graph_db = GraphDB(await get_graph_driver())
     student = await graph_db.get_student(student_id=student_id) or {}
     student_schema = await graph_db.get_student_schema(student_id=student_id)
     raw_session_messages = working_state.get("messages", [])
@@ -177,7 +167,7 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
         },
     )
     messages: list[Any] = [
-        SystemMessage(content=_system_prompt(selected_specialist)),
+        SystemMessage(content=str(_SPECIALIST_CONFIG.get(selected_specialist, _SPECIALIST_CONFIG["general"]))),
         HumanMessage(
             content=(
                 "User query:\n"

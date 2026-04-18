@@ -52,23 +52,6 @@ _LIGHT_CONVERSATION_RE = re.compile(
     r"^\s*(hi|hello|hey|yo|good morning|good afternoon|good evening|thanks|thank you|bye|goodbye|see you)\b[!. ]*$",
     re.IGNORECASE,
 )
-
-
-def _build_context_hint(profile: dict[str, Any]) -> str:
-    """Build a one-line context hint from the profile and request."""
-    parts: list[str] = []
-    root = profile.get("student")
-    if not isinstance(root, dict):
-        root = profile.get("root_properties")
-    if not isinstance(root, dict):
-        root = {}
-    if root:
-        fields = [f"{k}={v}" for k, v in list(root.items())[:4] if v]
-        if fields:
-            parts.append(f"Profile: {', '.join(fields)}")
-    return "; ".join(parts)
-
-
 async def _llm_route(query: str, context_hint: str) -> dict[str, float] | None:
     """Ask the LLM to score specialist relevance. Returns general on failure."""
     specialists_block = "\n".join(
@@ -97,20 +80,14 @@ async def _llm_route(query: str, context_hint: str) -> dict[str, float] | None:
     except Exception as exc:
         log.warning("LLM routing failed (%s), falling back to heuristic", exc)
     return {"academic": 0.0, "career": 0.0, "general": 5.0}
-
-
-def _is_light_conversation(query: str) -> bool:
-    return bool(_LIGHT_CONVERSATION_RE.match(str(query or "").strip()))
-
-
 async def orchestrator(state: PathfinderState) -> PathfinderState:
     """Score the request against the 3 specialist prompt families using the LLM."""
     query = str(state.get("query", "") or "")
     student_id = str(state.get("student_id", "") or "")
 
     student = await GraphDB(await get_graph_driver()).get_student(student_id=student_id) or {}
-    profile = {"student": student}
-    context_hint = _build_context_hint(profile)
+    fields = [f"{k}={v}" for k, v in list(student.items())[:4] if v]
+    context_hint = f"Profile: {', '.join(fields)}" if fields else ""
 
     routing_scores = await _llm_route(query, context_hint)
     routing_method = "llm"
@@ -121,7 +98,7 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     )[0]
     top_score = float(routing_scores.get(selected_specialist, 0.0) or 0.0)
 
-    if top_score <= 0.0 and _is_light_conversation(query):
+    if top_score <= 0.0 and _LIGHT_CONVERSATION_RE.match(str(query or "").strip()):
         routing_reason = "Light conversational turn — routed to general."
     elif top_score <= 0.0:
         routing_reason = "No strong signal — routed to general as fallback."

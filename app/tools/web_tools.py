@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.adapters.web_search.fallback_chain import search as web_search
 from app.adapters.web_search.url_fetcher import fetch_url_content
 from app.tools.tools import ToolContext, ToolSpec, bounded_text
-from app.utils import coerce_bounded_int
-
-
 def _compact_web_results(results: list[dict], limit: int = 5) -> list[dict]:
     compacted: list[dict] = []
     for item in results[:limit]:
@@ -27,7 +26,11 @@ async def _search_web(arguments: dict[str, Any], _: ToolContext) -> dict[str, An
     query = str(arguments.get("query", "") or "").strip()
     if not query:
         return {"error": "query is required"}
-    max_results = coerce_bounded_int(arguments.get("max_results", 5), default=5, maximum=10)
+    try:
+        max_results = int(arguments.get("max_results", 5))
+    except Exception:
+        max_results = 5
+    max_results = max(1, min(max_results, 10))
     results = await web_search(query, max_results=max_results)
     return {"results": results[:max_results]}
 

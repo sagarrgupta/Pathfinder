@@ -18,11 +18,6 @@ from app.core.state import PathfinderState
 log = logging.getLogger("pathfinder.workflow")
 
 
-def route_after_guard(state: PathfinderState) -> str:
-    """After input guard, either stop or continue."""
-    return "responder" if state.get("is_blocked") else "orchestrator"
-
-
 def build_workflow() -> StateGraph:
     """Build the simplified Pathfinder workflow."""
     workflow = StateGraph(PathfinderState)
@@ -41,7 +36,7 @@ def build_workflow() -> StateGraph:
 
     workflow.add_conditional_edges(
         "input_guard",
-        route_after_guard,
+        lambda state: "responder" if state.get("is_blocked") else "orchestrator",
         {"orchestrator": "orchestrator", "responder": "responder"},
     )
     workflow.add_edge("orchestrator", "specialist_runner")

@@ -155,7 +155,13 @@ export default function Message({ message, isLast, isStreaming }) {
     : 'w-full rounded-[22px] border border-border/70 bg-background/76 px-4 py-3 shadow-sm backdrop-blur-sm transition-colors';
 
   return (
-    <div className={cn('flex items-start gap-3', isUser ? 'justify-end' : 'justify-start')}>
+    <div
+      className={cn(
+        'flex items-start gap-3',
+        isUser ? 'justify-end' : 'justify-start',
+        message.content && !isStreaming && 'mb-12'
+      )}
+    >
       {!isUser && (
         <div className="mt-1 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-2xl border border-border/60 bg-background/70 shadow-sm">
           <Sparkles className="h-4 w-4 text-primary" />

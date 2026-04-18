@@ -1,15 +1,12 @@
 """Shared MCP/OpenAI-style tool registry."""
 
 from __future__ import annotations
-
-import json
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Any, Awaitable, Callable
 
 from mcp.types import Tool
 
-_JSON_LIMIT = 24000
 _SUMMARY_FIELD_LIMIT = 10
 
 try:
@@ -143,8 +140,8 @@ async def execute_tool(name: str, arguments: dict[str, Any], context: ToolContex
     return {"error": f"unknown tool: {name}"}
 
 
-def get_tool_category_map() -> dict[str, str]:
-    """Return the evidence category for each registered tool name."""
+def summarize_tool_usage(tool_names: list[str]) -> dict[str, str]:
+    """Return the high-level method label for successful tool usage."""
     from app.tools.graph_tools import get_graph_tool_specs
     from app.tools.vector_tools import get_vector_tool_specs
     from app.tools.web_tools import get_web_tool_specs
@@ -156,12 +153,6 @@ def get_tool_category_map() -> dict[str, str]:
         categories[spec.name] = "Vector"
     for spec in get_web_tool_specs():
         categories[spec.name] = "Web"
-    return categories
-
-
-def summarize_tool_usage(tool_names: list[str]) -> dict[str, str]:
-    """Return the high-level method label for successful tool usage."""
-    categories = get_tool_category_map()
     used_categories: list[str] = []
     seen: set[str] = set()
     for name in tool_names:
