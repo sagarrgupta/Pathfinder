@@ -17,6 +17,7 @@ from app.adapters.neo4j.graphDB import GraphDB
 from app.core.state import PathfinderState
 from app.tools.graph_tools import get_driver as get_graph_driver
 from app.utils.json_extract import parse_json_object
+from app.utils.progress import add_progress
 
 log = logging.getLogger("pathfinder.agents.orchestrator")
 
@@ -109,7 +110,16 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         )
 
     step_progress = list(state.get("step_progress", []))
-    step_progress.append(f"Routing ({routing_method}): {selected_specialist}")
+    specialist_label = {
+        "academic": "academic planning",
+        "career": "career planning",
+        "general": "general guidance",
+    }.get(selected_specialist, "the best guidance path")
+    add_progress(
+        step_progress,
+        stage="Choosing the best approach",
+        message=f"Focusing on {specialist_label} for this question.",
+    )
 
     log.info(
         "Orchestrator selected specialist=%s method=%s scores=%s",

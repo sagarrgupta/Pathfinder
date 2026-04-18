@@ -42,6 +42,11 @@ def _normalize_tool_value(value: Any) -> Any:
 ToolHandler = Callable[[dict[str, Any], "ToolContext"], Awaitable[dict[str, Any]]]
 CompactHandler = Callable[[dict[str, Any], dict[str, Any], "ToolContext"], dict[str, Any]]
 
+_TOOL_SPECS: tuple["ToolSpec", ...] | None = None
+_TOOL_SCHEMAS: tuple[dict[str, Any], ...] | None = None
+_MCP_TOOLS: tuple[Tool, ...] | None = None
+_TOOL_SPEC_BY_NAME: dict[str, "ToolSpec"] | None = None
+
 
 def _wrap_handler(handler: ToolHandler) -> ToolHandler:
     async def _wrapped(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -101,35 +106,50 @@ class ToolSpec:
 
 def get_tool_specs() -> list[ToolSpec]:
     """Return every registered tool spec."""
+    _ensure_tool_cache()
+    return list(_TOOL_SPECS or ())
+
+
+def get_tool_schemas() -> list[dict[str, Any]]:
+    """Return OpenAI-compatible tool schemas."""
+    _ensure_tool_cache()
+    return list(_TOOL_SCHEMAS or ())
+
+
+def get_mcp_tools() -> list[Tool]:
+    """Return MCP tool definitions."""
+    _ensure_tool_cache()
+    return list(_MCP_TOOLS or ())
+
+
+def get_tool_spec(name: str) -> ToolSpec | None:
+    """Return one registered tool spec by name."""
+    _ensure_tool_cache()
+    return (_TOOL_SPEC_BY_NAME or {}).get(name)
+
+
+def _ensure_tool_cache() -> None:
+    global _TOOL_SPECS, _TOOL_SCHEMAS, _MCP_TOOLS, _TOOL_SPEC_BY_NAME
+    if _TOOL_SPECS is not None:
+        return
+
     from app.tools.graph_tools import get_graph_tool_specs
     from app.tools.utility_tools import get_utility_tool_specs
     from app.tools.vector_tools import get_vector_tool_specs
     from app.tools.web_tools import get_web_tool_specs
 
-    return [
-        *get_graph_tool_specs(),
-        *get_vector_tool_specs(),
-        *get_utility_tool_specs(),
-        *get_web_tool_specs(),
-    ]
-
-
-def get_tool_schemas() -> list[dict[str, Any]]:
-    """Return OpenAI-compatible tool schemas."""
-    return [spec.as_openai_schema() for spec in get_tool_specs()]
-
-
-def get_mcp_tools() -> list[Tool]:
-    """Return MCP tool definitions."""
-    return [spec.as_mcp_tool() for spec in get_tool_specs()]
-
-
-def get_tool_spec(name: str) -> ToolSpec | None:
-    """Return one registered tool spec by name."""
-    for spec in get_tool_specs():
-        if spec.name == name:
-            return spec
-    return None
+    specs = tuple(
+        [
+            *get_graph_tool_specs(),
+            *get_vector_tool_specs(),
+            *get_utility_tool_specs(),
+            *get_web_tool_specs(),
+        ]
+    )
+    _TOOL_SPECS = specs
+    _TOOL_SCHEMAS = tuple(spec.as_openai_schema() for spec in specs)
+    _MCP_TOOLS = tuple(spec.as_mcp_tool() for spec in specs)
+    _TOOL_SPEC_BY_NAME = {spec.name: spec for spec in specs}
 
 
 async def execute_tool(name: str, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:

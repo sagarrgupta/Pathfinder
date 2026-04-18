@@ -276,10 +276,15 @@ function appReducer(state, action) {
 export function AppProvider({ children }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
 
-  // Persist to localStorage whenever sessions/messages/settings/theme change
+  // Persist to localStorage, but debounce writes so token streaming does not
+  // serialize the entire app state on every SSE chunk.
   useEffect(() => {
-    persistState(state);
-  }, [state.students, state.activeStudentId, state.sessions, state.activeSessionId, state.messagesBySession, state.settings, state.theme]);
+    const delayMs = state.isStreaming ? 750 : 150;
+    const timerId = window.setTimeout(() => {
+      persistState(state);
+    }, delayMs);
+    return () => window.clearTimeout(timerId);
+  }, [state.students, state.activeStudentId, state.sessions, state.activeSessionId, state.messagesBySession, state.settings, state.theme, state.isStreaming]);
 
   // Apply theme on change
   useEffect(() => {

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
-import { checkDocumentExists, getStudent, updateStudent, uploadDocument } from '@/services/api';
+import { checkDocumentExists, updateStudent, uploadDocument } from '@/services/api';
 import {
   ChevronDown,
   Circle,
@@ -51,7 +51,7 @@ function entityName(item) {
 }
 
 export default function ProfilePage() {
-  const { state, dispatch, refreshStudent } = useApp();
+  const { state, refreshStudent } = useApp();
   const toast = useToast();
   const [isUploading, setIsUploading] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
@@ -59,28 +59,6 @@ export default function ProfilePage() {
   const [replaceDialog, setReplaceDialog] = useState({ open: false, file: null });
   const fileInputRef = useRef(null);
   const student = state.student;
-
-  useEffect(() => {
-    if (!state.activeStudentId) return;
-    let cancelled = false;
-    dispatch({ type: 'SET_STUDENT_LOADING', payload: true });
-    (async () => {
-      try {
-        const data = await getStudent(state.activeStudentId);
-        if (!cancelled) {
-          dispatch({ type: 'SET_STUDENT', payload: data });
-        }
-      } catch (err) {
-        if (!cancelled) {
-          console.error('Failed to load student:', err);
-          dispatch({ type: 'SET_STUDENT_LOADING', payload: false });
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [dispatch, state.activeStudentId]);
 
   const performUpload = async (file, replace = false) => {
     setIsUploading(true);

@@ -60,6 +60,8 @@ def build_replay_artifact(
         "answer": final_state.get("final_answer", ""),
         "specialist_output": specialist_output,
         "tool_call_log": tool_call_log,
+        "input_session_context": str(final_state.get("input_session_context", "") or ""),
+        "input_long_context": str(final_state.get("input_long_context", "") or ""),
         "session_context": str(final_state.get("session_context", "") or ""),
         "long_context": str(final_state.get("long_context", "") or ""),
         "student_schema": latest_schema,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.state import PathfinderState
+from app.utils.progress import add_progress
 
 
 def _citations_from_tool_log(tool_log: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -41,7 +42,11 @@ async def response_validator(state: PathfinderState) -> PathfinderState:
     tool_call_log = list(state.get("tool_call_log", []))
     citations = _citations_from_tool_log(tool_call_log)
     step_progress = list(state.get("step_progress", []))
-    step_progress.append("Validated response structure and citations")
+    add_progress(
+        step_progress,
+        stage="Preparing your answer",
+        message="Final checks on the response and sources.",
+    )
 
     stop_reason = str(output.get("stop_reason", "") or "")
     return {
