@@ -48,12 +48,36 @@ export default function ChatPage() {
   const [files, setFiles] = useState([]);
   const [replaceFlags, setReplaceFlags] = useState({});  // filename -> true if user chose to replace
   const abortRef = useRef(null);
+  const streamBufferRef = useRef({ sessionId: '', content: '', pendingContent: '', frameId: 0 });
 
   // Duplicate file dialog state
   const [dupDialog, setDupDialog] = useState({ open: false, filename: '', pendingFile: null });
 
   const sessionId = state.activeSessionId;
   const messages = state.messagesBySession[sessionId] || [];
+
+  const flushStreamBuffer = (targetSessionId) => {
+    const stream = streamBufferRef.current;
+    if (stream.frameId) {
+      cancelAnimationFrame(stream.frameId);
+      stream.frameId = 0;
+    }
+    if (!targetSessionId || stream.sessionId !== targetSessionId || !stream.pendingContent) {
+      return;
+    }
+    stream.content += stream.pendingContent;
+    stream.pendingContent = '';
+    dispatch({
+      type: 'UPDATE_LAST_MESSAGE',
+      payload: { sessionId: targetSessionId, update: { content: stream.content } },
+    });
+  };
+
+  useEffect(() => () => {
+    if (streamBufferRef.current.frameId) {
+      cancelAnimationFrame(streamBufferRef.current.frameId);
+    }
+  }, []);
 
   // Keyboard shortcut: Cmd/Ctrl + N for new chat
   useEffect(() => {
@@ -142,8 +166,7 @@ export default function ChatPage() {
     });
 
     dispatch({ type: 'SET_STREAMING', payload: true });
-
-    let tokenBuffer = '';
+    streamBufferRef.current = { sessionId: sid, content: '', pendingContent: '', frameId: 0 };
 
     abortRef.current = chatSSE(
       {
@@ -162,13 +185,18 @@ export default function ChatPage() {
           });
         },
         onToken: (data) => {
-          tokenBuffer += data.content;
-          dispatch({
-            type: 'UPDATE_LAST_MESSAGE',
-            payload: { sessionId: sid, update: { content: tokenBuffer } },
-          });
+          const stream = streamBufferRef.current;
+          stream.sessionId = sid;
+          stream.pendingContent += data.content;
+          if (!stream.frameId) {
+            stream.frameId = requestAnimationFrame(() => {
+              stream.frameId = 0;
+              flushStreamBuffer(sid);
+            });
+          }
         },
         onDone: (data) => {
+          flushStreamBuffer(sid);
           const runtimeSnapshot = data.runtime_snapshot || {};
           dispatch({
             type: 'UPDATE_LAST_MESSAGE',
@@ -206,6 +234,7 @@ export default function ChatPage() {
           }
         },
         onError: (error) => {
+          flushStreamBuffer(sid);
           dispatch({
             type: 'UPDATE_LAST_MESSAGE',
             payload: { sessionId: sid, update: { content: `Error: ${error}` } },
@@ -217,6 +246,7 @@ export default function ChatPage() {
   };
 
   const handleStop = () => {
+    flushStreamBuffer(streamBufferRef.current.sessionId);
     abortRef.current?.abort();
     dispatch({ type: 'SET_STREAMING', payload: false });
   };

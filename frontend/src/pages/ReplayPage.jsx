@@ -250,7 +250,25 @@ export default function ReplayPage() {
                   <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
                     <div className="mb-2 flex items-center gap-2">
                       <FileText className="h-4 w-4 text-primary" />
-                      <p className="font-medium">Conversation Summary</p>
+                      <p className="font-medium">Session Context Used</p>
+                    </div>
+                    <JsonBlock value={selectedReplay.input_session_context || ''} />
+                  </div>
+
+                  <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
+                    <div className="mb-2 flex items-center gap-2">
+                      <FileText className="h-4 w-4 text-primary" />
+                      <p className="font-medium">Longer Profile Memory Used</p>
+                    </div>
+                    <JsonBlock value={selectedReplay.input_long_context || ''} />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                  <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
+                    <div className="mb-2 flex items-center gap-2">
+                      <FileText className="h-4 w-4 text-primary" />
+                      <p className="font-medium">Session Context Saved After The Turn</p>
                     </div>
                     <JsonBlock value={selectedReplay.session_context || ''} />
                   </div>
@@ -258,7 +276,7 @@ export default function ReplayPage() {
                   <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
                     <div className="mb-2 flex items-center gap-2">
                       <FileText className="h-4 w-4 text-primary" />
-                      <p className="font-medium">Longer Profile Memory</p>
+                      <p className="font-medium">Longer Profile Memory Saved After The Turn</p>
                     </div>
                     <JsonBlock value={selectedReplay.long_context || ''} />
                   </div>

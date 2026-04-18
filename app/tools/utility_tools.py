@@ -49,7 +49,7 @@ def get_utility_tool_specs() -> list[ToolSpec]:
                     },
                     "next_long_context": {
                         "anyOf": [{"type": "string"}, {"type": "null"}],
-                        "description": "Optional full replacement long context for the student. Return null when the existing long context should remain unchanged.",
+                        "description": "Full replacement long context for the student. Do not return null when this turn revealed useful durable facts like the student's name, goals, preferences, constraints, or background; return null only when the existing long context should remain unchanged.",
                     },
                 },
                 "required": ["message", "next_session_context"],

@@ -5,9 +5,11 @@ All routes prefixed with /api/v1 (set in main.py).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
@@ -40,12 +42,15 @@ from app.schemas.models import (
 )
 from app.tools.graph_tools import get_driver as get_graph_driver
 from app.utils.ids import generate_session_id, generate_student_id
+from app.utils.progress import normalize_progress_entry
 from app.utils.runtime_utils import infer_method
 
 log = logging.getLogger("pathfinder.api")
 
 router = APIRouter()
 _TOKEN_CHUNK_SIZE = 120
+_DEPENDENCY_STATUS_TTL_SECONDS = 15.0
+_dependency_status_cache: dict[str, Any] = {"timestamp": 0.0, "payload": None}
 
 def _student_info(student: dict[str, Any]) -> StudentInfo:
     """Normalize a raw student record into the API response shape."""
@@ -102,8 +107,18 @@ def _normalize_reasoning(reasoning: str) -> str:
     return str(reasoning or "medium").strip().lower() or "medium"
 
 
-async def _get_dependency_status() -> dict[str, str]:
+async def _get_dependency_status(*, force_refresh: bool = False) -> dict[str, str]:
     """Check live dependency health for the current turn."""
+    cached_payload = _dependency_status_cache.get("payload")
+    cached_at = float(_dependency_status_cache.get("timestamp", 0.0) or 0.0)
+    cache_age = time.monotonic() - cached_at
+    if (
+        not force_refresh
+        and isinstance(cached_payload, dict)
+        and cache_age < _DEPENDENCY_STATUS_TTL_SECONDS
+    ):
+        return dict(cached_payload)
+
     neo4j_status = "unknown"
     llm_status = "unknown"
     embeddings_status = "unknown"
@@ -148,12 +163,15 @@ async def _get_dependency_status() -> dict[str, str]:
         ]
     ) else "fallback_only"
 
-    return {
+    payload = {
         "neo4j": neo4j_status,
         "llm": llm_status,
         "embeddings": embeddings_status,
         "web_search": web_search_status,
     }
+    _dependency_status_cache["timestamp"] = time.monotonic()
+    _dependency_status_cache["payload"] = dict(payload)
+    return payload
 
 
 # ── Chat (SSE Streaming) ────────────────────────────────────────
@@ -173,18 +191,19 @@ async def chat(
     if not session_id:
         session_id = generate_session_id()
     files = list(files) if isinstance(files, list) else []
+    graph_db = await _graph_db()
 
     # Parse replace filenames (comma-separated list of filenames to replace)
     replace_set = {name.strip() for name in replace_filenames.split(",") if name.strip()}
 
     # Delete existing documents that are being replaced
     for fname in replace_set:
-        existing = await (await _graph_db()).find_document_by_filename(
+        existing = await graph_db.find_document_by_filename(
             student_id=resolved_student_id,
             filename=fname,
         )
         if existing and existing.get("id"):
-            await (await _graph_db()).delete_document_cascade(document_id=existing["id"])
+            await graph_db.delete_document_cascade(document_id=existing["id"])
             log.info("Chat: replaced existing document before re-upload: %s", fname)
 
     # Read uploaded files
@@ -210,6 +229,7 @@ async def chat(
                 "student_id": resolved_student_id,
                 "topic_guard_enabled": _topic_guard_enabled,
                 "reasoning": turn_reasoning,
+                "step_progress": [],
             }
             config = {
                 "configurable": {"thread_id": f"{resolved_student_id}:{session_id}"},
@@ -228,8 +248,9 @@ async def chat(
                     # Emit new progress messages
                     progress = state_update.get("step_progress", [])
                     if len(progress) > last_progress_count:
-                        for msg in progress[last_progress_count:]:
-                            yield f"event: progress\ndata: {json.dumps({'node': node_name, 'message': msg})}\n\n"
+                        for entry in progress[last_progress_count:]:
+                            payload = normalize_progress_entry(entry, fallback_stage="Working")
+                            yield f"event: progress\ndata: {json.dumps(payload)}\n\n"
                         last_progress_count = len(progress)
 
             # Emit final answer
@@ -268,7 +289,7 @@ async def chat(
                     student_id=resolved_student_id,
                     session_id=session_id,
                 )
-                saved_artifact = save_replay_artifact(artifact)
+                saved_artifact = await asyncio.to_thread(save_replay_artifact, artifact)
                 done_payload["replay_id"] = saved_artifact.get("id", "")
             except Exception as exc:
                 log.warning("Failed to persist replay artifact for session %s: %s", session_id, exc)
@@ -327,15 +348,16 @@ async def upload_document(
     """Upload a document for the student graph."""
     resolved_student_id = await _resolve_student_id(student_id)
     upload = await _read_upload_file(file)
+    graph_db = await _graph_db()
 
     # If replacing, delete the existing document first
     if replace.lower() == "true":
-        existing = await (await _graph_db()).find_document_by_filename(
+        existing = await graph_db.find_document_by_filename(
             student_id=resolved_student_id,
             filename=upload["filename"],
         )
         if existing and existing.get("id"):
-            await (await _graph_db()).delete_document_cascade(document_id=existing["id"])
+            await graph_db.delete_document_cascade(document_id=existing["id"])
             log.info("Replaced existing document: %s", upload["filename"])
 
     # Process through the registered document ingestion pipeline
@@ -488,7 +510,7 @@ async def update_settings(update: SettingsUpdate):
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
     """Check system health for all registered dependencies."""
-    statuses = await _get_dependency_status()
+    statuses = await _get_dependency_status(force_refresh=True)
     services = {name: str(status) for name, status in statuses.items()}
     healthy_statuses = {"connected", "configured", "fallback_only"}
     overall = "ok" if all(status in healthy_statuses for status in services.values()) else "degraded"

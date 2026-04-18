@@ -7,6 +7,7 @@ import logging
 from app.adapters.neo4j.graphDB import GraphDB
 from app.core.state import PathfinderState
 from app.tools.graph_tools import get_driver as get_graph_driver
+from app.utils.progress import add_progress
 
 log = logging.getLogger("pathfinder.agents.context_persister")
 
@@ -33,13 +34,13 @@ async def context_persister(state: PathfinderState) -> PathfinderState:
                 updates={"long_context_summary": long_context_text},
             )
             updated_state["long_context"] = long_context_text
-            step_progress.append("Updated long context")
         except Exception as exc:
             log.warning("Failed to persist long context for student=%s: %s", state.get("student_id", ""), exc)
-            step_progress.append("Kept existing long context after persistence failure")
-    else:
-        step_progress.append("Kept existing long context")
 
-    step_progress.append("Stored session context")
+    add_progress(
+        step_progress,
+        stage="Saving helpful context",
+        message="Keeping useful details ready for future questions.",
+    )
     updated_state["step_progress"] = step_progress
     return updated_state

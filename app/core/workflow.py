@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from typing import Any
 
 from langgraph.graph import END, StateGraph
 
@@ -16,6 +18,10 @@ from app.core.checkpointer import get_checkpointer
 from app.core.state import PathfinderState
 
 log = logging.getLogger("pathfinder.workflow")
+
+_compiled_workflow: Any | None = None
+_compiled_workflow_checkpointer_id: int | None = None
+_compiled_workflow_lock = asyncio.Lock()
 
 
 def build_workflow() -> StateGraph:
@@ -51,8 +57,26 @@ def build_workflow() -> StateGraph:
 
 async def get_compiled_workflow():
     """Build and compile the workflow with the SQLite checkpointer."""
-    workflow = build_workflow()
     checkpointer = await get_checkpointer()
-    compiled = workflow.compile(checkpointer=checkpointer)
-    log.info("Pathfinder workflow compiled with SqliteSaver checkpointer")
-    return compiled
+    checkpointer_id = id(checkpointer)
+
+    global _compiled_workflow, _compiled_workflow_checkpointer_id
+    if (
+        _compiled_workflow is not None
+        and _compiled_workflow_checkpointer_id == checkpointer_id
+    ):
+        return _compiled_workflow
+
+    async with _compiled_workflow_lock:
+        checkpointer = await get_checkpointer()
+        checkpointer_id = id(checkpointer)
+        if (
+            _compiled_workflow is None
+            or _compiled_workflow_checkpointer_id != checkpointer_id
+        ):
+            workflow = build_workflow()
+            _compiled_workflow = workflow.compile(checkpointer=checkpointer)
+            _compiled_workflow_checkpointer_id = checkpointer_id
+            log.info("Pathfinder workflow compiled with SqliteSaver checkpointer")
+
+    return _compiled_workflow

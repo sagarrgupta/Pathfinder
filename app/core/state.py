@@ -38,6 +38,8 @@ class PathfinderState(TypedDict, total=False):
     stop_reason: str                          # Why a turn stopped early or partially
 
     # ── Data gathered by nodes ──────────────────────────────────
+    input_session_context: str                # Session context that was passed into this turn
+    input_long_context: str                   # Long context that was passed into this turn
     session_context: str                      # Stored session-scoped summary carried across turns
     long_context: str                         # Stored student-scoped summary carried across turns
     student_schema: dict[str, Any]            # Canonical bounded student graph schema manifest

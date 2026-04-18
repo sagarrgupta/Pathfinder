@@ -9,6 +9,7 @@ import logging
 import re
 
 from app.core.state import PathfinderState
+from app.utils.progress import add_progress
 
 log = logging.getLogger("pathfinder.agents.input_guard")
 
@@ -33,7 +34,11 @@ async def input_guard(state: PathfinderState) -> PathfinderState:
     input_guard_enabled = bool(state.get("topic_guard_enabled", True))
 
     step_progress = list(state.get("step_progress", []))
-    step_progress.append("Validating your input...")
+    add_progress(
+        step_progress,
+        stage="Checking your question",
+        message="Making sure everything looks good before I begin.",
+    )
 
     # 1. Empty query check
     if not query:
@@ -68,7 +73,6 @@ async def input_guard(state: PathfinderState) -> PathfinderState:
                     "step_progress": step_progress,
                 }
 
-    step_progress.append("Input validated ✓")
     log.info("Input guard passed for query: %s", query[:60])
     return {
         **state,

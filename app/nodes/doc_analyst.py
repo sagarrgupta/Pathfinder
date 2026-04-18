@@ -17,6 +17,7 @@ from app.core.state import PathfinderState
 from app.utils.document_ingest import ingest_document
 from app.tools.graph_tools import get_driver as get_graph_driver
 from app.utils.ids import generate_chunk_id, generate_document_id
+from app.utils.progress import add_progress
 
 log = logging.getLogger("pathfinder.nodes.doc_analyst")
 
@@ -43,8 +44,13 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
     processing_issues = list(state.get("processing_issues", []))
 
     if not files:
-        step_progress.append("No files to process")
         return {**state, "step_progress": step_progress}
+
+    add_progress(
+        step_progress,
+        stage="Reading your uploaded files",
+        message="Extracting details from the files you shared.",
+    )
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=settings.CHUNK_SIZE,
@@ -65,21 +71,22 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         filename = file_info.get("filename", "document.pdf")
         content = file_info.get("content", b"")
 
-        step_progress.append(f"Processing {filename}...")
         doc_id = generate_document_id()
 
         file_type = get_file_type(filename)
         if file_type not in {"pdf", "image", "docx"}:
-            step_progress.append(f"Unsupported file type for {filename}, skipping")
             continue
 
         try:
             if file_type == "image":
-                step_progress.append("Analyzing image with vision model...")
+                add_progress(
+                    step_progress,
+                    stage="Reading your uploaded files",
+                    message="Analyzing an uploaded image for text and details.",
+                )
             pages = await extract_document_text(file_type, content, filename)
         except Exception as exc:
             log.warning("Document extraction failed for %s: %s", filename, exc)
-            step_progress.append(f"Could not fully extract text from {filename}; skipping this file")
             processing_issues.append(
                 {
                     "type": ProcessingIssueType.EXTRACTION_FAILED.value,
@@ -94,7 +101,6 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
 
         full_text = "\n\n".join(page["text"] for page in pages if page["text"])
         if not full_text.strip():
-            step_progress.append(f"Could not extract text from {filename}")
             processing_issues.append(
                 {
                     "type": ProcessingIssueType.EXTRACTION_EMPTY.value,
@@ -123,11 +129,12 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
         )
 
         text_chunks = text_splitter.split_text(full_text)
+        page_for_chunk = _build_page_locator(full_text, pages)
         chunk_specs = [
             {
                 "text": text,
                 "chunk_index": index,
-                "page_number": _page_for_chunk(text, pages),
+                "page_number": page_for_chunk(text),
             }
             for index, text in enumerate(text_chunks)
             if text.strip()
@@ -164,11 +171,9 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                 stored = int(stored_result.get("stored_chunks", 0) or 0)
                 total_chunks += stored
                 document_result["chunks_stored"] = stored
-                step_progress.append(f"Stored {stored} text chunks from {filename}")
             except EmbeddingServiceError as exc:
                 log.warning("Chunk embedding/storage failed for %s: %s", filename, exc)
                 prompt_chunks = []
-                step_progress.append(f"Stored document metadata for {filename}, but chunk retrieval failed")
                 processing_issues.append(
                     {
                         "type": ProcessingIssueType.EMBEDDING_FAILED.value,
@@ -179,7 +184,6 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                     }
                 )
 
-        step_progress.append(f"Extracting structured knowledge from {filename}...")
         try:
             applied = await ingest_document(
                 student_id=student_id,
@@ -200,15 +204,8 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
             document_result["ingestion_result"] = ingestion_result
             graph_updates = dict(ingestion_result.get("graph_updates") or {})
             counts = dict(graph_updates.get("counts") or {})
-            step_progress.append(
-                f"Applied ingestion agent for {filename}: "
-                f"{len(list(graph_updates.get('sections_touched', []) or []))} sections, "
-                f"{int(counts.get('entities_written', 0) or 0)} nodes, "
-                f"{int(counts.get('relationships_written', 0) or 0)} relationships"
-            )
         except Exception as exc:
             log.warning("Structured ingestion failed for %s: %s", filename, exc)
-            step_progress.append(f"Structured ingestion partially failed for {filename}")
             processing_issues.append(
                 {
                     "type": ProcessingIssueType.INGESTION_FAILED.value,
@@ -221,8 +218,10 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
 
         documents.append(document_result)
 
-    step_progress.append(
-        f"Document processing complete: {total_chunks} chunks across {len(documents)} document(s)"
+    add_progress(
+        step_progress,
+        stage="Working on your answer",
+        message="Using the extracted details to improve the response.",
     )
     log.info("Doc analyst: %d chunks across %d documents", total_chunks, len(documents))
 
@@ -237,9 +236,39 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
     }
 
 
-def _page_for_chunk(chunk_text: str, pages: list[dict]) -> int | None:
-    """Find which page a chunk came from (best effort)."""
+def _build_page_locator(full_text: str, pages: list[dict[str, Any]]):
+    """Return an order-aware chunk-to-page locator for one extracted document."""
+    page_ranges: list[tuple[int, int, int | None]] = []
+    cursor = 0
+    separator_len = len("\n\n")
     for page in pages:
-        if chunk_text[:50] in str(page.get("text", "") or ""):
-            return page.get("page")
-    return None
+        text = str(page.get("text", "") or "")
+        start = cursor
+        end = start + len(text)
+        page_ranges.append((start, end, page.get("page")))
+        cursor = end + separator_len
+
+    search_start = 0
+    current_page_index = 0
+
+    def locate(chunk_text: str) -> int | None:
+        nonlocal search_start, current_page_index
+        snippet = str(chunk_text or "").strip()[:80].strip()
+        if not snippet or not page_ranges:
+            return None
+
+        position = full_text.find(snippet, search_start)
+        if position == -1 and search_start > 0:
+            position = full_text.find(snippet)
+        if position == -1:
+            return None
+
+        search_start = max(search_start, position + len(snippet))
+        while (
+            current_page_index < len(page_ranges) - 1
+            and position > page_ranges[current_page_index][1]
+        ):
+            current_page_index += 1
+        return page_ranges[current_page_index][2]
+
+    return locate

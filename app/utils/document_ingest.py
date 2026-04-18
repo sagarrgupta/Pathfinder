@@ -26,6 +26,9 @@ _DOCUMENT_LIMIT = 24000
 _CHUNK_PROMPT_LIMIT = 24000
 _INGESTION_TOOL_LIMIT = 30
 _INGESTION_ROUNDS = 100
+_INGESTION_TOOL_SPECS: tuple[ToolSpec, ...] | None = None
+_INGESTION_TOOL_SCHEMAS: tuple[dict[str, Any], ...] | None = None
+_INGESTION_TOOL_BY_NAME: dict[str, ToolSpec] | None = None
 
 # Tools that the ingestion agent should NOT see —
 # web search, conversation utilities, cleanup, index creation, respond,
@@ -53,28 +56,40 @@ _INGESTION_EXCLUDED_TOOLS: set[str] = {
 
 def _get_ingestion_tool_specs() -> list[ToolSpec]:
     """Return only the tools relevant for document ingestion."""
-    return [
-        spec
-        for spec in (
-            *get_graph_tool_specs(),
-            *get_vector_tool_specs(),
+    global _INGESTION_TOOL_SPECS, _INGESTION_TOOL_BY_NAME
+    if _INGESTION_TOOL_SPECS is None:
+        specs = tuple(
+            spec
+            for spec in (
+                *get_graph_tool_specs(),
+                *get_vector_tool_specs(),
+            )
+            if spec.name not in _INGESTION_EXCLUDED_TOOLS
         )
-        if spec.name not in _INGESTION_EXCLUDED_TOOLS
-    ]
+        _INGESTION_TOOL_SPECS = specs
+        _INGESTION_TOOL_BY_NAME = {spec.name: spec for spec in specs}
+    return list(_INGESTION_TOOL_SPECS)
 
 
 def _get_ingestion_tool_schemas() -> list[dict[str, Any]]:
     """Return OpenAI-compatible schemas for the ingestion tool subset."""
-    return [spec.as_openai_schema() for spec in _get_ingestion_tool_specs()]
+    global _INGESTION_TOOL_SCHEMAS
+    if _INGESTION_TOOL_SCHEMAS is None:
+        _INGESTION_TOOL_SCHEMAS = tuple(
+            spec.as_openai_schema() for spec in _get_ingestion_tool_specs()
+        )
+    return list(_INGESTION_TOOL_SCHEMAS)
 
 
 async def _ingestion_execute_tool(
     name: str, arguments: dict[str, Any], context: ToolContext
 ) -> dict[str, Any]:
     """Execute one tool from the ingestion subset."""
-    for spec in _get_ingestion_tool_specs():
-        if spec.name == name:
-            return await spec.handler(arguments, context)
+    if _INGESTION_TOOL_BY_NAME is None:
+        _get_ingestion_tool_specs()
+    spec = (_INGESTION_TOOL_BY_NAME or {}).get(name)
+    if spec is not None:
+        return await spec.handler(arguments, context)
     return {"error": f"unknown tool: {name}"}
 
 

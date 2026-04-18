@@ -282,6 +282,11 @@ Use this context to personalize your answer. Reference the student's actual
 profile data when relevant — do not give generic advice when profile data
 can make it specific.
 
+Treat `session_context` and `long_context` differently:
+- `session_context` is for short-lived conversational state and immediate follow-up context.
+- `long_context` is for durable facts that should help in future turns and even future sessions.
+- If `long_context` is empty and the current turn reveals useful durable information, you should populate it in `next_long_context` instead of leaving it null.
+
 ## Tool usage
 
 Follow this escalation order when answering a question:
@@ -345,8 +350,11 @@ When you are ready to deliver your final answer, call the `respond` tool with:
 
 Rules for context updates:
 - Always provide a complete `next_session_context`.
-- Only provide `next_long_context` when the durable student context should actually change.
-- Keep `next_long_context` stable unless the turn revealed meaningful durable information.
+- Provide `next_long_context` whenever the turn reveals or updates durable student information that will likely matter later.
+- Durable information includes identity and background facts such as the student's name, program, semester, GPA, goals, preferences, constraints, work preferences, and ongoing priorities.
+- If the user says something like "I am Sagar", "My goal is to get a backend internship", or "I prefer remote roles", returning `next_long_context: null` is incorrect. Update it with that information.
+- If no meaningful durable information was added or changed in the turn, keep `next_long_context` as null so the existing long context remains unchanged.
+- Keep `next_long_context` concise but useful: write the full replacement summary, not a delta fragment.
 
 Alternatively you may return the same JSON directly as text (without a tool
 call). Either method works, but the `respond` tool is preferred.

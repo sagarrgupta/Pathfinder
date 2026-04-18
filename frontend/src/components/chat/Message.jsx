@@ -7,17 +7,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const STEP_LABELS = {
-  input_guard: 'Input Guard',
-  orchestrator: 'Routing',
-  specialist_runner: 'Specialist',
-  response_validator: 'Validation',
-  responder: 'Response',
-  doc_analyst: 'Documents',
-};
-
 function formatStep(step) {
-  const label = STEP_LABELS[step.node] || step.node;
+  const label = step.stage || 'Working';
   return { label, message: step.message || '' };
 }
 
@@ -57,7 +48,7 @@ function DiagnosticSection({ title, children }) {
   );
 }
 
-export default function Message({ message, isLast, isStreaming }) {
+function Message({ message, isLast, isStreaming }) {
   const [showCitations, setShowCitations] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
   const [showSystemContext, setShowSystemContext] = useState(false);
@@ -463,3 +454,5 @@ export default function Message({ message, isLast, isStreaming }) {
     </div>
   );
 }
+
+export default React.memo(Message);

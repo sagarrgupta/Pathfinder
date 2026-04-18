@@ -5,6 +5,7 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage
 
 from app.core.state import PathfinderState
+from app.utils.progress import add_progress
 
 
 async def responder(state: PathfinderState) -> PathfinderState:
@@ -27,7 +28,11 @@ async def responder(state: PathfinderState) -> PathfinderState:
     if not final_answer:
         final_answer = "I could not generate a response."
 
-    step_progress.append("Response ready!")
+    add_progress(
+        step_progress,
+        stage="Answer ready",
+        message="Sharing the final response now.",
+    )
     return {
         **state,
         "final_answer": final_answer,

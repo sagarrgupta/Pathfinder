@@ -21,6 +21,7 @@ function withStudentId(path, studentId) {
  */
 export function chatSSE({ query, sessionId, studentId, files = [], replaceFilenames = [], reasoning = 'medium' }, callbacks) {
   const controller = new AbortController();
+  let sawTerminalEvent = false;
 
   const processSSEBuffer = (chunk, { flush = false } = {}) => {
     const delimiter = '\n';
@@ -41,8 +42,13 @@ export function chatSSE({ query, sessionId, studentId, files = [], replaceFilena
           const data = JSON.parse(line.slice(6));
           if (eventType === 'progress') callbacks.onProgress?.(data);
           else if (eventType === 'token') callbacks.onToken?.(data);
-          else if (eventType === 'done') callbacks.onDone?.(data);
-          else if (eventType === 'error') callbacks.onError?.(data.error);
+          else if (eventType === 'done') {
+            sawTerminalEvent = true;
+            callbacks.onDone?.(data);
+          } else if (eventType === 'error') {
+            sawTerminalEvent = true;
+            callbacks.onError?.(data.error);
+          }
         } catch {
           // skip malformed JSON
         }
@@ -84,6 +90,12 @@ export function chatSSE({ query, sessionId, studentId, files = [], replaceFilena
       const { done, value } = await reader.read();
       if (done) {
         buffer = processSSEBuffer(buffer, { flush: true });
+        // Some environments can close the stream after the final tokens even if
+        // the explicit terminal event is lost. Treat end-of-stream as completion
+        // so the UI does not remain stuck in the streaming state.
+        if (!sawTerminalEvent) {
+          callbacks.onDone?.({});
+        }
         break;
       }
 
