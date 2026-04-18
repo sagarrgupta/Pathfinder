@@ -1,9 +1,4 @@
-"""DuckDuckGo search adapter (free, no API key needed).
-
-Uses the `ddgs` package (formerly `duckduckgo-search`).
-The sync DDGS client is wrapped with asyncio.to_thread so it
-doesn't block the event loop.
-"""
+"""DuckDuckGo search adapter (free, no API key needed)."""
 
 from __future__ import annotations
 
@@ -38,7 +33,7 @@ def _sync_search(query: str, max_results: int) -> list[dict[str, Any]]:
 
 
 async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
-    """Search using DuckDuckGo (last resort, always available)."""
+    """Search using DuckDuckGo"""
     query = normalize_query(query)
     max_results = clamp_max_results(max_results)
     if not query:

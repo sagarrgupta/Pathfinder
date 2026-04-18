@@ -14,9 +14,7 @@ from langchain_core.messages import HumanMessage
 
 from app.adapters.llm.lmstudio import get_text_llm
 from app.adapters.neo4j.graphDB import GraphDB
-from app.core.memory import build_session_summary
 from app.core.state import PathfinderState
-from app.services.long_context import get_profile_student
 from app.tools.graph_tools import get_driver as get_graph_driver
 from app.utils.json_extract import parse_json_object
 
@@ -56,12 +54,14 @@ _LIGHT_CONVERSATION_RE = re.compile(
 )
 
 
-def _build_context_hint(profile: dict[str, Any], files: list[Any]) -> str:
+def _build_context_hint(profile: dict[str, Any]) -> str:
     """Build a one-line context hint from the profile and request."""
     parts: list[str] = []
-    if files:
-        parts.append(f"User attached {len(files)} file(s)")
-    root = get_profile_student(profile)
+    root = profile.get("student")
+    if not isinstance(root, dict):
+        root = profile.get("root_properties")
+    if not isinstance(root, dict):
+        root = {}
     if root:
         fields = [f"{k}={v}" for k, v in list(root.items())[:4] if v]
         if fields:
@@ -70,7 +70,7 @@ def _build_context_hint(profile: dict[str, Any], files: list[Any]) -> str:
 
 
 async def _llm_route(query: str, context_hint: str) -> dict[str, float] | None:
-    """Ask the LLM to score specialist relevance. Returns None on failure."""
+    """Ask the LLM to score specialist relevance. Returns general on failure."""
     specialists_block = "\n".join(
         f"- {name}: {desc}" for name, desc in _SPECIALIST_DESCRIPTIONS.items()
     )
@@ -96,21 +96,8 @@ async def _llm_route(query: str, context_hint: str) -> dict[str, float] | None:
             return scores
     except Exception as exc:
         log.warning("LLM routing failed (%s), falling back to heuristic", exc)
-    return None
+    return {"academic": 0.0, "career": 0.0, "general": 5.0}
 
-
-def _heuristic_route(query: str, files: list[Any]) -> dict[str, float]:
-    """Fast keyword-free heuristic as fallback when LLM routing is unavailable."""
-    scores: dict[str, float] = {"academic": 0.0, "career": 0.0, "general": 0.0}
-    if files:
-        scores["general"] += 4.0
-    lowered = query.lower()
-    if "http://" in lowered or "https://" in lowered:
-        scores["academic"] += 1.0
-        scores["career"] += 1.0
-    if _is_light_conversation(query):
-        scores["general"] += 5.0
-    return scores
 
 def _is_light_conversation(query: str) -> bool:
     return bool(_LIGHT_CONVERSATION_RE.match(str(query or "").strip()))
@@ -119,25 +106,14 @@ def _is_light_conversation(query: str) -> bool:
 async def orchestrator(state: PathfinderState) -> PathfinderState:
     """Score the request against the 3 specialist prompt families using the LLM."""
     query = str(state.get("query", "") or "")
-    files = list(state.get("files", []))
-    request_plan = state.get("request_plan", {}) if isinstance(state.get("request_plan", {}), dict) else {}
     student_id = str(state.get("student_id", "") or "")
 
-    profile = await GraphDB(await get_graph_driver()).get_full_student(student_id=student_id)
-    session_summary = build_session_summary(profile, list(state.get("messages", [])), query)
-    context_hint = _build_context_hint(profile, files)
+    student = await GraphDB(await get_graph_driver()).get_student(student_id=student_id) or {}
+    profile = {"student": student}
+    context_hint = _build_context_hint(profile)
 
     routing_scores = await _llm_route(query, context_hint)
     routing_method = "llm"
-
-    if routing_scores is None:
-        routing_scores = _heuristic_route(query, files)
-        routing_method = "heuristic"
-
-    if files:
-        routing_scores["general"] = routing_scores.get("general", 0.0) + 4.0
-    if request_plan.get("workflow_hint") == "student_state_update":
-        routing_scores["general"] = routing_scores.get("general", 0.0) + 2.0
 
     selected_specialist = max(
         routing_scores.items(),
@@ -167,8 +143,5 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
         "selected_specialist": selected_specialist,
         "routing_scores": routing_scores,
         "routing_reason": routing_reason,
-        "profile_data": profile,
-        "session_summary": session_summary,
-        "next_node": "specialist_runner",
         "step_progress": step_progress,
     }

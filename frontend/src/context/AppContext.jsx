@@ -15,6 +15,13 @@ function generateRuntimeStudentId() {
   return `student_${Math.random().toString(16).slice(2, 14)}`;
 }
 
+function generateSessionId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `session_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  }
+  return `session_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
 function getOrCreateRuntimeStudentId() {
   try {
     const saved = localStorage.getItem(RUNTIME_STUDENT_KEY);
@@ -135,12 +142,20 @@ function appReducer(state, action) {
 
     case 'REMOVE_SESSION': {
       const sid = action.payload;
+      const remainingSessions = state.sessions.filter((s) => s.session_id !== sid);
+      const preferredReplacement =
+        remainingSessions.find((s) => s.student_id === state.activeStudentId) ||
+        remainingSessions[0] ||
+        null;
       const { [sid]: _, ...rest } = state.messagesBySession;
       return {
         ...state,
-        sessions: state.sessions.filter((s) => s.session_id !== sid),
+        sessions: remainingSessions,
         messagesBySession: rest,
-        activeSessionId: state.activeSessionId === sid ? null : state.activeSessionId,
+        activeSessionId:
+          state.activeSessionId === sid
+            ? (preferredReplacement?.session_id || null)
+            : state.activeSessionId,
       };
     }
 
@@ -306,22 +321,35 @@ export function AppProvider({ children }) {
   // ── Fetch student whenever the active student changes ──
   useEffect(() => {
     if (!state.activeStudentId) return;
+    let cancelled = false;
     (async () => {
       try {
         dispatch({ type: 'SET_STUDENT_LOADING', payload: true });
         const data = await getStudent(state.activeStudentId);
-        dispatch({ type: 'SET_STUDENT', payload: data });
+        if (!cancelled) {
+          dispatch({ type: 'SET_STUDENT', payload: data });
+        }
       } catch {
-        dispatch({ type: 'SET_STUDENT_LOADING', payload: false });
+        if (!cancelled) {
+          dispatch({ type: 'SET_STUDENT_LOADING', payload: false });
+        }
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [state.activeStudentId]);
 
   const refreshStudent = useCallback(async (studentId) => {
     dispatch({ type: 'SET_STUDENT_LOADING', payload: true });
-    const data = await getStudent(studentId);
-    dispatch({ type: 'SET_STUDENT', payload: data });
-    return data;
+    try {
+      const data = await getStudent(studentId);
+      dispatch({ type: 'SET_STUDENT', payload: data });
+      return data;
+    } catch (error) {
+      dispatch({ type: 'SET_STUDENT_LOADING', payload: false });
+      throw error;
+    }
   }, []);
 
   const refreshStudents = useCallback(async () => {
@@ -344,7 +372,7 @@ export function AppProvider({ children }) {
   }, [refreshStudents]);
 
   const createSession = useCallback(() => {
-    const sessionId = `session_${Date.now().toString(36)}`;
+    const sessionId = generateSessionId();
     dispatch({
       type: 'ADD_SESSION',
       payload: {

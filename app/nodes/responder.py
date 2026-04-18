@@ -8,7 +8,7 @@ from app.core.state import PathfinderState
 
 
 async def responder(state: PathfinderState) -> PathfinderState:
-    """Render the final answer with minimal changes."""
+    """Render the final answer"""
     step_progress = list(state.get("step_progress", []))
 
     prior_messages = list(state.get("messages", []) or [])
@@ -22,7 +22,8 @@ async def responder(state: PathfinderState) -> PathfinderState:
             "step_progress": step_progress,
         }
 
-    final_answer = str(state.get("final_answer", "") or state.get("draft_answer", "") or "").strip()
+    specialist_output = state.get("specialist_output", {}) if isinstance(state.get("specialist_output", {}), dict) else {}
+    final_answer = str(state.get("final_answer", "") or specialist_output.get("message", "") or "").strip()
     if not final_answer:
         final_answer = "I could not generate a response."
 

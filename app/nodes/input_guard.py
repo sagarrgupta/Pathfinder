@@ -29,7 +29,7 @@ MAX_QUERY_LENGTH = 4000
 
 async def input_guard(state: PathfinderState) -> PathfinderState:
     """Validate the user input and update state accordingly."""
-    query = state.get("query", "").strip()
+    query = str(state.get("query", "") or "").strip()
     input_guard_enabled = bool(state.get("topic_guard_enabled", True))
 
     step_progress = list(state.get("step_progress", []))

@@ -51,7 +51,7 @@ function entityName(item) {
 }
 
 export default function ProfilePage() {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, refreshStudent } = useApp();
   const toast = useToast();
   const [isUploading, setIsUploading] = useState(false);
   const [processingStep, setProcessingStep] = useState('');
@@ -60,18 +60,27 @@ export default function ProfilePage() {
   const fileInputRef = useRef(null);
   const student = state.student;
 
-  useEffect(() => { void loadStudent(); }, [state.activeStudentId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const loadStudent = async () => {
+  useEffect(() => {
+    if (!state.activeStudentId) return;
+    let cancelled = false;
     dispatch({ type: 'SET_STUDENT_LOADING', payload: true });
-    try {
-      const data = await getStudent(state.activeStudentId);
-      dispatch({ type: 'SET_STUDENT', payload: data });
-    } catch (err) {
-      console.error('Failed to load student:', err);
-      dispatch({ type: 'SET_STUDENT_LOADING', payload: false });
-    }
-  };
+    (async () => {
+      try {
+        const data = await getStudent(state.activeStudentId);
+        if (!cancelled) {
+          dispatch({ type: 'SET_STUDENT', payload: data });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Failed to load student:', err);
+          dispatch({ type: 'SET_STUDENT_LOADING', payload: false });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [dispatch, state.activeStudentId]);
 
   const performUpload = async (file, replace = false) => {
     setIsUploading(true);
@@ -83,7 +92,7 @@ export default function ProfilePage() {
           ? `Replaced ${file.name}: ${result.entities_extracted} entities extracted`
           : `Uploaded ${file.name}: ${result.entities_extracted} entities extracted`
       );
-      await loadStudent();
+      await refreshStudent(state.activeStudentId);
     } catch (err) {
       toast.error(`Upload failed: ${err.message}`);
     } finally {
@@ -113,14 +122,13 @@ export default function ProfilePage() {
     try {
       await updateStudent(field, value, state.activeStudentId);
       toast.success(`Updated ${fmtLabel(field)}`);
-      await loadStudent();
+      await refreshStudent(state.activeStudentId);
     } catch (err) {
       toast.error(`Update failed: ${err.message}`);
     }
   };
 
   const isProcessing = isUploading;
-  const completeness = Math.round((student?.completeness || 0) * 100);
   const sectionItems = student?.section_items || {};
   const sections = Array.isArray(student?.sections) ? student.sections : [];
   const totalEntities = Object.values(sectionItems).reduce(
@@ -133,7 +141,7 @@ export default function ProfilePage() {
   const studentName = student?.root_properties?.name || '';
 
   return (
-    <div className="flex-1 overflow-y-auto scrollbar-fade">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-fade">
       <ReplaceDialog
         open={replaceDialog.open}
         filename={replaceDialog.file?.name || ''}
@@ -144,42 +152,59 @@ export default function ProfilePage() {
         onConfirm={() => replaceDialog.file && void performUpload(replaceDialog.file, true)}
       />
 
-      <div className="max-w-3xl mx-auto px-6 py-8 animate-fade-in">
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 ring-1 ring-primary/10 flex items-center justify-center">
-              <GraduationCap className="h-6 w-6 text-primary" />
+      <div className="mx-auto max-w-5xl px-6 py-8 animate-fade-in">
+        <div className="hero-panel mb-8 overflow-hidden px-6 py-7 sm:px-8">
+          <div className="mb-3 eyebrow">Student profile</div>
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+            <div className="flex items-center gap-4">
+              <div className="flex h-14 w-14 items-center justify-center rounded-[22px] bg-gradient-to-br from-primary/20 via-primary/10 to-warning/15 ring-1 ring-primary/15">
+                <GraduationCap className="h-6 w-6 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+                  {studentName || 'Student'}
+                </h1>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
+                  Review what Pathfinder knows about this student, upload new source documents, and edit the longer profile memory used across future conversations.
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">
-                {studentName || 'Student'}
-              </h1>
-              <div className="flex items-center gap-3 mt-1">
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <div className="h-1.5 w-20 rounded-full bg-muted overflow-hidden">
-                    <div className="h-full bg-primary transition-all" style={{ width: `${completeness}%` }} />
-                  </div>
-                  <span>{completeness}%</span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {sections.length} sections · {totalEntities} entities
-                </span>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="metric-tile min-w-[120px]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Profile Sections</p>
+                <p className="mt-3 text-2xl font-semibold">{sections.length}</p>
+              </div>
+              <div className="metric-tile min-w-[120px]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Saved Items</p>
+                <p className="mt-3 text-2xl font-semibold">{totalEntities}</p>
               </div>
             </div>
           </div>
         </div>
 
         {isProcessing && processingStep && (
-          <div className="mb-6 p-3.5 rounded-xl bg-yellow-50 dark:bg-yellow-950/50 border border-yellow-200 dark:border-yellow-800 flex items-center gap-3">
+          <div className="mb-6 flex items-center gap-3 rounded-2xl border border-yellow-200 bg-yellow-50 p-4 dark:border-yellow-800 dark:bg-yellow-950/50">
             <Loader2 className="h-4 w-4 animate-spin text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
             <p className="text-sm text-yellow-800 dark:text-yellow-200">{processingStep}</p>
           </div>
         )}
 
-        <div className="rounded-xl border bg-card p-4 mb-8">
-          <h3 className="text-sm font-medium flex items-center gap-2 mb-3">
-            <Upload className="h-4 w-4 text-primary" /> Upload Document
-          </h3>
+        <div className="section-card mb-8">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="section-kicker">Add source material</p>
+              <h3 className="mt-1 text-base font-semibold">Upload a transcript, resume, or supporting file</h3>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                Files uploaded here go through the same extraction and graph-ingestion pipeline as chat uploads. They become available to future answers after processing.
+              </p>
+            </div>
+            <div className="info-strip max-w-sm">
+              <Upload className="mt-0.5 h-4 w-4 flex-shrink-0 text-primary" />
+              <p className="text-xs leading-5 text-muted-foreground">
+                Best for durable profile data you want Pathfinder to remember and reuse later.
+              </p>
+            </div>
+          </div>
           <input
             ref={fileInputRef}
             type="file"
@@ -190,10 +215,10 @@ export default function ProfilePage() {
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={isProcessing}
-            className="w-full py-2 border-2 border-dashed rounded-lg text-sm hover:bg-accent hover:border-primary/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+            className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-border/80 py-4 text-sm font-medium transition-all hover:border-primary/20 hover:bg-accent disabled:opacity-50"
           >
             {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            {isUploading ? 'Processing...' : 'Select File'}
+            {isUploading ? 'Processing...' : 'Choose File'}
           </button>
         </div>
 
@@ -204,7 +229,7 @@ export default function ProfilePage() {
         ) : (
           <div className="space-y-4">
             {rootEntries.length > 0 && (
-              <Section title="Student Details" icon={User} count={rootEntries.length} defaultOpen>
+              <Section title="Basic Information" icon={User} count={rootEntries.length} defaultOpen>
                 <div className="divide-y">
                   {rootEntries
                     .sort(([a], [b]) => (a === 'name' ? -1 : b === 'name' ? 1 : a.localeCompare(b)))
@@ -241,10 +266,10 @@ export default function ProfilePage() {
           <div className="mt-10">
             <button
               onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors mx-auto"
+              className="mx-auto flex items-center gap-2 rounded-full border border-border/60 bg-background/70 px-4 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
             >
               <Settings2 className="h-3.5 w-3.5" />
-              Advanced
+              Longer Profile Memory
               <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', showAdvanced && 'rotate-180')} />
             </button>
 
@@ -256,7 +281,7 @@ export default function ProfilePage() {
                     try {
                       await updateStudent('long_context_summary', text, state.activeStudentId);
                       toast.success('Saved');
-                      await loadStudent();
+                      await refreshStudent(state.activeStudentId);
                     } catch (err) {
                       toast.error(`Failed: ${err.message}`);
                     }
@@ -274,9 +299,9 @@ export default function ProfilePage() {
 function Section({ title, description, icon: Icon, count = 0, defaultOpen = false, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="rounded-xl border bg-card overflow-hidden">
-      <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-3 px-4 py-3.5 text-left hover:bg-muted/30 transition-colors">
-        <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+    <div className="overflow-hidden rounded-[24px] border border-border/70 bg-card/80 shadow-sm">
+      <button onClick={() => setOpen(!open)} className="flex w-full items-center gap-3 px-4 py-4 text-left transition-colors hover:bg-muted/25">
+        <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-primary/10">
           <Icon className="h-4 w-4 text-primary" />
         </div>
         <div className="flex-1 min-w-0">
@@ -336,25 +361,29 @@ function EntityRow({ item }) {
   const hasMore = inline.length > 3 || detail.length > 0 || fieldCount > 0 || chunkCount > 0 || documentCount > 0;
 
   return (
-    <div className="group px-4 py-2.5 hover:bg-muted/30 transition-colors">
+    <div className="group border-t border-border/40 px-4 py-3 transition-colors first:border-t-0 hover:bg-muted/30">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <span className="text-sm font-medium truncate">{name}</span>
+          <span className="truncate text-sm font-semibold">{name}</span>
           {item.entity_type && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary flex-shrink-0">
+            <span className="flex-shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-primary">
               {fmtLabel(item.entity_type)}
             </span>
           )}
           {inline.length > 0 && !expanded && (
-            <span className="text-xs text-muted-foreground truncate hidden sm:inline">
-              — {inline.slice(0, 2).map(([k, v]) => `${fmtLabel(k)}: ${String(v)}`).join(' · ')}
-            </span>
+            <div className="hidden min-w-0 flex-wrap gap-1.5 sm:flex">
+              {inline.slice(0, 2).map(([k, v]) => (
+                <span key={k} className="truncate rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                  {fmtLabel(k)}: {String(v)}
+                </span>
+              ))}
+            </div>
           )}
         </div>
         {hasMore && (
           <button
             onClick={() => setExpanded(!expanded)}
-            className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-all"
+            className="rounded-full border border-border/60 p-1.5 text-muted-foreground opacity-0 transition-all hover:bg-accent hover:text-foreground group-hover:opacity-100"
             title={expanded ? 'Collapse' : 'Details'}
           >
             <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', expanded && 'rotate-180')} />
@@ -363,29 +392,29 @@ function EntityRow({ item }) {
       </div>
 
       {expanded && (
-        <div className="mt-2 pl-1 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
+        <div className="mt-3 grid grid-cols-1 gap-2 rounded-2xl border border-border/60 bg-background/70 p-3 text-xs shadow-sm sm:grid-cols-2 sm:gap-x-6">
           {scalarProps.map(([key, value]) => (
-            <div key={key} className={cn(String(value).length > 80 && 'sm:col-span-2')}>
-              <span className="text-muted-foreground">{fmtLabel(key)}: </span>
-              <span className="text-foreground/80">{String(value)}</span>
+            <div key={key} className={cn('space-y-0.5', String(value).length > 80 && 'sm:col-span-2')}>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">{fmtLabel(key)}</p>
+              <p className="leading-5 text-foreground/85">{String(value)}</p>
             </div>
           ))}
           {fieldCount > 0 && (
-            <div>
-              <span className="text-muted-foreground">Fields: </span>
-              <span className="text-foreground/80">{fieldCount}</span>
+            <div className="space-y-0.5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Fields</p>
+              <p className="text-foreground/85">{fieldCount}</p>
             </div>
           )}
           {chunkCount > 0 && (
-            <div>
-              <span className="text-muted-foreground">Chunks: </span>
-              <span className="text-foreground/80">{chunkCount}</span>
+            <div className="space-y-0.5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Chunks</p>
+              <p className="text-foreground/85">{chunkCount}</p>
             </div>
           )}
           {documentCount > 0 && (
-            <div>
-              <span className="text-muted-foreground">Documents: </span>
-              <span className="text-foreground/80">{documentCount}</span>
+            <div className="space-y-0.5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Documents</p>
+              <p className="text-foreground/85">{documentCount}</p>
             </div>
           )}
         </div>
@@ -443,47 +472,86 @@ function EditableField({ label, value, fieldKey, onSave }) {
 }
 
 function AdvancedPanel({ student, onSaveLongContext }) {
-  const [summary, setSummary] = useState(
-    student?.long_context_preview?.summary || student?.root_properties?.long_context_summary || ''
-  );
+  const longContext = student?.long_context || student?.root_properties?.long_context_summary || '';
+  const [summary, setSummary] = useState(longContext);
   const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    setSummary(longContext);
+    setEditing(false);
+  }, [longContext]);
 
   const handleSave = async () => {
     setSaving(true);
     await onSaveLongContext(summary);
     setSaving(false);
+    setEditing(false);
+  };
+
+  const handleCancel = () => {
+    setSummary(longContext);
+    setEditing(false);
   };
 
   return (
-    <>
-      <div className="rounded-xl border bg-card p-4">
-        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Long-Context Summary</h3>
-        <textarea
-          value={summary}
-          onChange={(e) => setSummary(e.target.value)}
-          placeholder={'Student: none\nDetails: none\nSections: none'}
-          className="w-full rounded-lg border bg-background px-3 py-2.5 text-sm resize-none h-32 focus:outline-none focus:ring-2 focus:ring-ring/50 mb-2"
-        />
-        <div className="flex items-center justify-between">
-          <p className="text-[10px] text-muted-foreground">One "Label: value" per line.</p>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50 flex items-center gap-1.5"
-          >
-            {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-            {saving ? 'Saving...' : 'Save'}
-          </button>
-        </div>
+    <div className="section-card bg-card/85">
+      <div className="mb-3">
+        <p className="eyebrow mb-2">Information pathfinder has about you</p>
+        <h3 className="text-sm font-semibold">Profile summary</h3>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">
+          Pathfinder uses this to remember important details about you, like your goals, preferences, background, and constraints, so future responses can feel more relevant without you having to repeat yourself each time.
+        </p>
       </div>
 
-      <div className="rounded-xl border bg-card p-4">
-        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">Runtime Payload Preview</h3>
-        <pre className="text-[11px] text-muted-foreground whitespace-pre-wrap break-words bg-muted/30 rounded-lg p-3 max-h-64 overflow-y-auto">
-          {JSON.stringify(student?.long_context_preview || {}, null, 2)}
-        </pre>
-      </div>
-    </>
+      {editing ? (
+        <>
+          <textarea
+            value={summary}
+            onChange={(e) => setSummary(e.target.value)}
+            placeholder="Describe yourself."
+            className="mb-3 h-48 w-full resize-none rounded-2xl border border-border/70 bg-background/85 px-4 py-3 text-sm leading-6 shadow-sm focus:outline-none focus:ring-2 focus:ring-ring/50"
+          />
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[11px] text-muted-foreground">
+              Write anything Pathfinder should remember about you for future conversations.
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleCancel}
+                disabled={saving}
+                className="soft-button px-4 py-2 text-xs font-semibold text-muted-foreground disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="primary-button px-4 py-2 text-xs disabled:opacity-50"
+              >
+                {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="space-y-3">
+          <div className="min-h-[12rem] whitespace-pre-wrap rounded-2xl border border-border/70 bg-background/80 px-4 py-3 text-sm leading-6 text-foreground/85 shadow-sm">
+            {longContext || <span className="text-muted-foreground">Describe yourself.</span>}
+          </div>
+          <div className="flex justify-end">
+            <button
+              onClick={() => setEditing(true)}
+              className="soft-button text-xs"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              Edit
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -508,11 +576,11 @@ function LoadingSkeleton() {
 function EmptyState() {
   return (
     <div className="text-center py-16">
-      <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto mb-3">
+      <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/15 to-warning/10 ring-1 ring-primary/10">
         <User className="h-6 w-6 text-muted-foreground" />
       </div>
-      <p className="text-muted-foreground text-sm">No student data yet.</p>
-      <p className="text-muted-foreground text-xs mt-1">Upload a document to start building the student graph.</p>
+      <p className="text-muted-foreground text-sm">No profile information yet.</p>
+      <p className="text-muted-foreground text-xs mt-1">Upload a document or start chatting to help Pathfinder build this profile.</p>
     </div>
   );
 }
@@ -522,12 +590,13 @@ function ReplaceDialog({ open, filename, onCancel, onConfirm }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative bg-card border rounded-2xl shadow-xl p-6 max-w-sm w-full mx-4 animate-fade-in-up">
+      <div className="hero-panel relative mx-4 w-full max-w-sm animate-fade-in-up border-border/70 p-6">
         <div className="flex items-start gap-3 mb-4">
-          <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+          <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/15 to-warning/10 ring-1 ring-primary/10">
             <FileText className="h-5 w-5 text-primary" />
           </div>
           <div>
+            <p className="eyebrow mb-2">Upload conflict</p>
             <h3 className="text-sm font-semibold">Replace document?</h3>
             <p className="text-sm text-muted-foreground mt-1">
               "{filename}" already exists for this student. Replace it with the new version?
@@ -535,8 +604,8 @@ function ReplaceDialog({ open, filename, onCancel, onConfirm }) {
           </div>
         </div>
         <div className="flex justify-end gap-2">
-          <button onClick={onCancel} className="px-4 py-2 text-sm font-medium rounded-lg border hover:bg-muted transition-colors">Cancel</button>
-          <button onClick={onConfirm} className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-primary-foreground hover:opacity-90">Replace</button>
+          <button onClick={onCancel} className="rounded-xl border px-4 py-2 text-sm font-medium transition-colors hover:bg-muted">Cancel</button>
+          <button onClick={onConfirm} className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-sm transition-opacity hover:opacity-90">Replace</button>
         </div>
       </div>
     </div>

@@ -13,13 +13,12 @@ from typing import Any, Optional
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
+from app.adapters.neo4j._sanitize import sanitize_neo4j_value
 from app.adapters.neo4j.graphDB import GraphDB
 from app.config.settings import settings
-from app.core.graph import get_compiled_graph
-from app.core.memory import reset_checkpointer_storage
+from app.core.checkpointer import reset_checkpointer_storage
+from app.core.workflow import get_compiled_workflow
 from app.services.runtime_session import build_chat_runtime_session, get_dependency_status
-from app.services.long_context import build_long_context_payload, normalize_long_context_summary
-from app.services.execution_registry import get_execution_registry
 from app.services.replay_store import (
     build_replay_artifact,
     delete_all_replay_artifacts,
@@ -46,12 +45,13 @@ from app.utils.ids import generate_session_id, generate_student_id
 log = logging.getLogger("pathfinder.api")
 
 router = APIRouter()
+_TOKEN_CHUNK_SIZE = 120
 
 def _student_info(student: dict[str, Any]) -> StudentInfo:
     """Normalize a raw student record into the API response shape."""
     extra = {
         k: v for k, v in student.items()
-        if k not in {"id", "name", "created_at", "updated_at", "completeness",
+        if k not in {"id", "name", "created_at", "updated_at",
                       "long_context_summary", "long_context_notes"}
         and v is not None and str(v).strip()
     }
@@ -60,7 +60,6 @@ def _student_info(student: dict[str, Any]) -> StudentInfo:
         name=student.get("name", "Student"),
         created_at=student.get("created_at"),
         updated_at=student.get("updated_at"),
-        completeness=float(student.get("completeness", 0.0) or 0.0),
         **extra,
     )
 
@@ -150,7 +149,7 @@ async def chat(
 
     async def event_stream():
         try:
-            graph = await get_compiled_graph()
+            graph = await get_compiled_workflow()
             runtime_session = await build_chat_runtime_session(
                 query=query,
                 session_id=session_id,
@@ -179,12 +178,12 @@ async def chat(
                         last_progress_count = len(progress)
 
             # Emit final answer
-            final_answer = final_state.get("final_answer", "I couldn't generate a response.")
+            final_answer = str(final_state.get("final_answer", "") or "I couldn't generate a response.")
 
-            # Stream tokens (simulate word-by-word for UX)
-            words = final_answer.split(" ")
-            for word in words:
-                yield f"event: token\ndata: {json.dumps({'content': word + ' '})}\n\n"
+            # Stream the exact final answer in bounded chunks so markdown/newlines survive intact.
+            for start in range(0, len(final_answer), _TOKEN_CHUNK_SIZE):
+                chunk = final_answer[start : start + _TOKEN_CHUNK_SIZE]
+                yield f"event: token\ndata: {json.dumps({'content': chunk})}\n\n"
 
             # Done event
             done_payload = runtime_session.build_done_payload(final_state)
@@ -221,7 +220,7 @@ async def get_students():
             ORDER BY coalesce(s.updated_at, s.created_at) DESC
             """
         )
-        students = [dict(record["student"]) async for record in result]
+        students = [sanitize_neo4j_value(dict(record["student"])) async for record in result]
     return [_student_info(student) for student in students]
 
 
@@ -267,7 +266,7 @@ async def upload_document(
             log.info("Replaced existing document: %s", upload["filename"])
 
     # Process through the registered document ingestion pipeline
-    from app.agents.doc_analyst import doc_analyst as process_doc
+    from app.nodes.doc_analyst import doc_analyst as process_doc
 
     state: dict[str, Any] = {
         "files": [upload],
@@ -278,11 +277,17 @@ async def upload_document(
 
     result = await process_doc(state)
     ingestion = result.get("latest_ingestion_result", {}) if isinstance(result.get("latest_ingestion_result", {}), dict) else {}
+    documents = list(ingestion.get("documents", []) or [])
+    first_document = documents[0] if documents else {}
+    if not first_document or not str(first_document.get("document_id", "") or "").strip():
+        raise HTTPException(422, f"Document {upload['filename']} could not be processed.")
+    graph_updates = dict((first_document.get("ingestion_result") or {}).get("graph_updates") or {})
+    counts = dict(graph_updates.get("counts") or {})
     return DocumentUploadResponse(
-        document_id=f"doc_uploaded",
+        document_id=str(first_document.get("document_id", "") or ""),
         filename=upload["filename"],
-        entities_extracted=int(ingestion.get("entity_count", 0) or 0),
-        chunks_stored=int(ingestion.get("chunk_count", 0) or 0),
+        entities_extracted=int(counts.get("entities_written", 0) or 0),
+        chunks_stored=int(first_document.get("chunks_stored", 0) or 0),
     )
 
 
@@ -290,48 +295,27 @@ async def upload_document(
 
 @router.get("/student", response_model=StudentResponse)
 async def get_student(student_id: Optional[str] = Query(default=None)):
-    """Get the student's full graph snapshot."""
+    """Get the student's profile view plus canonical graph schema."""
     resolved_student_id = await _resolve_student_id(student_id)
-    student_graph = await (await _graph_db()).get_full_student(student_id=resolved_student_id)
+    graph_db = await _graph_db()
+    student_graph = await graph_db.get_full_student(student_id=resolved_student_id)
+    student_schema = await graph_db.get_student_schema(student_id=resolved_student_id)
     student = dict(student_graph.get("student") or {})
-    sections = list(student_graph.get("sections") or [])
+    sections = list(student_schema.get("sections") or [])
     entities = list(student_graph.get("entities") or [])
     section_items: dict[str, list[dict[str, Any]]] = {}
-    all_entities: dict[str, list[dict[str, Any]]] = {"Document": [], "Chunk": []}
     for entity in entities:
         if not isinstance(entity, dict):
             continue
         section_key = str(entity.get("section_key") or "")
         if section_key:
             section_items.setdefault(section_key, []).append(entity)
-        entity_type = str(entity.get("entity_type") or "Entity")
-        all_entities.setdefault(entity_type, []).append(entity)
-        for document in entity.get("documents", []) if isinstance(entity.get("documents"), list) else []:
-            if isinstance(document, dict):
-                all_entities["Document"].append(document)
-        for chunk in entity.get("chunks", []) if isinstance(entity.get("chunks"), list) else []:
-            if isinstance(chunk, dict):
-                all_entities["Chunk"].append(chunk)
-    student_snapshot = {
-        "student": student,
-        "root_properties": student,
-        "sections": sections,
-        "entities": entities,
-        "section_items": section_items,
-        "student_schema": {"sections": sections},
-        "all_entities": all_entities,
-        "completeness": float(student.get("completeness", 0.0) or 0.0),
-    }
-    long_context_preview = build_long_context_payload(student_snapshot, {})
     return StudentResponse(
-        root_properties=student_snapshot.get("root_properties", {}),
-        sections=student_snapshot.get("sections", []),
-        section_items=student_snapshot.get("section_items", {}),
-        long_context_preview=long_context_preview,
-        student_schema=student_snapshot.get("student_schema", {}),
-        all_entities=student_snapshot.get("all_entities", {}),
-        completeness=float(student_snapshot.get("completeness", 0.0) or 0.0),
-        confidence=0.0,
+        root_properties=student,
+        sections=sections,
+        section_items=section_items,
+        long_context=str(student.get("long_context_summary", "") or ""),
+        student_schema=student_schema,
     )
 
 
@@ -341,10 +325,7 @@ async def update_student(update: StudentUpdate):
     resolved_student_id = await _resolve_student_id(update.student_id)
     value = update.value
     if update.field == "long_context_summary":
-        try:
-            value = normalize_long_context_summary(str(update.value or ""))
-        except ValueError as exc:
-            raise HTTPException(400, str(exc))
+        value = str(update.value or "")
     result = await (await _graph_db()).update_student(
         student_id=resolved_student_id,
         updates={update.field: value},
@@ -386,18 +367,6 @@ async def get_student_graph(student_id: Optional[str] = Query(default=None)):
     return GraphDataResponse(nodes=data["nodes"], relationships=data["relationships"])
 
 
-# ── Sessions ─────────────────────────────────────────────────────
-
-
-@router.get("/sessions")
-async def list_sessions(student_id: Optional[str] = Query(default=None)):
-    """List all chat sessions. Returns from SQLite checkpoint metadata."""
-    # Note: In a full implementation, we'd query the SQLite checkpointer
-    # For now, return an empty list — sessions are created on first chat
-    resolved_student_id = await _resolve_student_id(student_id)
-    return {"student_id": resolved_student_id, "sessions": []}
-
-
 @router.get("/replays", response_model=list[ReplayArtifactInfo])
 async def get_replays(limit: int = Query(default=25, ge=1, le=100)):
     """List recent replay artifacts for debugging and evaluation."""
@@ -412,29 +381,19 @@ async def get_replay(replay_id: str):
         raise HTTPException(404, "Replay artifact not found")
     return artifact
 
-
-@router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str, student_id: Optional[str] = Query(default=None)):
-    """Acknowledge discarding a chat session id; student documents are not removed."""
-    resolved_student_id = await _resolve_student_id(student_id)
-    return {"deleted": True, "session_id": session_id, "student_id": resolved_student_id}
-
-
 # ── Settings ─────────────────────────────────────────────────────
 
 
 @router.get("/settings", response_model=SettingsResponse)
 async def get_settings():
     """Get current application settings."""
-    registry = get_execution_registry()
     return SettingsResponse(
         topic_guard_enabled=_topic_guard_enabled,
         reasoning=_reasoning,
         models={
-            "text_llm": registry.text_model,
+            "text_llm": settings.LLM_MODEL,
             "vision_llm": settings.VISION_MODEL,
             "embeddings": settings.EMBEDDING_MODEL,
-            "retrieval": registry.retrieval_strategy,
         },
     )
 
@@ -458,20 +417,18 @@ async def health_check():
     """Check system health for all registered dependencies."""
     statuses = await get_dependency_status()
     services = {name: str(status) for name, status in statuses.items()}
-    overall = "ok" if all(s == "connected" for s in services.values()) else "degraded"
+    healthy_statuses = {"connected", "configured", "fallback_only"}
+    overall = "ok" if all(status in healthy_statuses for status in services.values()) else "degraded"
     return HealthResponse(status=overall, services=services)
 
 # ── Helpers ──────────────────────────────────────────────────────
 
 
-async def _resolve_student_id(student_id: str | None, create_if_missing: bool = True) -> str:
+async def _resolve_student_id(student_id: str | None) -> str:
     """Resolve the active student id, creating a runtime id if needed."""
     if student_id:
-        if create_if_missing:
-            await _ensure_student(student_id)
+        await _ensure_student(student_id)
         return student_id
-    if not create_if_missing:
-        return ""
     runtime_student_id = generate_student_id()
     await _ensure_student(runtime_student_id)
     return runtime_student_id

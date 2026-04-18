@@ -9,7 +9,8 @@ from typing import Any, Awaitable, Callable
 
 from mcp.types import Tool
 
-_JSON_LIMIT = 8000
+_JSON_LIMIT = 24000
+_SUMMARY_FIELD_LIMIT = 10
 
 try:
     from neo4j.time import Date as Neo4jDate
@@ -41,11 +42,20 @@ def _normalize_tool_value(value: Any) -> Any:
     return value
 
 
-def _wrap_handler(
-    handler: Callable[[dict[str, Any], "ToolContext"], Awaitable[dict[str, Any]]],
-) -> Callable[[dict[str, Any], "ToolContext"], Awaitable[dict[str, Any]]]:
+ToolHandler = Callable[[dict[str, Any], "ToolContext"], Awaitable[dict[str, Any]]]
+CompactHandler = Callable[[dict[str, Any], dict[str, Any], "ToolContext"], dict[str, Any]]
+
+
+def _wrap_handler(handler: ToolHandler) -> ToolHandler:
     async def _wrapped(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
         return _normalize_tool_value(await handler(arguments, context))
+
+    return _wrapped
+
+
+def _wrap_compact_handler(handler: CompactHandler) -> CompactHandler:
+    def _wrapped(arguments: dict[str, Any], result: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+        return _normalize_tool_value(handler(arguments, result, context))
 
     return _wrapped
 
@@ -62,13 +72,16 @@ class ToolContext:
 @dataclass(frozen=True)
 class ToolSpec:
     """Tool definition used by MCP and internal callers."""
+
     name: str
     description: str
     input_schema: dict[str, Any]
-    handler: Callable[[dict[str, Any], ToolContext], Awaitable[dict[str, Any]]]
+    handler: ToolHandler
+    compact_handler: CompactHandler
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "handler", _wrap_handler(self.handler))
+        object.__setattr__(self, "compact_handler", _wrap_compact_handler(self.compact_handler))
 
     def as_openai_schema(self) -> dict[str, Any]:
         return {
@@ -114,19 +127,121 @@ def get_mcp_tools() -> list[Tool]:
     return [spec.as_mcp_tool() for spec in get_tool_specs()]
 
 
-async def execute_tool(name: str, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    """Execute one registered tool by name."""
+def get_tool_spec(name: str) -> ToolSpec | None:
+    """Return one registered tool spec by name."""
     for spec in get_tool_specs():
         if spec.name == name:
-            return await spec.handler(arguments, context)
+            return spec
+    return None
+
+
+async def execute_tool(name: str, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Execute one registered tool by name."""
+    spec = get_tool_spec(name)
+    if spec is not None:
+        return await spec.handler(arguments, context)
     return {"error": f"unknown tool: {name}"}
 
 
-def compact_result(result: dict[str, Any]) -> dict[str, Any]:
-    """Keep tool messages bounded for tool-calling transcripts."""
-    if not isinstance(result, dict):
-        return {"value": str(result)[:_JSON_LIMIT]}
-    serialized = json.dumps(result, ensure_ascii=True, default=str)
-    if len(serialized) <= _JSON_LIMIT:
-        return result
-    return {"truncated": True, "preview": serialized[:_JSON_LIMIT]}
+def get_tool_category_map() -> dict[str, str]:
+    """Return the evidence category for each registered tool name."""
+    from app.tools.graph_tools import get_graph_tool_specs
+    from app.tools.vector_tools import get_vector_tool_specs
+    from app.tools.web_tools import get_web_tool_specs
+
+    categories: dict[str, str] = {}
+    for spec in get_graph_tool_specs():
+        categories[spec.name] = "Graph"
+    for spec in get_vector_tool_specs():
+        categories[spec.name] = "Vector"
+    for spec in get_web_tool_specs():
+        categories[spec.name] = "Web"
+    return categories
+
+
+def summarize_tool_usage(tool_names: list[str]) -> dict[str, str]:
+    """Return the high-level method label for successful tool usage."""
+    categories = get_tool_category_map()
+    used_categories: list[str] = []
+    seen: set[str] = set()
+    for name in tool_names:
+        category = categories.get(str(name or "").strip(), "")
+        if category and category not in seen:
+            seen.add(category)
+            used_categories.append(category)
+
+    if not used_categories:
+        return {"method": "direct"}
+
+    method_map = {
+        "Graph": "graph",
+        "Vector": "rag",
+        "Web": "web",
+    }
+    methods = [method_map[category] for category in used_categories if category in method_map]
+    return {"method": "+".join(methods) if methods else "direct"}
+
+
+def build_tool_transcript_payload(
+    name: str,
+    arguments: dict[str, Any],
+    result: dict[str, Any],
+    context: ToolContext,
+) -> dict[str, Any]:
+    """Return the compact LLM-facing transcript payload for one tool call."""
+    spec = get_tool_spec(name)
+    status = "error" if isinstance(result, dict) and result.get("error") else "ok"
+    if spec is None:
+        return {
+            "tool": name,
+            "status": status,
+            "summary": {"error": "unknown tool"},
+        }
+
+    if status == "error":
+        return {
+            "tool": name,
+            "status": "error",
+            "error": str(result.get("error", "") or "tool error"),
+        }
+
+    return {
+        "tool": name,
+        "status": "ok",
+        "summary": spec.compact_handler(arguments, result, context),
+    }
+
+
+def is_scalar(value: Any) -> bool:
+    return isinstance(value, (str, int, float, bool)) or value is None
+
+
+def bounded_text(value: Any, limit: int = 240) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def pick_scalar_fields(
+    payload: dict[str, Any],
+    *,
+    exclude: set[str] | None = None,
+    limit: int = _SUMMARY_FIELD_LIMIT,
+) -> dict[str, Any]:
+    """Return a stable, bounded set of scalar-ish fields from a dict."""
+    exclude = set(exclude or set())
+    summary: dict[str, Any] = {}
+    for key in sorted(payload.keys()):
+        if key in exclude:
+            continue
+        value = payload.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if is_scalar(value):
+            summary[key] = value
+        elif isinstance(value, list) and all(is_scalar(item) for item in value):
+            summary[key] = value[:10]
+        if len(summary) >= limit:
+            break
+    return summary

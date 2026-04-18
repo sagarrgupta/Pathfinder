@@ -36,8 +36,16 @@ def build_replay_artifact(
     artifact_id = generate_replay_id()
     tool_call_log = list(final_state.get("tool_call_log", []) or [])
     specialist_output = final_state.get("specialist_output", {}) or {}
-    transcript_states = list(done_payload.get("transcript_states", []) or [])
     latest_ingestion_result = dict(final_state.get("latest_ingestion_result", {}) or {})
+    documents = list(latest_ingestion_result.get("documents", []) or [])
+    latest_schema = dict(final_state.get("student_schema") or {})
+    for item in reversed(documents):
+        if not isinstance(item, dict):
+            continue
+        candidate = dict((item.get("ingestion_result") or {}).get("graph_schema_after") or {})
+        if candidate:
+            latest_schema = candidate
+            break
     return {
         "id": artifact_id,
         "created_at": _utc_now(),
@@ -46,10 +54,8 @@ def build_replay_artifact(
         "query": query,
         "selected_specialist": final_state.get("selected_specialist", ""),
         "method": done_payload.get("method", ""),
-        "quality_path": done_payload.get("quality_path", ""),
-        "confidence": done_payload.get("confidence", 0.0),
         "stop_reason": done_payload.get("stop_reason", ""),
-        "recovery_events": list(done_payload.get("recovery_events", [])),
+        "processing_issues": list(done_payload.get("processing_issues", [])),
         "runtime_snapshot": done_payload.get("runtime_snapshot", {}),
         "dependency_status": done_payload.get("dependency_status", {}),
         "routing_scores": done_payload.get("routing_scores", {}),
@@ -58,22 +64,10 @@ def build_replay_artifact(
         "answer": final_state.get("final_answer", ""),
         "specialist_output": specialist_output,
         "tool_call_log": tool_call_log,
-        "long_context_payload": dict(final_state.get("long_context_payload", {}) or {}),
-        "profile_schema": dict((final_state.get("profile_data", {}) or {}).get("profile_schema", {}) or {}),
-        "document_extractions": list(latest_ingestion_result.get("documents", []) or []),
-        "document_ingestion": {
-            "chunk_count": int(latest_ingestion_result.get("chunk_count", 0) or 0),
-            "entity_count": int(latest_ingestion_result.get("entity_count", 0) or 0),
-            "relationship_count": int(latest_ingestion_result.get("relationship_count", 0) or 0),
-            "candidate_fact_count": int(latest_ingestion_result.get("candidate_fact_count", 0) or 0),
-            "memory_item_count": int(latest_ingestion_result.get("memory_item_count", 0) or 0),
-            "promoted_entity_count": int(latest_ingestion_result.get("promoted_entity_count", 0) or 0),
-            "patch_summaries": list(latest_ingestion_result.get("patch_summaries", []) or []),
-        },
-        "context_overview": {
-            "document_result_count": len(final_state.get("retrieved_documents", []) or []),
-            "transcript_state_count": len(transcript_states),
-        },
+        "session_context": str(final_state.get("session_context", "") or ""),
+        "long_context": str(final_state.get("long_context", "") or ""),
+        "student_schema": latest_schema,
+        "document_ingestion": latest_ingestion_result,
     }
 
 
@@ -103,8 +97,6 @@ def list_replay_artifacts(limit: int = 50) -> list[dict[str, Any]]:
                 "query": data.get("query", ""),
                 "selected_specialist": data.get("selected_specialist", ""),
                 "method": data.get("method", ""),
-                "quality_path": data.get("quality_path", ""),
-                "confidence": data.get("confidence", 0.0),
             }
         )
     return artifacts

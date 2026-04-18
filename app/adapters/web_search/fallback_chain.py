@@ -1,8 +1,7 @@
 """Web search fallback chain.
 
 Tries search providers in order: Tavily -> Google CSE -> Brave -> DuckDuckGo.
-Aggregates unique results across providers, stopping once enough
-results are collected.
+Aggregates unique results across providers, stopping once enough results are collected.
 """
 
 from __future__ import annotations
