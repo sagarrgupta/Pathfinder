@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import hashlib
 from typing import Any
 from app.adapters.neo4j._sanitize import sanitize_neo4j_value
 from app.adapters.neo4j.vectorDB import VectorDB
@@ -9,6 +10,19 @@ from app.utils.ids import generate_field_id
 
 log = logging.getLogger("pathfinder.neo4j.graph")
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_GRAPH_METADATA_KEYS = {
+    "created_at",
+    "updated_at",
+    "student_id",
+    "section_key",
+    "identity_keys",
+    "fields",
+    "chunks",
+    "documents",
+    "labels",
+}
+_SCHEMA_METADATA_KEYS = _GRAPH_METADATA_KEYS | {"value_json", "metadata_json"}
+_SCHEMA_SAMPLE_LIMIT = 3
 
 class GraphDB:
     """class for student-centric knowledge graph operations."""
@@ -201,6 +215,12 @@ class GraphDB:
         if len(merge_props) == 1:
             raise ValueError("identity must contain at least one usable field")
 
+        params["identity_keys"] = [
+            self._safe_identifier(field, "identity field")
+            for field in identity.keys()
+            if str(field or "").strip()
+        ]
+
         for idx, (field, value) in enumerate(properties.items()):
             field_name = self._safe_identifier(field, "property field")
             param_name = f"prop_{idx}"
@@ -225,7 +245,8 @@ class GraphDB:
             SET {set_clause},
                 n.entity_type = $entity_type,
                 n.section_key = $section_key,
-                n.student_id = $student_id
+                n.student_id = $student_id,
+                n.identity_keys = $identity_keys
             MERGE (sec)-[:HAS_ITEM]->(n)
             RETURN n {{.*}} AS node
             LIMIT 1
@@ -288,16 +309,14 @@ class GraphDB:
 
         query = f"""
         MATCH (s:Student {{id: $student_id}})
-        CALL {{
-            WITH s
+        CALL (s) {{
             MATCH (s)-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(src:Entity:{source_type})
             WHERE src.student_id = $student_id
               AND {" AND ".join(src_clauses)}
             RETURN src
             LIMIT 1
         }}
-        CALL {{
-            WITH s
+        CALL (s) {{
             MATCH (s)-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(dst:Entity:{target_type})
             WHERE dst.student_id = $student_id
               AND {" AND ".join(dst_clauses)}
@@ -384,59 +403,74 @@ class GraphDB:
                 raise ValueError("entity not found")
             return sanitize_neo4j_value(dict(record["entity"]))
 
-    async def get_student_summary(self, *, student_id: str) -> dict[str, Any]:
-        """Return a compact student summary for planning and tool selection."""
-        student_graph = await self.get_full_student(student_id=student_id)
-        student = dict(student_graph.get("student") or {})
-        sections = list(student_graph.get("sections") or [])
-        entities = list(student_graph.get("entities") or [])
-
-        entity_counts: dict[str, int] = {}
-
-        for entity in entities:
-            if not isinstance(entity, dict):
-                continue
-            entity_type = str(entity.get("entity_type") or "Entity")
-            entity_counts[entity_type] = entity_counts.get(entity_type, 0) + 1
+    async def get_student_schema(self, *, student_id: str) -> dict[str, Any]:
+        """Return a bounded schema manifest for the whole student graph."""
+        sections = await self.get_student_sections(student_id=student_id)
 
         async with self.driver.session() as session:
-            result = await session.run(
+            entity_result = await session.run(
+                """
+                MATCH (:Student {id: $student_id})-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(ent:Entity)
+                RETURN ent {.*} AS entity
+                ORDER BY coalesce(ent.entity_type, 'Entity'), coalesce(ent.updated_at, ent.created_at)
+                """,
+                student_id=student_id,
+            )
+            entities = [dict(record["entity"]) async for record in entity_result if record and record.get("entity")]
+
+            relationship_result = await session.run(
+                """
+                MATCH (:Student {id: $student_id})-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(src:Entity)-[r]->(dst:Entity)
+                WHERE src.student_id = $student_id AND dst.student_id = $student_id
+                RETURN
+                    type(r) AS relationship_type,
+                    coalesce(src.entity_type, 'Entity') AS source_entity_type,
+                    coalesce(dst.entity_type, 'Entity') AS target_entity_type,
+                    count(r) AS relationship_count
+                ORDER BY relationship_type, source_entity_type, target_entity_type
+                """,
+                student_id=student_id,
+            )
+            relationship_rows = [dict(record) async for record in relationship_result if record]
+
+            count_result = await session.run(
                 """
                 MATCH (s:Student {id: $student_id})
+                OPTIONAL MATCH (s)-[:HAS_SECTION]->(sec:Section)
+                OPTIONAL MATCH (sec)-[:HAS_ITEM]->(ent:Entity)
                 OPTIONAL MATCH (s)-[:UPLOADED]->(d:Document)
                 OPTIONAL MATCH (d)<-[:FROM_DOCUMENT]-(c:Chunk)
-                RETURN count(DISTINCT d) AS document_count,
+                RETURN count(DISTINCT sec) AS section_count,
+                       count(DISTINCT ent) AS entity_count,
+                       count(DISTINCT d) AS document_count,
                        count(DISTINCT c) AS chunk_count
                 """,
                 student_id=student_id,
             )
-            record = await result.single()
-            document_count = int(record["document_count"] or 0) if record else 0
-            chunk_count = int(record["chunk_count"] or 0) if record else 0
+            counts_record = await count_result.single()
 
-        summary = {
-            "student": student,
+        entity_manifest = self._build_entity_manifest(entities)
+        relationship_manifest = self._build_relationship_manifest(relationship_rows)
+        schema = {
             "sections": [
-                str(item.get("key") or item.get("label") or "").strip()
-                for item in sections
-                if isinstance(item, dict) and str(item.get("key") or item.get("label") or "").strip()
+                {
+                    "key": str(section.get("key") or "").strip(),
+                    "description": str(section.get("description") or "").strip(),
+                    "parent_key": str(section.get("parent_key") or "").strip(),
+                }
+                for section in sections
+                if isinstance(section, dict) and str(section.get("key") or "").strip()
             ],
-            "entity_types": sorted(entity_counts.keys()),
-            "counts": {
-                "sections": len(sections),
-                "entities": len(entities),
-                "documents": document_count,
-                "chunks": chunk_count,
-                "entity_types": entity_counts,
+            "entity_manifest": entity_manifest,
+            "relationship_manifest": relationship_manifest,
+            "graph_counts": {
+                "sections": int((counts_record or {}).get("section_count", 0) or 0),
+                "entities": int((counts_record or {}).get("entity_count", 0) or 0),
+                "documents": int((counts_record or {}).get("document_count", 0) or 0),
+                "chunks": int((counts_record or {}).get("chunk_count", 0) or 0),
             },
-            "student_schema": {"sections": sections},
         }
-        return sanitize_neo4j_value(summary)
-
-    async def get_student_schema(self, *, student_id: str) -> dict[str, Any]:
-        """Return the current student section schema."""
-        sections = await self.get_student_sections(student_id=student_id)
-        return sanitize_neo4j_value({"sections": sections})
+        return sanitize_neo4j_value(schema)
 
     async def list_entity_types(self, *, student_id: str) -> dict[str, Any]:
         """Return entity types currently present in the student graph with counts."""
@@ -941,30 +975,103 @@ class GraphDB:
             })
 
     async def get_graph_data(self, *, student_id: str) -> dict[str, Any]:
-        """Return a simple node/relationship graph view for visualization."""
+        """Return a graph view with student structure, entities, provenance, and semantic edges."""
         student_graph = await self.get_full_student(student_id=student_id)
         student = student_graph.get("student", {})
         sections = student_graph.get("sections", [])
         entities = student_graph.get("entities", [])
         nodes: list[dict[str, Any]] = []
         relationships: list[dict[str, Any]] = []
+        entity_node_ids: dict[tuple[str, str], str] = {}
+        document_nodes: dict[str, dict[str, Any]] = {}
+        chunk_nodes: dict[str, dict[str, Any]] = {}
+        seen_relationships: set[tuple[str, str, str]] = set()
+        root_student_id = str(student.get("id") or student_id or "")
+
         if isinstance(student, dict) and student:
-            nodes.append({"id": student.get("id"), "labels": ["Student"], **student})
+            nodes.append({"id": root_student_id, "labels": ["Student"], **student})
         for section in sections:
             if not isinstance(section, dict):
                 continue
-            section_id = f"section:{section.get('student_id')}:{section.get('key')}"
+            section_owner_id = str(section.get("student_id") or student.get("id") or student_id)
+            section_key = str(section.get("key") or "")
+            if not section_key:
+                continue
+            section_id = f"section:{section_owner_id}:{section_key}"
             nodes.append({"id": section_id, "labels": ["Section"], **section})
-            relationships.append({"source": student.get("id"), "target": section_id, "type": "HAS_SECTION"})
+            if root_student_id:
+                relationships.append({"source": root_student_id, "target": section_id, "type": "HAS_SECTION"})
         for entity in entities:
             if not isinstance(entity, dict):
                 continue
-            entity_id = str(entity.get("id") or entity.get("name") or entity.get("title") or entity.get("code") or "")
-            if not entity_id:
-                continue
+            entity_id = self._graph_entity_id(entity)
+            entity_key = self._result_entity_key(entity) or entity_id
+            entity_node_ids[(str(entity.get("entity_type") or "Entity"), entity_key)] = entity_id
             nodes.append({"id": entity_id, "labels": ["Entity", str(entity.get("entity_type") or "Entity")], **entity})
-            section_id = f"section:{student.get('id')}:{entity.get('section_key')}"
-            relationships.append({"source": section_id, "target": entity_id, "type": "HAS_ITEM"})
+            entity_section_key = str(entity.get("section_key") or "")
+            if entity_section_key:
+                section_id = f"section:{root_student_id or student_id}:{entity_section_key}"
+                relationships.append({"source": section_id, "target": entity_id, "type": "HAS_ITEM"})
+            for document in entity.get("documents", []) if isinstance(entity.get("documents"), list) else []:
+                if not isinstance(document, dict) or not document.get("id"):
+                    continue
+                document_id = f"document:{document['id']}"
+                document_nodes[document_id] = {**document, "id": document_id, "labels": ["Document"]}
+                rel_key = (entity_id, document_id, "DERIVED_FROM")
+                if rel_key not in seen_relationships:
+                    relationships.append({"source": entity_id, "target": document_id, "type": "DERIVED_FROM"})
+                    seen_relationships.add(rel_key)
+            for chunk in entity.get("chunks", []) if isinstance(entity.get("chunks"), list) else []:
+                if not isinstance(chunk, dict) or not chunk.get("id"):
+                    continue
+                chunk_id = f"chunk:{chunk['id']}"
+                chunk_nodes[chunk_id] = {**chunk, "id": chunk_id, "labels": ["Chunk"]}
+                rel_key = (entity_id, chunk_id, "MENTIONED_IN")
+                if rel_key not in seen_relationships:
+                    relationships.append({"source": entity_id, "target": chunk_id, "type": "MENTIONED_IN"})
+                    seen_relationships.add(rel_key)
+
+        nodes.extend(document_nodes.values())
+        nodes.extend(chunk_nodes.values())
+
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (:Student {id: $student_id})-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(src:Entity)-[r]->(dst:Entity)
+                WHERE src.student_id = $student_id AND dst.student_id = $student_id
+                RETURN
+                    properties(src) AS source,
+                    properties(dst) AS target,
+                    type(r) AS relationship_type,
+                    properties(r) AS relationship
+                ORDER BY relationship_type
+                """,
+                student_id=student_id,
+            )
+            async for record in result:
+                source = dict(record["source"] or {})
+                target = dict(record["target"] or {})
+                source_id = entity_node_ids.get(
+                    (str(source.get("entity_type") or "Entity"), self._result_entity_key(source) or self._graph_entity_id(source))
+                )
+                target_id = entity_node_ids.get(
+                    (str(target.get("entity_type") or "Entity"), self._result_entity_key(target) or self._graph_entity_id(target))
+                )
+                relationship_type = str(record["relationship_type"] or "").strip()
+                if not source_id or not target_id or not relationship_type:
+                    continue
+                rel_key = (source_id, target_id, relationship_type)
+                if rel_key in seen_relationships:
+                    continue
+                relationships.append(
+                    {
+                        "source": source_id,
+                        "target": target_id,
+                        "type": relationship_type,
+                        "properties": dict(record["relationship"] or {}),
+                    }
+                )
+                seen_relationships.add(rel_key)
         return sanitize_neo4j_value({"nodes": nodes, "relationships": relationships})
 
     async def hybrid_search(
@@ -1117,12 +1224,168 @@ class GraphDB:
         normalized_identity = json.dumps(identity, sort_keys=True, ensure_ascii=True)
         return f"{student_id}:{entity_type}:{normalized_identity}"
 
+    def _build_entity_manifest(self, entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+            entity_type = str(entity.get("entity_type") or "Entity").strip() or "Entity"
+            bucket = grouped.setdefault(
+                entity_type,
+                {
+                    "entity_type": entity_type,
+                    "count": 0,
+                    "identity_keys": set(),
+                    "property_keys": set(),
+                    "sample_identities": [],
+                    "sample_identity_keys": set(),
+                },
+            )
+            bucket["count"] += 1
+            identity = self._schema_identity_payload(entity)
+            property_keys = self._schema_property_keys(entity)
+            if identity:
+                bucket["identity_keys"].update(identity.keys())
+                identity_signature = json.dumps(identity, sort_keys=True, ensure_ascii=True, default=str)
+                if (
+                    len(bucket["sample_identities"]) < _SCHEMA_SAMPLE_LIMIT
+                    and identity_signature not in bucket["sample_identity_keys"]
+                ):
+                    bucket["sample_identities"].append(identity)
+                    bucket["sample_identity_keys"].add(identity_signature)
+            bucket["property_keys"].update(property_keys)
+
+        manifest: list[dict[str, Any]] = []
+        for entity_type in sorted(grouped.keys()):
+            bucket = grouped[entity_type]
+            manifest.append(
+                {
+                    "entity_type": entity_type,
+                    "count": int(bucket["count"]),
+                    "identity_keys": sorted(bucket["identity_keys"]),
+                    "sample_identities": list(bucket["sample_identities"]),
+                    "property_keys": sorted(bucket["property_keys"]),
+                }
+            )
+        return manifest
+
+    def _build_relationship_manifest(self, relationship_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in relationship_rows:
+            relationship_type = str(row.get("relationship_type") or "").strip()
+            if not relationship_type:
+                continue
+            bucket = grouped.setdefault(
+                relationship_type,
+                {
+                    "relationship_type": relationship_type,
+                    "count": 0,
+                    "patterns": [],
+                    "seen_patterns": set(),
+                },
+            )
+            relationship_count = int(row.get("relationship_count", 0) or 0)
+            bucket["count"] += relationship_count
+            pattern = {
+                "source_entity_type": str(row.get("source_entity_type") or "Entity").strip() or "Entity",
+                "target_entity_type": str(row.get("target_entity_type") or "Entity").strip() or "Entity",
+            }
+            pattern_signature = json.dumps(pattern, sort_keys=True, ensure_ascii=True)
+            if pattern_signature not in bucket["seen_patterns"]:
+                bucket["patterns"].append(pattern)
+                bucket["seen_patterns"].add(pattern_signature)
+
+        manifest: list[dict[str, Any]] = []
+        for relationship_type in sorted(grouped.keys()):
+            bucket = grouped[relationship_type]
+            manifest.append(
+                {
+                    "relationship_type": relationship_type,
+                    "count": int(bucket["count"]),
+                    "patterns": list(bucket["patterns"]),
+                }
+            )
+        return manifest
+
+    def _schema_identity_payload(self, entity: dict[str, Any]) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        raw_identity_keys = entity.get("identity_keys")
+        if isinstance(raw_identity_keys, (list, tuple, set)):
+            identity_keys = [
+                str(key or "").strip()
+                for key in raw_identity_keys
+                if str(key or "").strip()
+            ]
+        elif raw_identity_keys not in (None, "", [], {}):
+            identity_keys = [str(raw_identity_keys).strip()]
+        else:
+            identity_keys = []
+        for key in identity_keys:
+            if key in _SCHEMA_METADATA_KEYS or key == "entity_type":
+                continue
+            value = entity.get(key)
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                payload[key] = value
+        return payload
+
+    def _schema_property_keys(self, entity: dict[str, Any]) -> list[str]:
+        keys: list[str] = []
+        for key in sorted(entity.keys()):
+            if key in _SCHEMA_METADATA_KEYS or key == "entity_type":
+                continue
+            value = entity.get(key)
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                keys.append(key)
+                continue
+            if isinstance(value, list) and all(isinstance(item, (str, int, float, bool)) for item in value):
+                keys.append(key)
+        return keys
+
     def _result_entity_key(self, entity: dict[str, Any]) -> str:
+        identity_payload = self._schema_identity_payload(entity)
+        if identity_payload:
+            identity_json = json.dumps(identity_payload, sort_keys=True, ensure_ascii=True, default=str)
+            return f"{str(entity.get('entity_type') or 'Entity')}:{identity_json}"
         for key in ("id", "name", "code", "title", "value"):
             value = str(entity.get(key, "") or "").strip()
             if value:
                 return f"{entity.get('entity_type', '')}:{key}:{value}"
         return ""
+
+    def _graph_entity_id(self, entity: dict[str, Any]) -> str:
+        """Generate a stable frontend node id without depending on schema-specific field names."""
+        entity_type = str(entity.get("entity_type") or "Entity").strip() or "Entity"
+        explicit_id = str(entity.get("id", "") or "").strip()
+        if explicit_id:
+            return f"entity:{entity_type}:id:{explicit_id}"
+
+        identity_payload = self._graph_identity_payload(entity)
+        identity_json = json.dumps(identity_payload, sort_keys=True, ensure_ascii=True, default=str)
+        identity_hash = hashlib.sha1(identity_json.encode("utf-8")).hexdigest()[:12]
+        if identity_payload:
+            preview = ",".join(list(identity_payload.keys())[:2])
+            return f"entity:{entity_type}:{preview}:{identity_hash}"
+        return f"entity:{entity_type}:{identity_hash}"
+
+    def _graph_identity_payload(self, entity: dict[str, Any]) -> dict[str, Any]:
+        """Return stable, non-structural scalar properties that define an entity for graph rendering."""
+        payload: dict[str, Any] = {}
+        for key in sorted(entity.keys()):
+            if key in _GRAPH_METADATA_KEYS or key == "entity_type":
+                continue
+            value = entity.get(key)
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                payload[key] = value
+                continue
+            if isinstance(value, list) and all(isinstance(item, (str, int, float, bool)) for item in value):
+                payload[key] = value
+        return payload
 
     def _chunk_payload(self, chunk: dict[str, Any]) -> dict[str, Any]:
         payload = dict(chunk or {})
@@ -1183,9 +1446,3 @@ class GraphDB:
             for token in re.findall(r"[A-Za-z0-9_]+", str(value or ""))
             if token
         }
-
-
-# TODO(new-backend): Add get_relevant_memories(...) on GraphDB if durable
-# memory retrieval remains part of the new Neo4j backend after legacy removal.
-# TODO(new-backend): Add store_memory_item(...) on GraphDB if saved decisions
-# or recommendation memory should be stored in the new Student-centric graph.

@@ -22,6 +22,36 @@ function withStudentId(path, studentId) {
 export function chatSSE({ query, sessionId, studentId, files = [], replaceFilenames = [], reasoning = 'medium' }, callbacks) {
   const controller = new AbortController();
 
+  const processSSEBuffer = (chunk, { flush = false } = {}) => {
+    const delimiter = '\n';
+    const lines = chunk.split(delimiter);
+    const remainder = flush ? '' : (lines.pop() || '');
+
+    let eventType = '';
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r$/, '');
+      if (!line) {
+        eventType = '';
+        continue;
+      }
+      if (line.startsWith('event: ')) {
+        eventType = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (eventType === 'progress') callbacks.onProgress?.(data);
+          else if (eventType === 'token') callbacks.onToken?.(data);
+          else if (eventType === 'done') callbacks.onDone?.(data);
+          else if (eventType === 'error') callbacks.onError?.(data.error);
+        } catch {
+          // skip malformed JSON
+        }
+      }
+    }
+
+    return remainder;
+  };
+
   const formData = new FormData();
   formData.append('query', query);
   if (sessionId) formData.append('session_id', sessionId);
@@ -41,6 +71,10 @@ export function chatSSE({ query, sessionId, studentId, files = [], replaceFilena
       callbacks.onError?.(`Server error: ${response.status}`);
       return;
     }
+    if (!response.body) {
+      callbacks.onError?.('Streaming response body was unavailable.');
+      return;
+    }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -48,28 +82,13 @@ export function chatSSE({ query, sessionId, studentId, files = [], replaceFilena
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        buffer = processSSEBuffer(buffer, { flush: true });
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      let eventType = '';
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          eventType = line.slice(7).trim();
-        } else if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            if (eventType === 'progress') callbacks.onProgress?.(data);
-            else if (eventType === 'token') callbacks.onToken?.(data);
-            else if (eventType === 'done') callbacks.onDone?.(data);
-            else if (eventType === 'error') callbacks.onError?.(data.error);
-          } catch {
-            // skip malformed JSON
-          }
-        }
-      }
+      buffer = processSSEBuffer(buffer);
     }
   }).catch((err) => {
     if (err.name !== 'AbortError') {

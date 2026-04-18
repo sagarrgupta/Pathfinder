@@ -29,7 +29,7 @@ function formatLabel(value) {
 
 function JsonBlock({ value }) {
   return (
-    <pre className="text-xs whitespace-pre-wrap break-words overflow-x-auto rounded-lg border bg-muted/20 p-3">
+    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-border/60 bg-background/80 p-3.5 text-[11px] leading-5 text-muted-foreground shadow-sm">
       {JSON.stringify(value, null, 2)}
     </pre>
   );
@@ -99,43 +99,48 @@ export default function ReplayPage() {
 
   const toolCalls = Array.isArray(selectedReplay?.tool_call_log) ? selectedReplay.tool_call_log : [];
   const citations = Array.isArray(selectedReplay?.citations) ? selectedReplay.citations : [];
-  const documentExtractions = Array.isArray(selectedReplay?.document_extractions) ? selectedReplay.document_extractions : [];
   const documentIngestion = selectedReplay?.document_ingestion || {};
-  const patchSummaries = Array.isArray(documentIngestion?.patch_summaries) ? documentIngestion.patch_summaries : [];
+  const ingestionDocuments = Array.isArray(documentIngestion?.documents) ? documentIngestion.documents : [];
 
   return (
-    <div className="flex-1 overflow-y-auto scrollbar-fade">
-      <div className="max-w-7xl mx-auto p-6 space-y-6 animate-fade-in">
-        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-          <div className="flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 ring-1 ring-primary/10 flex items-center justify-center">
-              <History className="h-7 w-7 text-primary" />
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-fade">
+      <div className="mx-auto max-w-7xl space-y-6 p-6 animate-fade-in">
+        <div className="hero-panel px-6 py-7 sm:px-8">
+          <div className="mb-3 eyebrow">Saved runs</div>
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div className="flex items-center gap-4">
+              <div className="flex h-14 w-14 items-center justify-center rounded-[22px] bg-gradient-to-br from-primary/20 via-primary/10 to-warning/15 ring-1 ring-primary/15">
+                <History className="h-7 w-7 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold tracking-tight">Saved Runs</h1>
+                <p className="mt-0.5 text-sm text-muted-foreground">
+                  Revisit past answers, uploaded documents, and the behind-the-scenes details from each saved turn.
+                </p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Helpful for debugging, QA, and understanding why Pathfinder answered the way it did.
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight">Replay Browser</h1>
-              <p className="text-muted-foreground text-sm mt-0.5">
-                Inspect the exact tool calls, inputs, outputs, and final answer for each saved turn.
-              </p>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={showCurrentStudentOnly}
-                onChange={(e) => setShowCurrentStudentOnly(e.target.checked)}
-                className="rounded border-border"
-              />
-              Current student only
-            </label>
-            <button
-              onClick={() => void loadList()}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border bg-card hover:bg-accent/40 transition-colors text-sm font-medium"
-            >
-              <RefreshCw className="h-4 w-4" />
-              Refresh
-            </button>
+            <div className="flex items-center gap-2">
+              <label className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={showCurrentStudentOnly}
+                  onChange={(e) => setShowCurrentStudentOnly(e.target.checked)}
+                  className="rounded border-border"
+                />
+                Current profile only
+              </label>
+              <button
+                onClick={() => void loadList()}
+                className="soft-button rounded-lg px-3 py-2"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Refresh
+              </button>
+            </div>
           </div>
         </div>
 
@@ -145,13 +150,13 @@ export default function ReplayPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 xl:grid-cols-[320px,1fr] gap-6">
-          <section className="rounded-2xl border bg-card p-4">
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[320px,1fr]">
+          <section className="section-card p-4 xl:sticky xl:top-6 xl:self-start">
             <div className="flex items-center justify-between mb-3">
               <div>
-                <p className="font-semibold">Saved Replays</p>
+                <p className="font-semibold">Run History</p>
                 <p className="text-xs text-muted-foreground">
-                  {filteredReplays.length} artifact{filteredReplays.length === 1 ? '' : 's'}
+                  {filteredReplays.length} saved run{filteredReplays.length === 1 ? '' : 's'}
                 </p>
               </div>
             </div>
@@ -171,7 +176,7 @@ export default function ReplayPage() {
                     <button
                       key={item.id}
                       onClick={() => void loadDetail(item.id)}
-                      className={`w-full text-left rounded-xl border p-3 transition-colors ${isActive ? 'border-primary bg-primary/5' : 'hover:bg-muted/30'}`}
+                      className={`w-full text-left rounded-2xl border p-3 transition-colors ${isActive ? 'border-primary/30 bg-primary/8 shadow-sm' : 'border-border/60 hover:bg-muted/30'}`}
                     >
                       <p className="text-sm font-medium line-clamp-2">{item.query}</p>
                       <div className="flex flex-wrap gap-2 mt-2 text-xs text-muted-foreground">
@@ -189,7 +194,7 @@ export default function ReplayPage() {
             )}
           </section>
 
-          <section className="rounded-2xl border bg-card p-5">
+          <section className="section-card">
             {loadingDetail ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -222,15 +227,15 @@ export default function ReplayPage() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <div className="rounded-xl border bg-muted/20 p-4">
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  <div className="metric-tile">
                     <div className="flex items-center gap-2 mb-2">
                       <Search className="h-4 w-4 text-primary" />
                       <p className="font-medium">Query</p>
                     </div>
                     <p className="text-sm whitespace-pre-wrap">{selectedReplay.query}</p>
                   </div>
-                  <div className="rounded-xl border bg-muted/20 p-4">
+                  <div className="metric-tile">
                     <div className="flex items-center gap-2 mb-2">
                       <Bot className="h-4 w-4 text-primary" />
                       <p className="font-medium">Final Answer</p>
@@ -241,34 +246,44 @@ export default function ReplayPage() {
                   </div>
                 </div>
 
-                <div className="rounded-xl border bg-muted/20 p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <FileText className="h-4 w-4 text-primary" />
-                    <p className="font-medium">Long Context Snapshot</p>
+                <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                  <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
+                    <div className="mb-2 flex items-center gap-2">
+                      <FileText className="h-4 w-4 text-primary" />
+                      <p className="font-medium">Conversation Summary</p>
+                    </div>
+                    <JsonBlock value={selectedReplay.session_context || ''} />
                   </div>
-                  <JsonBlock value={selectedReplay.long_context_payload || {}} />
+
+                  <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
+                    <div className="mb-2 flex items-center gap-2">
+                      <FileText className="h-4 w-4 text-primary" />
+                      <p className="font-medium">Longer Profile Memory</p>
+                    </div>
+                    <JsonBlock value={selectedReplay.long_context || ''} />
+                  </div>
                 </div>
 
-                <div className="rounded-xl border bg-muted/20 p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <FileText className="h-4 w-4 text-primary" />
-                      <p className="font-medium">Student Schema</p>
-                    </div>
+                <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
+                  <div className="mb-2 flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-primary" />
+                    <p className="font-medium">Profile Structure Snapshot</p>
+                  </div>
                   <JsonBlock value={selectedReplay.student_schema || {}} />
                 </div>
 
-                {documentExtractions.length > 0 ? (
-                  <div className="rounded-xl border bg-muted/20 p-4">
+                {ingestionDocuments.length > 0 ? (
+                  <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
                     <div className="flex items-center gap-2 mb-3">
                       <Paperclip className="h-4 w-4 text-primary" />
                       <p className="font-medium">Extracted Document Text</p>
                       <span className="text-xs text-muted-foreground">
-                        {documentExtractions.length} document{documentExtractions.length === 1 ? '' : 's'}
+                        {ingestionDocuments.length} document{ingestionDocuments.length === 1 ? '' : 's'}
                       </span>
                     </div>
                     <div className="space-y-4">
-                      {documentExtractions.map((item, index) => (
-                        <div key={item.document_id || `${item.filename}-${index}`} className="rounded-xl border bg-card p-4">
+                      {ingestionDocuments.map((item, index) => (
+                        <div key={item.document_id || `${item.filename}-${index}`} className="rounded-2xl border border-border/70 bg-card p-4">
                           <div className="flex flex-wrap items-center gap-2 mb-2">
                             <span className="text-sm font-semibold">{item.filename || 'Uploaded document'}</span>
                             {item.role ? (
@@ -282,7 +297,7 @@ export default function ReplayPage() {
                               </span>
                             ) : null}
                           </div>
-                          <pre className="text-xs whitespace-pre-wrap break-words overflow-x-auto rounded-lg border bg-muted/20 p-3">
+                          <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-border/60 bg-background/80 p-3.5 text-[11px] leading-5 text-muted-foreground shadow-sm">
                             {item.text_preview || 'No extracted text saved.'}
                           </pre>
                         </div>
@@ -291,61 +306,36 @@ export default function ReplayPage() {
                   </div>
                 ) : null}
 
-                {patchSummaries.length > 0 ? (
-                  <div className="rounded-xl border bg-muted/20 p-4">
+                {ingestionDocuments.length > 0 ? (
+                  <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
                     <div className="flex items-center gap-2 mb-3">
                       <Paperclip className="h-4 w-4 text-primary" />
-                      <p className="font-medium">Document Ingestion Patch</p>
-                      <span className="text-xs text-muted-foreground">
-                        {documentIngestion.entity_count || 0} entities • {documentIngestion.relationship_count || 0} relationships
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4 text-xs">
-                      <div className="rounded-lg border bg-card p-3">
-                        <p className="text-muted-foreground">Chunks</p>
-                        <p className="text-lg font-semibold">{documentIngestion.chunk_count || 0}</p>
-                      </div>
-                      <div className="rounded-lg border bg-card p-3">
-                        <p className="text-muted-foreground">Entities</p>
-                        <p className="text-lg font-semibold">{documentIngestion.entity_count || 0}</p>
-                      </div>
-                      <div className="rounded-lg border bg-card p-3">
-                        <p className="text-muted-foreground">Relationships</p>
-                        <p className="text-lg font-semibold">{documentIngestion.relationship_count || 0}</p>
-                      </div>
-                      <div className="rounded-lg border bg-card p-3">
-                        <p className="text-muted-foreground">Support Records</p>
-                        <p className="text-lg font-semibold">{documentIngestion.support_record_count || documentIngestion.candidate_fact_count || 0}</p>
-                      </div>
-                      <div className="rounded-lg border bg-card p-3">
-                        <p className="text-muted-foreground">Schema Sections</p>
-                        <p className="text-lg font-semibold">{documentIngestion.schema_section_count || 0}</p>
-                      </div>
+                      <p className="font-medium">Document Ingestion</p>
                     </div>
                     <div className="space-y-4">
-                      {patchSummaries.map((item, index) => (
-                        <div key={item.document_id || `${item.filename}-${index}`} className="rounded-xl border bg-card p-4 space-y-3">
+                      {ingestionDocuments.map((item, index) => (
+                        <div key={item.document_id || `${item.filename}-${index}`} className="rounded-2xl border border-border/70 bg-card p-4 space-y-3">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="text-sm font-semibold">{item.filename || 'Uploaded document'}</span>
                             <span className="text-xs text-muted-foreground">
-                              {item.entity_count || 0} entities • {item.relationship_count || 0} relationships
+                              {item.chunks_stored || 0} chunks stored
                             </span>
                           </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-1">Agent Result</p>
-                            <JsonBlock value={item.agent_result || {}} />
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Model Summary</p>
+                            <JsonBlock value={item.ingestion_result?.model_summary || {}} />
                           </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-1">Saved Items</p>
-                            <JsonBlock value={item.saved_items || []} />
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Graph Updates</p>
+                            <JsonBlock value={item.ingestion_result?.graph_updates || {}} />
                           </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-1">Context Updates</p>
-                            <JsonBlock value={item.context_updates || {}} />
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Graph Schema After</p>
+                            <JsonBlock value={item.ingestion_result?.graph_schema_after || {}} />
                           </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-1">Ingestion Tool Calls</p>
-                            <JsonBlock value={item.tool_calls || []} />
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Ingestion Tool Calls</p>
+                            <JsonBlock value={item.ingestion_result?.tool_call_log || []} />
                           </div>
                         </div>
                       ))}
@@ -353,7 +343,7 @@ export default function ReplayPage() {
                   </div>
                 ) : null}
 
-                <div className="rounded-xl border bg-muted/20 p-4">
+                <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
                   <div className="flex items-center gap-2 mb-3">
                     <Wrench className="h-4 w-4 text-primary" />
                     <p className="font-medium">Tool Calls</p>
@@ -366,7 +356,7 @@ export default function ReplayPage() {
                   ) : (
                     <div className="space-y-4">
                       {toolCalls.map((item, index) => (
-                        <div key={item.call_id || `${item.tool}-${index}`} className="rounded-xl border bg-card p-4 space-y-3">
+                        <div key={item.call_id || `${item.tool}-${index}`} className="rounded-2xl border border-border/70 bg-card p-4 space-y-3">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="text-sm font-semibold">{item.tool || 'Unknown tool'}</span>
                             <span className={`px-2 py-0.5 rounded-full text-xs ${item.status === 'ok' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'}`}>
@@ -376,12 +366,12 @@ export default function ReplayPage() {
                               <span className="text-xs text-muted-foreground">call_id: {item.call_id}</span>
                             ) : null}
                           </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-1">Input From LLM</p>
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Input From LLM</p>
                             <JsonBlock value={item.input || item.args || {}} />
                           </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-1">Tool Output</p>
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Tool Output</p>
                             <JsonBlock value={item.output || item.result_summary || {}} />
                           </div>
                         </div>
@@ -390,14 +380,14 @@ export default function ReplayPage() {
                   )}
                 </div>
 
-                <div className="rounded-xl border bg-muted/20 p-4">
-                  <p className="font-medium mb-2">Citations</p>
+                <div className="rounded-[22px] border border-border/70 bg-muted/20 p-4">
+                  <p className="mb-2 font-medium">Citations</p>
                   {citations.length === 0 ? (
                     <p className="text-sm text-muted-foreground">No citations saved.</p>
                   ) : (
                     <div className="space-y-2">
                       {citations.map((citation, index) => (
-                        <div key={`${citation.url || citation.title || 'citation'}-${index}`} className="rounded-lg border bg-card p-3">
+                        <div key={`${citation.url || citation.title || 'citation'}-${index}`} className="rounded-2xl border border-border/70 bg-card p-3.5 shadow-sm">
                           <p className="text-sm font-medium">{citation.title || citation.metadata?.title || `Source ${index + 1}`}</p>
                           <p className="text-xs text-muted-foreground break-all mt-1">{citation.url || citation.source || ''}</p>
                         </div>

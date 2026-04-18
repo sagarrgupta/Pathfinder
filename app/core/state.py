@@ -29,28 +29,23 @@ class PathfinderState(TypedDict, total=False):
     session_id: str                           # Chat session ID
     student_id: str                           # Student identifier
     reasoning: str                            # User-selected reasoning effort for local LLM calls
-    request_plan: dict[str, Any]              # Deterministic request-planning hints for this turn
 
     # ── Orchestrator output ─────────────────────────────────────
     selected_specialist: str                  # Single specialist selected for this turn
     routing_scores: dict[str, float]          # Raw specialist routing scores
     routing_reason: str                       # Human-readable routing explanation
-    next_node: str                            # Next node to route to
-    session_summary: dict[str, Any]           # Normalized summary of session/student context
-    recovery_events: list[dict[str, Any]]     # Structured recovery/degradation events for this turn
+    processing_issues: list[dict[str, Any]]   # Structured degraded-processing events for this turn
     stop_reason: str                          # Why a turn stopped early or partially
 
     # ── Data gathered by nodes ──────────────────────────────────
-    profile_data: dict[str, Any]              # Current student graph snapshot from Neo4j
-    retrieved_documents: list[dict[str, Any]] # Retrieved chunk evidence from vector/graph search
+    session_context: str                      # Stored session-scoped summary carried across turns
+    long_context: str                         # Stored student-scoped summary carried across turns
+    student_schema: dict[str, Any]            # Canonical bounded student graph schema manifest
     latest_ingestion_result: dict[str, Any]   # Last document-ingestion summary for debugging/replays
     tool_call_log: list[dict[str, Any]]       # Provenance log of tool calls/results used this turn
     specialist_output: dict[str, Any]         # Structured result from the selected specialist
-    long_context_payload: dict[str, Any]      # Durable long-context payload passed to the specialist
 
     # ── Evaluation ──────────────────────────────────────────────
-    draft_answer: str                         # Answer before evaluation
-    confidence_score: float                   # 0.0 to 1.0
     citations: list[dict[str, Any]]           # Sources for the answer
 
     # ── Output ──────────────────────────────────────────────────

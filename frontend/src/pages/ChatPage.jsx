@@ -176,10 +176,8 @@ export default function ChatPage() {
               sessionId: sid,
               update: {
                 metadata: {
-                  confidence: data.confidence,
                   citations: data.citations,
                   method: data.method,
-                  qualityPath: data.quality_path,
                   replayId: data.replay_id,
                   dependencyStatus: data.dependency_status,
                   stopReason: data.stop_reason,
@@ -188,8 +186,8 @@ export default function ChatPage() {
                   routingScores: data.routing_scores,
                   routingReason: data.routing_reason,
                   toolCallLog: data.tool_call_log,
+                  documentIngestion: data.document_ingestion || {},
                   specialistOutput: data.specialist_output,
-                  transcriptStates: data.transcript_states,
                   reasoning: runtimeSnapshot.reasoning || state.settings.reasoning || 'medium',
                 },
               },
@@ -224,9 +222,7 @@ export default function ChatPage() {
   };
 
   const handleSuggestionClick = (text) => {
-    if (!sessionId) createSession();
-    // Small delay for session to initialize
-    setTimeout(() => handleSend(text), 50);
+    handleSend(text);
   };
 
   // ── Student context ──
@@ -239,7 +235,6 @@ export default function ChatPage() {
   );
   const hasStudentContext = studentSections.length > 0 || studentEntityTotal > 0;
   const suggestions = DEFAULT_SUGGESTIONS;
-
   // Time-aware greeting
   const timeGreeting = useMemo(() => {
     const hour = new Date().getHours();
@@ -251,64 +246,104 @@ export default function ChatPage() {
   // Welcome screen when no session is active
   if (!sessionId) {
     return (
-      <div className="flex-1 flex items-center justify-center p-6">
-        <div className="text-center max-w-2xl w-full animate-fade-in">
-          {/* Logo */}
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 ring-1 ring-primary/10 mb-6">
-            <GraduationCap className="h-8 w-8 text-primary" />
-          </div>
+      <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex-1 overflow-y-auto scrollbar-fade px-6 py-8">
+          <div className="flex min-h-full items-center justify-center">
+            <div className="hero-panel w-full max-w-5xl animate-fade-in px-8 py-8 sm:px-10 sm:py-10">
+              <div className="grid gap-8 lg:grid-cols-[1.25fr,0.95fr] lg:items-center">
+                <div className="text-center lg:text-left">
+                  <div className="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-[24px] bg-gradient-to-br from-primary/20 via-primary/10 to-warning/15 ring-1 ring-primary/15">
+                    <GraduationCap className="h-7 w-7 text-primary" />
+                  </div>
 
-          <h1 className="text-3xl font-bold tracking-tight mb-2">
-            {studentName
-              ? `${timeGreeting}, ${studentName}`
-              : 'Welcome to Pathfinder'}
-          </h1>
-            <p className="text-muted-foreground text-lg mb-8 max-w-md mx-auto">
-            {hasStudentContext
-              ? 'Your personalized academic and career assistant is ready. What would you like to explore today?'
-              : 'Your AI-powered academic and career guidance assistant. Upload your resume or transcript to get started!'}
-          </p>
+                  <div className="eyebrow mb-4">Student graph + retrieval workspace</div>
+                  <div className="eyebrow mb-4 ml-2 hidden sm:inline-flex">Built for grounded academic and career help</div>
 
-          {/* Student status badge */}
-          {hasStudentContext && (
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-medium mb-6">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              Student loaded — {studentSections.length} sections, {studentEntityTotal} entities
-            </div>
-          )}
+                  <h1 className="mb-3 text-3xl font-bold tracking-tight sm:text-4xl">
+                    {studentName
+                      ? `${timeGreeting}, ${studentName}`
+                      : 'Welcome to Pathfinder'}
+                  </h1>
+                  <p className="max-w-2xl text-balance text-base leading-7 text-muted-foreground lg:text-lg">
+                    {hasStudentContext
+                      ? 'Your workspace is ready with profile memory, structured student data, and document retrieval. Ask for plans, summaries, comparisons, or grounded recommendations.'
+                      : 'Start with a transcript, resume, or other supporting document. Pathfinder will turn it into reusable context for future academic and career guidance.'}
+                  </p>
 
-          {/* Suggestion cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg mx-auto mb-8">
-            {suggestions.map((s, i) => (
-              <button
-                key={i}
-                onClick={() => handleSuggestionClick(s.text)}
-                className="group flex items-start gap-3 p-4 rounded-xl border bg-card hover:bg-accent/50 hover:border-primary/20 text-left transition-all duration-200 hover:shadow-sm"
-              >
-                <s.icon className={`h-5 w-5 mt-0.5 flex-shrink-0 ${s.color}`} />
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm leading-snug">{s.text}</span>
+                  {hasStudentContext && (
+                    <div className="mt-5 inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-4 py-2 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                      <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                      Profile ready: {studentSections.length} sections, {studentEntityTotal} saved items
+                    </div>
+                  )}
+
+                  <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="metric-tile text-left">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Memory</p>
+                      <p className="mt-2 text-2xl font-semibold">{studentSections.length}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">profile sections ready to use</p>
+                    </div>
+                    <div className="metric-tile text-left">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Saved Items</p>
+                      <p className="mt-2 text-2xl font-semibold">{studentEntityTotal}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">facts Pathfinder can ground answers in</p>
+                    </div>
+                    <div className="metric-tile text-left">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Mode</p>
+                      <p className="mt-2 text-2xl font-semibold">{(state.settings.reasoning || 'medium').toUpperCase()}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">current reasoning depth</p>
+                    </div>
+                  </div>
                 </div>
-                <ArrowRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity mt-0.5 flex-shrink-0" />
-              </button>
-            ))}
-          </div>
 
-          {/* Keyboard hint */}
-          <p className="text-xs text-muted-foreground">
-            Press{' '}
-            <kbd className="px-1.5 py-0.5 rounded bg-muted border text-[10px] font-mono font-medium">
-              ⌘N
-            </kbd>
-            {' '}to start a new chat
-          </p>
+                <div className="rounded-[24px] border border-border/70 bg-background/65 p-5 shadow-sm">
+                  <p className="mb-4 text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+                    Try a prompt
+                  </p>
+                  <div className="grid gap-3">
+                    {suggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        onClick={() => handleSuggestionClick(s.text)}
+                        className="group flex items-start gap-3 rounded-2xl border border-border/70 bg-card/72 p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/25 hover:bg-accent/35 hover:shadow-[0_18px_45px_rgba(15,23,42,0.08)]"
+                      >
+                        <s.icon className={`mt-0.5 h-5 w-5 flex-shrink-0 ${s.color}`} />
+                        <div className="min-w-0 flex-1">
+                          <span className="text-sm font-medium leading-snug">{s.text}</span>
+                          <p className="mt-1 text-xs text-muted-foreground">Start a focused conversation with grounded context</p>
+                        </div>
+                        <ArrowRight className="mt-0.5 h-4 w-4 flex-shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-4 text-xs text-muted-foreground">
+                    Press{' '}
+                    <kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono font-medium">
+                      ⌘N
+                    </kbd>
+                    {' '}to start a new chat
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
+
+        <InputArea
+          onSend={handleSend}
+          onStop={handleStop}
+          isStreaming={state.isStreaming}
+          files={files}
+          onFilesChange={handleFilesChange}
+          reasoning={state.settings.reasoning || 'medium'}
+          onReasoningChange={(value) => dispatch({ type: 'SET_SETTINGS', payload: { reasoning: value } })}
+        />
       </div>
     );
   }
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       {/* Duplicate file dialog */}
       {dupDialog.open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
@@ -344,7 +379,7 @@ export default function ChatPage() {
       )}
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto scrollbar-fade">
+      <div className="flex-1 overflow-y-auto scrollbar-fade px-3 pb-3 pt-5 md:px-5">
         <MessageList messages={messages} isStreaming={state.isStreaming} />
       </div>
 

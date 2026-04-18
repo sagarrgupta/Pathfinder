@@ -33,7 +33,7 @@ flowchart TB
         IG[input_guard]
         OR[orchestrator]
         SR[specialist_runner]
-        LV[light_validator]
+        LV[response_validator]
         RP[responder]
     end
 
@@ -74,7 +74,7 @@ flowchart TB
 
 ## 4. LangGraph Workflow
 
-Compiled in `app/core/graph.py`. Nodes live under `app/agents/`.
+Compiled in `app/core/workflow.py`. Nodes live under `app/nodes/`.
 
 ```mermaid
 flowchart LR
@@ -83,7 +83,7 @@ flowchart LR
     IG -->|ok| OR[orchestrator]
     OR -->|default| SR[specialist_runner]
     OR -->|short-circuit| RP
-    SR -->|default| LV[light_validator]
+    SR -->|default| LV[response_validator]
     SR -->|short-circuit| RP
     LV --> RP
     RP --> END([END])
@@ -94,7 +94,7 @@ flowchart LR
 | `input_guard` | Empty / max length / SQL-injection-style patterns when topic guard is on. Sets `is_blocked` + `block_reason`. |
 | `orchestrator` | Loads profile, builds session summary, **LLM scores** `academic` / `career` / `general` (fast `reasoning=none`), **heuristic fallback** if the LLM fails; boosts for files and certain `request_plan` hints; writes `routing_*` and `next_node`. |
 | `specialist_runner` | Optional `doc_analyst` pre-ingest; reuses orchestrator profile/session summary when possible; runs `hybrid_search`; builds short + long context; **binds canonical tools** from `app/tools/tools.py`; agent loop with optional one-shot web-search retry nudge. |
-| `light_validator` | Normalizes output, citations from successful `tool_call_log`, fixed confidence heuristic. |
+| `response_validator` | Normalizes output, citations from successful `tool_call_log`, fixed confidence heuristic. |
 | `responder` | Block path → `block_reason`; else `final_answer` ≈ `draft_answer`, minimal rewrite. |
 
 **Not in this graph:** older multi-advisor branches, a dedicated `build_memory_pack` node. Retrieval strategy label from `execution_registry` (`memory_pack`) is metadata for settings/UI; live context is assembled inside `specialist_runner` and tools.
@@ -205,5 +205,5 @@ Keep this file, [`PATHFINDER_ARCHITECTURE_FLOW.md`](PATHFINDER_ARCHITECTURE_FLOW
 - `app/core/graph.py`
 - `app/core/state.py`
 - `app/api/routes.py`
-- `app/agents/orchestrator.py`
-- `app/agents/specialist_runner.py`
+- `app/nodes/orchestrator.py`
+- `app/nodes/specialist_runner.py`

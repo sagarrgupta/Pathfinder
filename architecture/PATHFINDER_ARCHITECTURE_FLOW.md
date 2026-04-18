@@ -9,7 +9,7 @@ Key implementation entry points:
 - Runtime assembly: `app/services/runtime_session.py`
 - Graph assembly: `app/core/graph.py`
 - Shared state: `app/core/state.py`
-- Specialist execution: `app/agents/specialist_runner.py`
+- Specialist execution: `app/nodes/specialist_runner.py`
 - Tool registry: `app/tools/tools.py`
 
 ---
@@ -47,7 +47,7 @@ flowchart TD
     COMPILE --> STREAM["graph.astream(initial_state, config)<br/>SSE event_stream generator"]
 
     %% ── LangGraph Node 1: Input Guard ──────────────────────────
-    STREAM --> IG["NODE 1: input_guard<br/>app/agents/input_guard.py"]
+    STREAM --> IG["NODE 1: input_guard<br/>app/nodes/input_guard.py"]
 
     IG --> IG_EMPTY{"Query empty?"}
     IG_EMPTY -- Yes --> BLOCKED["is_blocked = True<br/>block_reason set"]
@@ -62,7 +62,7 @@ flowchart TD
     PASSED --> ROUTE_GUARD_OK["route_after_guard<br/>→ orchestrator"]
 
     %% ── LangGraph Node 2: Orchestrator ─────────────────────────
-    ROUTE_GUARD_OK --> ORCH["NODE 2: orchestrator<br/>app/agents/orchestrator.py"]
+    ROUTE_GUARD_OK --> ORCH["NODE 2: orchestrator<br/>app/nodes/orchestrator.py"]
 
     ORCH --> ORCH_PROFILE["get_full_student(student_id)<br/>from Neo4j"]
     ORCH_PROFILE --> ORCH_SESSION["build_session_summary()<br/>profile + messages + query"]
@@ -84,7 +84,7 @@ flowchart TD
     SPEC_ACADEMIC & SPEC_CAREER & SPEC_GENERAL --> ROUTE_ORCH["route_after_orchestrator<br/>→ specialist_runner"]
 
     %% ── LangGraph Node 3: Specialist Runner ────────────────────
-    ROUTE_ORCH --> SPEC["NODE 3: specialist_runner<br/>app/agents/specialist_runner.py"]
+    ROUTE_ORCH --> SPEC["NODE 3: specialist_runner<br/>app/nodes/specialist_runner.py"]
 
     SPEC --> FILES_CHECK{"Uploaded files<br/>present?"}
     FILES_CHECK -- Yes --> DOC_INGEST["Pre-ingest via doc_analyst<br/>PDF/image/DOCX extraction<br/>entity extraction, chunking,<br/>Neo4j storage"]
@@ -132,11 +132,11 @@ flowchart TD
     TOOL_DECISION -- "text content<br/>(no tool calls)" --> PARSE_JSON["Parse JSON from text response<br/>or wrap raw text as message"]
     PARSE_JSON --> LOOP_DONE
 
-    LOOP_DONE --> SPEC_OUT["Set state:<br/>draft_answer = cleaned message<br/>specialist_output = message +<br/>memory_patch + provenance + stop_reason<br/>tool_call_log, long_context_payload<br/>next_node = light_validator"]
+    LOOP_DONE --> SPEC_OUT["Set state:<br/>draft_answer = cleaned message<br/>specialist_output = message +<br/>memory_patch + provenance + stop_reason<br/>tool_call_log, long_context_payload<br/>next_node = response_validator"]
 
     %% ── LangGraph Node 4: Light Validator ──────────────────────
-    SPEC_OUT --> ROUTE_SPEC["route_after_specialist<br/>→ light_validator"]
-    ROUTE_SPEC --> VALID["NODE 4: light_validator<br/>app/agents/light_validator.py"]
+    SPEC_OUT --> ROUTE_SPEC["route_after_specialist<br/>→ response_validator"]
+    ROUTE_SPEC --> VALID["NODE 4: response_validator<br/>app/nodes/response_validator.py"]
 
     VALID --> VALID_SHAPE["Normalize specialist_output<br/>fallback to draft_answer"]
     VALID_SHAPE --> CITE["Extract citations from<br/>tool_call_log (status=ok)<br/>deduplicate, limit to 8"]
@@ -150,7 +150,7 @@ flowchart TD
 
     %% ── LangGraph Node 5: Responder ───────────────────────────
     VALID_OUT --> ROUTE_VALID["route_after_validator<br/>→ responder"]
-    ROUTE_VALID --> RESP["NODE 5: responder<br/>app/agents/responder.py"]
+    ROUTE_VALID --> RESP["NODE 5: responder<br/>app/nodes/responder.py"]
     ROUTE_GUARD_BLOCK --> RESP
 
     RESP --> RESP_CHECK{"is_blocked?"}
@@ -164,7 +164,7 @@ flowchart TD
 
     SSE_PROGRESS --> SSE_TOKENS["Emit SSE token events<br/>split final_answer into words<br/>word-by-word streaming for UX"]
 
-    SSE_TOKENS --> DONE_PAYLOAD["build_done_payload()<br/>session_id, student_id, confidence,<br/>citations, method (direct|rag|graph|web),<br/>quality_path, dependency_status snapshot,<br/>selected_specialist, routing_scores,<br/>tool_call_log, specialist_output,<br/>long_context_payload, runtime_snapshot"]
+    SSE_TOKENS --> DONE_PAYLOAD["build_done_payload()<br/>session_id, student_id, confidence,<br/>citations, method (direct|rag|graph|web),<br/>dependency_status snapshot,<br/>selected_specialist, routing_scores,<br/>tool_call_log, specialist_output,<br/>long_context_payload, runtime_snapshot"]
 
     DONE_PAYLOAD --> PERSIST_REPLAY["Best-effort:<br/>build_replay_artifact()<br/>save_replay_artifact()<br/>attach replay_id to done_payload"]
     PERSIST_REPLAY --> SSE_DONE["Emit SSE done event<br/>with full done_payload"]
@@ -227,7 +227,7 @@ flowchart TD
 | Blue | Node 1: input_guard |
 | Purple/Indigo | Node 2: orchestrator |
 | Orange | Node 3: specialist_runner |
-| Green | Node 4: light_validator |
+| Green | Node 4: response_validator |
 | Violet | Node 5: responder |
 | Teal | Tool registry |
 | Red | Blocked path |

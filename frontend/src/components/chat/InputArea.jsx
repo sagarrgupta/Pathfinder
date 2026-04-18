@@ -33,7 +33,7 @@ export default function InputArea({
     const hasText = input.trim();
     const hasFiles = files.length > 0;
     if (hasText || hasFiles) {
-      const message = hasText ? input.trim() : `Please process the uploaded file(s): ${files.map((f) => f.name).join(', ')}`;
+      const message = hasText ? input.trim() : `Please process these uploaded files and add the useful information to my profile and retrieval context: ${files.map((f) => f.name).join(', ')}`;
       onSend(message);
       setInput('');
     }
@@ -58,17 +58,17 @@ export default function InputArea({
 
   const placeholder = files.length > 0
     ? 'Tell Pathfinder what to do with these files...'
-    : 'Ask about courses, jobs, interviews, or anything tied to your student graph and documents...';
+    : 'Ask about courses, internships, plans, deadlines, or anything tied to your saved profile and documents...';
 
   return (
-    <div className="bg-card/70 px-3 py-5 backdrop-blur-sm md:px-4 lg:px-5">
+    <div className="border-t border-border/50 bg-background/70 px-3 py-3 backdrop-blur-xl md:px-4 lg:px-5">
       <div className="mx-auto max-w-[1120px]">
         <div className="space-y-2">
 
           {files.length > 0 && (
             <div className="flex flex-wrap gap-2 animate-fade-in">
               {files.map((file, i) => (
-                <div key={i} className="flex items-center gap-1.5 rounded-xl border border-border/70 bg-muted/35 px-3 py-2 text-sm">
+                <div key={i} className="flex items-center gap-1.5 rounded-2xl border border-border/70 bg-background/75 px-3 py-2 text-sm shadow-sm">
                   <Paperclip className="h-3.5 w-3.5 text-muted-foreground" />
                   <span className="max-w-[180px] truncate">{file.name}</span>
                   <button
@@ -83,7 +83,7 @@ export default function InputArea({
           )}
 
           <form onSubmit={handleSubmit}>
-            <div className="rounded-[30px] border border-border/80 bg-background px-5 py-3 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
+            <div className="rounded-[30px] border border-border/80 bg-card/92 px-4 py-3 shadow-[0_14px_35px_rgba(15,23,42,0.08)] backdrop-blur-xl">
               <div className="relative">
                 <textarea
                   ref={textareaRef}
@@ -92,7 +92,7 @@ export default function InputArea({
                   onKeyDown={handleKeyDown}
                   placeholder={placeholder}
                   rows={1}
-                  className="block min-h-[72px] max-h-[160px] w-full resize-none bg-transparent px-0 py-0 text-[16px] leading-relaxed text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
+                  className="block min-h-[58px] max-h-[160px] w-full resize-none bg-transparent px-0 py-0 text-[15px] leading-7 text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
                   disabled={isStreaming}
                 />
                 {input.length > 0 && (
@@ -102,15 +102,15 @@ export default function InputArea({
                 )}
               </div>
 
-              <div className="mt-3 flex items-center justify-between gap-3">
+              <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/50 pt-3">
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border border-border/60 bg-muted/20 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                     title="Attach file (PDF, Image, DOCX)"
                   >
-                    <Paperclip className="h-4.5 w-4.5" />
+                    <Paperclip className="h-4 w-4" />
                   </button>
                   <input
                     ref={fileInputRef}
@@ -120,12 +120,12 @@ export default function InputArea({
                     onChange={handleFileSelect}
                     className="hidden"
                   />
-                  <div className="flex items-center gap-1.5 h-9 rounded-full border border-border/70 bg-muted/20 px-3 text-[11px] text-foreground">
-                    <span className="text-muted-foreground">Reasoning:</span>
+                  <div className="flex h-11 items-center gap-2 rounded-2xl border border-border/70 bg-muted/20 px-4 text-[11px] text-foreground">
+                    <span className="text-muted-foreground uppercase tracking-[0.2em]">Reasoning</span>
                     <select
                       value={reasoning || 'medium'}
                       onChange={(e) => onReasoningChange?.(e.target.value)}
-                      className="bg-transparent text-foreground outline-none"
+                      className="h-full bg-transparent text-foreground outline-none"
                       title="Choose the model reasoning level"
                     >
                       {REASONING_OPTIONS.map((option) => (
@@ -142,19 +142,19 @@ export default function InputArea({
                     <button
                       type="button"
                       onClick={onStop}
-                      className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-muted text-foreground transition-all hover:bg-accent active:scale-95"
+                      className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-border/70 bg-muted text-foreground transition-all hover:bg-accent active:scale-95"
                       title="Stop generating"
                     >
-                      <Square className="h-4.5 w-4.5" />
+                      <Square className="h-4 w-4" />
                     </button>
                   ) : (
                     <button
                       type="submit"
                       disabled={!input.trim() && files.length === 0}
-                      className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-foreground text-background transition-all hover:opacity-90 disabled:opacity-35 active:scale-95"
+                      className="flex h-10 min-w-[52px] flex-shrink-0 items-center justify-center rounded-2xl bg-foreground px-4 text-background transition-all hover:opacity-90 disabled:opacity-35 active:scale-95"
                       title="Send message"
                     >
-                      <Send className="h-4.5 w-4.5" />
+                      <Send className="h-4 w-4" />
                     </button>
                   )}
                 </div>

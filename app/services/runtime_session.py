@@ -1,8 +1,4 @@
-"""Runtime session helpers for chat execution.
-
-This module centralizes per-request runtime assembly so API routes can stay
-focused on HTTP concerns while graph execution details remain reusable.
-"""
+"""Runtime session helpers for chat execution."""
 
 from __future__ import annotations
 
@@ -10,10 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from app.config.settings import settings
-from app.core.memory import infer_quality_path
-from app.services.execution_registry import (
-    get_execution_registry,
-)
+from app.utils.runtime_utils import infer_method
 
 
 @dataclass(frozen=True)
@@ -34,12 +27,6 @@ class RuntimeSnapshot:
     student_id: str
     selected_text_model: str
     reasoning: str
-    selected_retrieval_mode: str
-    compare_mode: bool
-    uploaded_file_count: int
-    request_plan: dict[str, Any]
-    web_provider_chain: list[str]
-    document_ingestors: dict[str, str]
     dependency_status: DependencySnapshot
 
 
@@ -65,7 +52,6 @@ class ChatRuntimeSession:
             "session_id": self.session_id,
             "student_id": self.student_id,
             "topic_guard_enabled": self.topic_guard_enabled,
-            "request_plan": dict(self.runtime_snapshot.request_plan),
             "reasoning": self.reasoning,
         }
 
@@ -78,23 +64,23 @@ class ChatRuntimeSession:
 
     def build_done_payload(self, final_state: dict[str, Any]) -> dict[str, Any]:
         """Build the final SSE payload for a completed turn."""
+        latest_ingestion = dict(final_state.get("latest_ingestion_result", {}) or {})
         return {
             "session_id": self.session_id,
             "student_id": self.student_id,
-            "confidence": final_state.get("confidence_score", 0.5),
             "citations": final_state.get("citations", []),
-            "method": determine_method(final_state),
-            "quality_path": infer_quality_path(final_state),
+            "method": infer_method(final_state),
             "dependency_status": asdict(self.dependency_status),
-            "recovery_events": final_state.get("recovery_events", []),
+            "processing_issues": final_state.get("processing_issues", []),
             "stop_reason": final_state.get("stop_reason", ""),
             "selected_specialist": final_state.get("selected_specialist", ""),
             "routing_scores": final_state.get("routing_scores", {}),
             "routing_reason": final_state.get("routing_reason", ""),
-            "transcript_states": final_state.get("transcript_states", []),
             "tool_call_log": final_state.get("tool_call_log", []),
             "specialist_output": final_state.get("specialist_output", {}),
-            "long_context_payload": final_state.get("long_context_payload", {}),
+            "session_context": str(final_state.get("session_context", "") or ""),
+            "long_context": str(final_state.get("long_context", "") or ""),
+            "document_ingestion": latest_ingestion,
             "runtime_snapshot": asdict(self.runtime_snapshot),
         }
 
@@ -110,25 +96,12 @@ async def build_chat_runtime_session(
 ) -> ChatRuntimeSession:
     """Assemble a runtime session for one chat request."""
     dependency_status = await get_dependency_status()
-    registry = get_execution_registry()
     normalized_reasoning = str(reasoning or "medium").strip().lower() or "medium"
-    request_plan = {
-        "reasoning": normalized_reasoning,
-        "has_files": bool(files),
-        "has_url": ("http://" in query.lower() or "https://" in query.lower()),
-        "reasons": [],
-    }
     snapshot = RuntimeSnapshot(
         session_id=session_id,
         student_id=student_id,
-        selected_text_model=registry.text_model,
+        selected_text_model=settings.LLM_MODEL,
         reasoning=normalized_reasoning,
-        selected_retrieval_mode=registry.retrieval_strategy,
-        compare_mode=False,
-        uploaded_file_count=len(files),
-        request_plan=request_plan,
-        web_provider_chain=list(registry.web_providers),
-        document_ingestors=dict(registry.document_ingestors),
         dependency_status=DependencySnapshot(**dependency_status),
     )
     return ChatRuntimeSession(
@@ -141,40 +114,6 @@ async def build_chat_runtime_session(
         runtime_snapshot=snapshot,
         reasoning=normalized_reasoning,
     )
-
-
-def determine_method(state: dict[str, Any]) -> str:
-    """Determine which retrieval methods were used."""
-    tool_call_log = list(state.get("tool_call_log", []) or [])
-    successful_tools = [
-        str(item.get("tool", "") or "")
-        for item in tool_call_log
-        if isinstance(item, dict) and item.get("status") == "ok"
-    ]
-    if not successful_tools:
-        return "direct"
-
-    methods = []
-    if any(name in {"search_documents_semantic", "fetch_document_snippet", "list_document_groups"} for name in successful_tools):
-        methods.append("rag")
-    if any(
-        name in {
-            "get_student_summary",
-            "list_entity_types",
-            "typed_node_lookup",
-            "typed_relation_lookup",
-            "fetch_node_by_id",
-            "fetch_relation_detail",
-            "view_durable_memory_summary",
-            "search_memory_semantic",
-        }
-        for name in successful_tools
-    ):
-        methods.append("graph")
-    if any(name in {"search_web", "fetch_url", "find_official_sources"} for name in successful_tools):
-        methods.append("web")
-    return "+".join(methods) if methods else "direct"
-
 
 async def get_dependency_status() -> dict[str, str]:
     """Check live dependency health for the current turn."""

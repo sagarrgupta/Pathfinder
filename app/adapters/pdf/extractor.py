@@ -1,11 +1,4 @@
-"""Document text extraction adapter.
-
-Supports multiple file types with an adaptive pipeline:
-  - PDF: pypdf text extraction -> vision fallback (for scanned docs)
-  - Images (PNG, JPEG, HEIF/HEIC): vision model OCR
-  - DOCX: python-docx text extraction
-  - Plain text / markdown / csv: direct UTF-8 style decoding
-"""
+"""Document text extraction adapter for supported upload types."""
 
 from __future__ import annotations
 
@@ -23,7 +16,6 @@ log = logging.getLogger("pathfinder.pdf")
 
 _MIN_CHARS_PER_PAGE = 30
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".heif", ".heic"}
-_TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".text"}
 _MIME_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -212,19 +204,15 @@ async def extract_text_from_docx(file_bytes: bytes, filename: str = "document.do
         return [_page_payload(1, "", "docx_failed")]
 
 
-async def extract_text_from_plaintext(file_bytes: bytes, filename: str = "document.txt") -> list[dict[str, Any]]:
-    """Extract text from plain text-like documents."""
-    text = ""
-    for encoding in ("utf-8", "utf-8-sig", "latin-1"):
-        try:
-            text = file_bytes.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
-    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-    log.info("Extracted %d chars from text file %s", len(text), filename)
-    return [_page_payload(1, text, "plaintext")]
-
+async def extract_document_text(file_type: str, content: bytes, filename: str) -> list[dict[str, Any]]:
+    """Dispatch text extraction for a supported document file type."""
+    if file_type == "pdf":
+        return await extract_text_from_pdf(content, filename)
+    if file_type == "image":
+        return await extract_text_from_image(content, filename)
+    if file_type == "docx":
+        return await extract_text_from_docx(content, filename)
+    raise ValueError(f"Unsupported file type for ingestion: {file_type}")
 
 def get_file_type(filename: str) -> str:
     """Determine file category from filename extension."""
@@ -235,6 +223,4 @@ def get_file_type(filename: str) -> str:
         return "image"
     if ext == ".docx":
         return "docx"
-    if ext in _TEXT_EXTENSIONS:
-        return "text"
     return "unknown"

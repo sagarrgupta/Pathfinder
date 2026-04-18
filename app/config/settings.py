@@ -36,14 +36,12 @@ class Settings(BaseSettings):
     # ---------- Neo4j ----------
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"
-    # Set NEO4J_PASSWORD in .env or the environment (loaded at Settings() init).
     NEO4J_PASSWORD: str = ""
 
     # ---------- SQLite (LangGraph Memory) ----------
     SQLITE_DB_PATH: str = "data/pathfinder.db"
     REPLAY_ARTIFACT_DIR: str = "data/replays"
 
-    # ---------- Retrieval ----------
     TOP_K: int = 6
     CHUNK_SIZE: int = 700
     CHUNK_OVERLAP: int = 120
@@ -56,9 +54,6 @@ class Settings(BaseSettings):
 
     # ---------- Guardrails ----------
     TOPIC_GUARD_ENABLED: bool = True
-
-    # ---------- Session ----------
-    SESSION_TTL_MINUTES: int = 60
 
     # ---------- API ----------
     API_V1_PREFIX: str = "/api/v1"
@@ -73,13 +68,8 @@ class Settings(BaseSettings):
     ALLOWED_FILE_TYPES: list[str] = [".pdf", ".png", ".jpg", ".jpeg", ".heif", ".heic", ".docx"]
 
     # ---------- LLM Options ----------
-    LLM_JSON_RESPONSE_FORMAT: bool = True # Keep a JSON-oriented transport for structured tasks
-    LLM_STRUCTURED_OUTPUT_MODE: str = "loose"
-    LLM_STRICT_STRUCTURED_NODES: str = ""
     LLM_DEBUG_LOG_ENABLED: bool = False
     LLM_DEBUG_LOG_PATH: str = "data/llm_debug.log"
-    TOOL_CALL_TIMEOUT_SECONDS: float = 20.0
-    TOOL_CALL_LOG_MAX_ENTRIES: int = 30
 
     # ---------- Server ----------
     HOST: str = "0.0.0.0"

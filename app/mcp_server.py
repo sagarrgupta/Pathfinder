@@ -27,9 +27,10 @@ async def list_tools():
 async def call_tool(name: str, arguments: dict[str, object]):
     """Dispatch one tool through the shared tool surface."""
     try:
-        student_id = str(arguments.get("student_id", "") or generate_student_id())
-        session_id = str(arguments.get("session_id", "") or "")
-        result = await execute_tool(name, dict(arguments), ToolContext(student_id=student_id, session_id=session_id))
+        payload = dict(arguments or {})
+        student_id = str(payload.get("student_id", "") or generate_student_id())
+        session_id = str(payload.get("session_id", "") or "")
+        result = await execute_tool(name, payload, ToolContext(student_id=student_id, session_id=session_id))
         return [TextContent(type="text", text=json.dumps(result, ensure_ascii=True, default=str))]
     except Exception as exc:
         log.error("MCP tool error: %s", exc, exc_info=True)

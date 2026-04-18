@@ -53,17 +53,8 @@ class StudentResponse(ResponseModel):
     root_properties: dict[str, Any] = Field(default_factory=dict)
     sections: list[dict[str, Any]] = Field(default_factory=list)
     section_items: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
-    unsectioned_items: list[dict[str, Any]] = Field(default_factory=list)
-    support_records: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
-    completeness_breakdown: dict[str, Any] = Field(default_factory=dict)
-    fact_summary: dict[str, Any] = Field(default_factory=dict)
-    temporal_profile: dict[str, Any] = Field(default_factory=dict)
-    long_context_preview: dict[str, Any] = Field(default_factory=dict)
+    long_context: str = ""
     student_schema: dict[str, Any] = Field(default_factory=dict)
-    # Dynamic: all entity types from the KG keyed by Neo4j label
-    all_entities: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
-    completeness: float = Field(default=0.0, ge=0.0, le=1.0)
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class StudentInfo(ResponseModel):
@@ -74,7 +65,6 @@ class StudentInfo(ResponseModel):
     name: str = Field(default="Student", min_length=1, max_length=120)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    completeness: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class GraphDataResponse(ResponseModel):
@@ -106,5 +96,3 @@ class ReplayArtifactInfo(ResponseModel):
     query: str = Field(..., min_length=1, max_length=4000)
     selected_specialist: str = Field(default="", max_length=120)
     method: str = Field(default="", max_length=120)
-    quality_path: str = Field(default="", max_length=200)
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
