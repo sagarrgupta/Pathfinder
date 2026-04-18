@@ -1,8 +1,7 @@
-"""LM Studio LLM adapter and output quality helpers."""
+"""LM Studio LLM adapter with debug logging."""
 
 from __future__ import annotations
 
-import re
 import logging
 import time
 from pathlib import Path
@@ -262,66 +261,3 @@ def get_vision_llm() -> LoggingChatOpenAI:
     if _vision_llm is None:
         _vision_llm = _build_llm(label="vision", model=settings.VISION_MODEL)
     return _vision_llm
-
-
-# ── Output Quality Guards ───────────────────────────────────────────
-# Control-token patterns that indicate the model hallucinated tool use
-# or produced internal formatting instead of a real answer.
-_GARBAGE_PATTERNS = (
-    "<|",       # Model control tokens (e.g. <|channel|>, <|im_end|>)
-    "<|im_",    # Common in Qwen/ChatML models
-    "```json",  # Sometimes the model wraps its entire answer in a code block
-)
-
-def is_garbage_output(text: str) -> bool:
-    """Return True if the LLM output looks like garbage rather than a real answer.
-
-    Detects:
-    - Model control tokens (``<|channel|>``, ``<|im_end|>``, etc.)
-    - Outputs that are entirely JSON when prose was expected
-    """
-    if not text or not text.strip():
-        return True
-    stripped = text.strip()
-    for pattern in _GARBAGE_PATTERNS:
-        if pattern in stripped:
-            log.warning("Garbage pattern %r detected in output: %s", pattern, stripped[:120])
-            return True
-    if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
-        log.debug("Output appears to be raw structured data, not prose: %s", stripped[:120])
-        return True
-    return False
-
-
-# ── Repetition Guard ────────────────────────────────────────────────
-def strip_repetition(text: str, min_phrase_len: int = 20, max_repeats: int = 2) -> str:
-    """Detect and truncate text where the model fell into a repetition loop.
-
-    Scans for any phrase of at least *min_phrase_len* characters that repeats
-    more than *max_repeats* consecutive times.  When found, keeps only the
-    first *max_repeats* occurrences and appends a brief note.
-
-    This is a safety net — the frequency/presence penalties should prevent
-    most loops, but local models can still occasionally get stuck.
-    """
-    if len(text) < min_phrase_len * (max_repeats + 1):
-        return text
-
-    # Look for a repeated block: capture a chunk and see if it repeats
-    # Pattern: (.{20,200}?)\1{2,}  — a phrase repeated 3+ times
-    pattern = re.compile(r"(.{" + str(min_phrase_len) + r"," + str(min(200, len(text))) + r"?})\1{" + str(max_repeats) + r",}", re.DOTALL)
-    match = pattern.search(text)
-
-    if match:
-        # Keep everything up to the start of the first repetition occurrence,
-        # plus one clean copy of the repeated phrase
-        repeated_phrase = match.group(1)
-        cut_point = match.start() + len(repeated_phrase)
-        truncated = text[:cut_point].rstrip()
-        log.warning(
-            "Repetition detected (%d-char phrase repeated). Truncated from %d to %d chars.",
-            len(repeated_phrase), len(text), len(truncated),
-        )
-        return truncated
-
-    return text

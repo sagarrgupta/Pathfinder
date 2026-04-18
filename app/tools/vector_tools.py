@@ -80,10 +80,6 @@ async def _vector_db(context: ToolContext) -> VectorDB:
     )
 
 
-def _student_id(context: ToolContext) -> str:
-    return str(context.student_id or "").strip()
-
-
 def _summarize_chunk(chunk: dict[str, Any], *, text_limit: int = 240) -> dict[str, Any]:
     if not isinstance(chunk, dict):
         return {"value": bounded_text(chunk, limit=text_limit)}
@@ -106,8 +102,6 @@ def _summarize_chunk(chunk: dict[str, Any], *, text_limit: int = 240) -> dict[st
 
 def _compact_chunk_result(chunk: dict[str, Any]) -> dict[str, Any]:
     return _summarize_chunk(chunk, text_limit=220)
-
-
 async def _create_vector_index(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     vector_db = await _vector_db(context)
     await vector_db.create_vector_index()
@@ -221,7 +215,7 @@ def _compact_get_chunks_for_document(arguments: dict[str, Any], result: dict[str
 
 async def _get_chunks_for_student(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     vector_db = await _vector_db(context)
-    chunks = await vector_db.get_chunks_for_student(student_id=_student_id(context))
+    chunks = await vector_db.get_chunks_for_student(student_id=str(context.student_id or "").strip())
     return {"chunks": chunks}
 
 

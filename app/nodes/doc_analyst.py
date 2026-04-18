@@ -240,6 +240,6 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
 def _page_for_chunk(chunk_text: str, pages: list[dict]) -> int | None:
     """Find which page a chunk came from (best effort)."""
     for page in pages:
-        if chunk_text[:50] in page.get("text", ""):
+        if chunk_text[:50] in str(page.get("text", "") or ""):
             return page.get("page")
     return None

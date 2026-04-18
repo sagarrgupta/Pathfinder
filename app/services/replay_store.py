@@ -20,10 +20,6 @@ def _artifact_dir() -> Path:
     return path
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def build_replay_artifact(
     *,
     query: str,
@@ -48,7 +44,7 @@ def build_replay_artifact(
             break
     return {
         "id": artifact_id,
-        "created_at": _utc_now(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "student_id": student_id,
         "session_id": session_id,
         "query": query,

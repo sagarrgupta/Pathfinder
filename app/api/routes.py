@@ -18,7 +18,6 @@ from app.adapters.neo4j.graphDB import GraphDB
 from app.config.settings import settings
 from app.core.checkpointer import reset_checkpointer_storage
 from app.core.workflow import get_compiled_workflow
-from app.services.runtime_session import build_chat_runtime_session, get_dependency_status
 from app.services.replay_store import (
     build_replay_artifact,
     delete_all_replay_artifacts,
@@ -41,6 +40,7 @@ from app.schemas.models import (
 )
 from app.tools.graph_tools import get_driver as get_graph_driver
 from app.utils.ids import generate_session_id, generate_student_id
+from app.utils.runtime_utils import infer_method
 
 log = logging.getLogger("pathfinder.api")
 
@@ -72,34 +72,18 @@ async def _ensure_student(student_id: str) -> dict[str, Any]:
     return await (await _graph_db()).update_student(student_id=student_id, updates={})
 
 
-
-def _parse_replace_filenames(value: str) -> set[str]:
-    """Parse a comma-separated replacement list into unique filenames."""
-    return {name.strip() for name in value.split(",") if name.strip()}
-
-
-def _validate_upload_filename(filename: str | None) -> str:
-    """Validate that an uploaded filename exists and matches allowed types."""
+async def _read_upload_file(file: UploadFile) -> dict[str, Any]:
+    """Read and validate one FastAPI uploaded file."""
+    filename = str(file.filename or "").strip()
     if not filename:
         raise HTTPException(400, "Filename is required")
     ext = os.path.splitext(filename)[1].lower()
     if ext not in settings.ALLOWED_FILE_TYPES:
         allowed = ", ".join(settings.ALLOWED_FILE_TYPES)
         raise HTTPException(400, f"Unsupported file type '{ext}'. Allowed: {allowed}")
-    return filename
-
-
-def _enforce_upload_size(content: bytes, *, filename: str) -> None:
-    """Reject uploads larger than the configured file-size limit."""
+    content = await file.read()
     if len(content) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
         raise HTTPException(413, f"File {filename} exceeds {settings.MAX_FILE_SIZE_MB}MB limit")
-
-
-async def _read_upload_file(file: UploadFile) -> dict[str, Any]:
-    """Read and validate one FastAPI uploaded file."""
-    filename = _validate_upload_filename(file.filename)
-    content = await file.read()
-    _enforce_upload_size(content, filename=filename)
     return {
         "filename": filename,
         "content": content,
@@ -111,6 +95,65 @@ async def _read_upload_file(file: UploadFile) -> dict[str, Any]:
 # ── Runtime state ────────────────────────────────────────────────
 _topic_guard_enabled: bool = settings.TOPIC_GUARD_ENABLED
 _reasoning: str = "medium"
+
+
+def _normalize_reasoning(reasoning: str) -> str:
+    """Normalize the requested reasoning label."""
+    return str(reasoning or "medium").strip().lower() or "medium"
+
+
+async def _get_dependency_status() -> dict[str, str]:
+    """Check live dependency health for the current turn."""
+    neo4j_status = "unknown"
+    llm_status = "unknown"
+    embeddings_status = "unknown"
+
+    try:
+        driver = await get_graph_driver()
+        async with driver.session() as session:
+            await session.run("RETURN 1")
+        neo4j_status = "connected"
+    except Exception:
+        neo4j_status = "disconnected"
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            try:
+                resp = await client.get(f"{settings.LLM_BASE_URL.replace('/v1', '')}/v1/models")
+                if resp.status_code == 200:
+                    payload = resp.json() if resp.content else {}
+                    models = payload.get("data", []) if isinstance(payload, dict) else []
+                    llm_status = "connected" if models else "no_model_loaded"
+                else:
+                    llm_status = "error"
+            except Exception:
+                llm_status = "disconnected"
+
+            try:
+                resp = await client.get(f"{settings.OLLAMA_URL}/api/tags")
+                embeddings_status = "connected" if resp.status_code == 200 else "error"
+            except Exception:
+                embeddings_status = "disconnected"
+    except Exception:
+        llm_status = "disconnected"
+        embeddings_status = "disconnected"
+
+    web_search_status = "configured" if any(
+        [
+            settings.TAVILY_API_KEY,
+            settings.GOOGLE_CSE_API_KEY,
+            settings.BRAVE_API_KEY,
+        ]
+    ) else "fallback_only"
+
+    return {
+        "neo4j": neo4j_status,
+        "llm": llm_status,
+        "embeddings": embeddings_status,
+        "web_search": web_search_status,
+    }
 
 
 # ── Chat (SSE Streaming) ────────────────────────────────────────
@@ -132,7 +175,7 @@ async def chat(
     files = list(files) if isinstance(files, list) else []
 
     # Parse replace filenames (comma-separated list of filenames to replace)
-    replace_set = _parse_replace_filenames(replace_filenames)
+    replace_set = {name.strip() for name in replace_filenames.split(",") if name.strip()}
 
     # Delete existing documents that are being replaced
     for fname in replace_set:
@@ -150,16 +193,28 @@ async def chat(
     async def event_stream():
         try:
             graph = await get_compiled_workflow()
-            runtime_session = await build_chat_runtime_session(
-                query=query,
-                session_id=session_id,
-                student_id=resolved_student_id,
-                files=file_data,
-                topic_guard_enabled=_topic_guard_enabled,
-                reasoning=(reasoning if str(reasoning or "").strip() else _reasoning),
-            )
-            initial_state = runtime_session.build_initial_state()
-            config = runtime_session.build_graph_config()
+            turn_reasoning = _normalize_reasoning(reasoning if str(reasoning or "").strip() else _reasoning)
+            dependency_status = await _get_dependency_status()
+            runtime_snapshot = {
+                "session_id": session_id,
+                "student_id": resolved_student_id,
+                "selected_text_model": settings.LLM_MODEL,
+                "reasoning": turn_reasoning,
+                "dependency_status": dependency_status,
+            }
+            initial_state = {
+                "messages": [("human", query)],
+                "query": query,
+                "files": file_data,
+                "session_id": session_id,
+                "student_id": resolved_student_id,
+                "topic_guard_enabled": _topic_guard_enabled,
+                "reasoning": turn_reasoning,
+            }
+            config = {
+                "configurable": {"thread_id": f"{resolved_student_id}:{session_id}"},
+                "recursion_limit": 15,
+            }
 
             # Stream graph execution
             last_progress_count = 0
@@ -186,7 +241,25 @@ async def chat(
                 yield f"event: token\ndata: {json.dumps({'content': chunk})}\n\n"
 
             # Done event
-            done_payload = runtime_session.build_done_payload(final_state)
+            latest_ingestion = dict(final_state.get("latest_ingestion_result", {}) or {})
+            done_payload = {
+                "session_id": session_id,
+                "student_id": resolved_student_id,
+                "citations": final_state.get("citations", []),
+                "method": infer_method(final_state),
+                "dependency_status": dependency_status,
+                "processing_issues": final_state.get("processing_issues", []),
+                "stop_reason": final_state.get("stop_reason", ""),
+                "selected_specialist": final_state.get("selected_specialist", ""),
+                "routing_scores": final_state.get("routing_scores", {}),
+                "routing_reason": final_state.get("routing_reason", ""),
+                "tool_call_log": final_state.get("tool_call_log", []),
+                "specialist_output": final_state.get("specialist_output", {}),
+                "session_context": str(final_state.get("session_context", "") or ""),
+                "long_context": str(final_state.get("long_context", "") or ""),
+                "document_ingestion": latest_ingestion,
+                "runtime_snapshot": runtime_snapshot,
+            }
             try:
                 artifact = build_replay_artifact(
                     query=query,
@@ -405,7 +478,7 @@ async def update_settings(update: SettingsUpdate):
     if update.topic_guard_enabled is not None:
         _topic_guard_enabled = update.topic_guard_enabled
     if update.reasoning is not None:
-        _reasoning = str(update.reasoning or "medium").strip().lower() or "medium"
+        _reasoning = _normalize_reasoning(update.reasoning)
     return {"updated": True, "topic_guard_enabled": _topic_guard_enabled, "reasoning": _reasoning}
 
 
@@ -415,7 +488,7 @@ async def update_settings(update: SettingsUpdate):
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
     """Check system health for all registered dependencies."""
-    statuses = await get_dependency_status()
+    statuses = await _get_dependency_status()
     services = {name: str(status) for name, status in statuses.items()}
     healthy_statuses = {"connected", "configured", "fallback_only"}
     overall = "ok" if all(status in healthy_statuses for status in services.values()) else "degraded"
