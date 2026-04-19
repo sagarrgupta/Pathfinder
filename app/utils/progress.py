@@ -1,8 +1,43 @@
-"""Helpers for short, user-facing workflow progress updates."""
+"""Helpers for short, user-facing workflow progress updates.
+
+Progress is emitted along two paths:
+
+1. **Buffered path** — every call to `add_progress` appends an entry to the
+   node's `step_progress` list. The list is returned with the node's state
+   update and ends up in the replay artifact.
+2. **Live path** — if a live emitter is registered for the current async
+   context (via `set_live_emitter`), each appended entry is also pushed to
+   that emitter immediately. This lets a SSE handler stream progress out of
+   a long-running node without waiting for the node to return.
+
+The live path is opt-in: nodes never know whether one is registered, they
+just call `add_progress` and the registered emitter (if any) sees the
+entries in real time.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+import contextvars
+from typing import Any, Callable
+
+
+LiveEmitter = Callable[[dict[str, str]], None]
+
+
+_live_emitter: contextvars.ContextVar[LiveEmitter | None] = contextvars.ContextVar(
+    "pathfinder_live_progress_emitter",
+    default=None,
+)
+
+
+def set_live_emitter(emitter: LiveEmitter | None) -> contextvars.Token:
+    """Register a live progress emitter for the current async context."""
+    return _live_emitter.set(emitter)
+
+
+def reset_live_emitter(token: contextvars.Token) -> None:
+    """Clear the live emitter previously installed with `set_live_emitter`."""
+    _live_emitter.reset(token)
 
 
 def add_progress(
@@ -25,6 +60,15 @@ def add_progress(
             return steps
 
     steps.append(entry)
+
+    emitter = _live_emitter.get()
+    if emitter is not None:
+        try:
+            emitter(dict(entry))
+        except Exception:
+            # Live path is best-effort; never let a stream consumer break a node.
+            pass
+
     return steps
 
 

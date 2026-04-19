@@ -154,7 +154,8 @@ class GraphDB:
                 ON CREATE SET sec.created_at = datetime()
                 SET sec.updated_at = datetime(),
                     sec.description = $description,
-                    sec.parent_key = $parent_key
+                    sec.parent_key = $parent_key,
+                    sec.display_name = $display_name
                 MERGE (s)-[:HAS_SECTION]->(sec)
                 RETURN sec {.*} AS section
                 """,
@@ -162,6 +163,7 @@ class GraphDB:
                 key=section_key,
                 description=str(description or ""),
                 parent_key=str(parent_key or "").strip().lower(),
+                display_name=self._display_name("Section", key=section_key),
             )
             record = await result.single()
             if not record:
@@ -238,7 +240,8 @@ class GraphDB:
             ON CREATE SET sec.created_at = datetime()
             SET sec.updated_at = datetime(),
                 sec.description = coalesce(sec.description, ''),
-                sec.parent_key = coalesce(sec.parent_key, '')
+                sec.parent_key = coalesce(sec.parent_key, ''),
+                sec.display_name = $section_display_name
             MERGE (s)-[:HAS_SECTION]->(sec)
             MERGE (n:Entity:{node_type} {{{merge_props_clause}}})
             ON CREATE SET n.created_at = datetime()
@@ -246,7 +249,8 @@ class GraphDB:
                 n.entity_type = $entity_type,
                 n.section_key = $section_key,
                 n.student_id = $student_id,
-                n.identity_keys = $identity_keys
+                n.identity_keys = $identity_keys,
+                n.display_name = $display_name
             MERGE (sec)-[:HAS_ITEM]->(n)
             RETURN n {{.*}} AS node
             LIMIT 1
@@ -255,6 +259,10 @@ class GraphDB:
         # MERGE (n:Skill {student_id: $student_id, name: $id_0})
 
         params["entity_type"] = node_type
+        params["section_display_name"] = self._display_name("Section", key=section_key)
+        params["display_name"] = self._display_name(
+            "Entity", entity_type=node_type, identity=identity, properties=properties
+        )
 
         async with self.driver.session() as session:
             result = await session.run(query, params)
@@ -341,6 +349,29 @@ class GraphDB:
             if not record:
                 raise ValueError("graph relation upsert failed; nodes not found")
             return sanitize_neo4j_value(dict(record["relation"]))
+
+    @staticmethod
+    def _display_name(label: str, *, key: str = "", entity_type: str = "",
+                      identity: dict[str, Any] | None = None,
+                      properties: dict[str, Any] | None = None) -> str:
+        """Compute a human-readable caption for a node so Neo4j Browser shows it directly."""
+        if label == "Section":
+            return str(key or "").replace("_", " ").strip().title() or "Section"
+        if label == "Field":
+            return str(key or "").replace("_", " ").strip().title() or "Field"
+        if label == "Entity":
+            identity = identity or {}
+            properties = properties or {}
+            for k in ("name", "title", "code"):
+                value = str(properties.get(k) or identity.get(k) or "").strip()
+                if value:
+                    return value
+            for value in identity.values():
+                value = str(value or "").strip()
+                if value:
+                    return value
+            return str(entity_type or "").strip() or "Entity"
+        return ""
 
     @staticmethod
     def _safe_identifier(value: str, field_name: str) -> str:
@@ -712,6 +743,7 @@ class GraphDB:
             "owner_id": owner_key,
             "field_id": generate_field_id(),
             "field_value_json": json.dumps(field_value, ensure_ascii=True, default=str),
+            "field_display_name": self._display_name("Field", key=safe_field_name),
         }
         for idx, (field, value) in enumerate(identity.items()):
             safe_field = self._safe_identifier(field, "identity field")
@@ -727,7 +759,8 @@ class GraphDB:
                 ON CREATE SET f.id = $field_id, f.created_at = datetime()
                 SET f.updated_at = datetime(),
                     f.value = $field_value,
-                    f.value_json = $field_value_json
+                    f.value_json = $field_value_json,
+                    f.display_name = $field_display_name
                 RETURN f {{.*}} AS field
                 LIMIT 1
                 """,
@@ -788,7 +821,8 @@ class GraphDB:
                 ON CREATE SET child.id = $field_id, child.created_at = datetime()
                 SET child.updated_at = datetime(),
                     child.value = $field_value,
-                    child.value_json = $field_value_json
+                    child.value_json = $field_value_json,
+                    child.display_name = $field_display_name
                 RETURN child {.*} AS field
                 LIMIT 1
                 """,
@@ -798,6 +832,7 @@ class GraphDB:
                 field_id=generate_field_id(),
                 field_value=field_value,
                 field_value_json=json.dumps(field_value, ensure_ascii=True, default=str),
+                field_display_name=self._display_name("Field", key=safe_field_name),
             )
             record = await result.single()
             if not record:

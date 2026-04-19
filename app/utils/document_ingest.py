@@ -23,6 +23,7 @@ from app.tools.tools import (
 )
 from app.utils.ingest_common import build_graph_updates
 from app.utils.json_extract import parse_json_object
+from app.utils.progress import add_progress
 
 log = logging.getLogger("pathfinder.utils.document_ingest")
 
@@ -64,8 +65,10 @@ async def ingest_document(
     file_type: str,
     full_text: str,
     chunks: list[dict[str, Any]] | None = None,
+    step_progress: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Use the tool registry to ingest one document into the student graph."""
+    progress_sink: list[dict[str, str]] = step_progress if step_progress is not None else []
     graph_db = GraphDB(await get_graph_driver())
     llm = get_text_llm().bind_tools(get_agent_tool_schemas(_AGENT_PROFILE))
     tool_context = ToolContext(
@@ -97,12 +100,33 @@ async def ingest_document(
     tool_call_log: list[dict[str, Any]] = []
     final_payload: dict[str, Any] = {}
 
-    for _ in range(_INGESTION_ROUNDS):
+    for round_idx in range(_INGESTION_ROUNDS):
+        if round_idx == 0:
+            add_progress(
+                progress_sink,
+                stage="Reading your uploaded files",
+                message=f"Reading {filename}.",
+            )
+        else:
+            add_progress(
+                progress_sink,
+                stage="Reading your uploaded files",
+                message=f"Continuing extraction from {filename} (step {round_idx + 1}).",
+            )
         ai_msg = await llm.ainvoke(messages)
         messages.append(ai_msg)
         if not isinstance(ai_msg, AIMessage):
             break
         if ai_msg.tool_calls:
+            tool_count = min(len(ai_msg.tool_calls), _INGESTION_TOOL_LIMIT)
+            add_progress(
+                progress_sink,
+                stage="Reading your uploaded files",
+                message=(
+                    f"Saving {tool_count} item"
+                    f"{'s' if tool_count != 1 else ''} from {filename}."
+                ),
+            )
             for call in ai_msg.tool_calls[:_INGESTION_TOOL_LIMIT]:
                 tool_name = str(call.get("name", "") or "")
                 args = call.get("args", {}) if isinstance(call.get("args", {}), dict) else {}
@@ -144,6 +168,24 @@ async def ingest_document(
     model_summary = _normalize_model_summary(final_payload)
     graph_updates = build_graph_updates(tool_call_log)
     graph_schema_after = await graph_db.get_student_schema(student_id=student_id)
+
+    saved_count = len(model_summary.get("saved_items") or [])
+    if saved_count > 0:
+        add_progress(
+            progress_sink,
+            stage="Reading your uploaded files",
+            message=(
+                f"Saved {saved_count} item"
+                f"{'s' if saved_count != 1 else ''} from {filename}."
+            ),
+        )
+    else:
+        add_progress(
+            progress_sink,
+            stage="Reading your uploaded files",
+            message=f"Finished reading {filename}.",
+        )
+
     return {
         "tool_call_log": tool_call_log,
         "model_summary": model_summary,

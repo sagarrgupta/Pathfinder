@@ -12,6 +12,22 @@ function formatStep(step) {
   return { label, message: step.message || '' };
 }
 
+function groupProgressByStage(progress) {
+  const groups = [];
+  for (const step of progress) {
+    const { label, message } = formatStep(step);
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) {
+      if (message && last.messages[last.messages.length - 1] !== message) {
+        last.messages.push(message);
+      }
+    } else {
+      groups.push({ label, messages: message ? [message] : [] });
+    }
+  }
+  return groups;
+}
+
 function formatPriority(value) {
   return String(value || '')
     .replace(/_/g, ' ')
@@ -150,7 +166,7 @@ function Message({ message, isLast, isStreaming }) {
       className={cn(
         'flex items-start gap-3',
         isUser ? 'justify-end' : 'justify-start',
-        message.content && !isStreaming && 'mb-12'
+        message.content && 'mb-12'
       )}
     >
       {!isUser && (
@@ -162,24 +178,21 @@ function Message({ message, isLast, isStreaming }) {
       <div className={cn('group relative', bubbleWrapperClass)}>
         <div className={bubbleClass}>
         {!isUser && progress.length > 0 && (
-          <div className="mb-3">
+          <div className={cn(hasContent && 'mb-3')}>
             {isCurrentlyStreaming && !hasContent ? (
-              <div className="space-y-1.5">
-                {progress.map((step, i) => {
-                  const { label, message: stepMessage } = formatStep(step);
-                  return (
-                    <div key={i} className={cn('flex items-center gap-2 text-xs', i === progress.length - 1 ? 'animate-fade-in' : '')}>
-                      {i === progress.length - 1 ? (
-                        <Loader2 className="h-3 w-3 animate-spin text-primary flex-shrink-0" />
-                      ) : (
-                        <CheckCircle2 className="h-3 w-3 text-green-500 dark:text-green-400 flex-shrink-0" />
-                      )}
-                      <span className="font-medium text-foreground/70">{label}</span>
-                      <span className="text-muted-foreground">{stepMessage}</span>
-                    </div>
-                  );
-                })}
-              </div>
+              (() => {
+                const latest = progress[progress.length - 1];
+                const { message: latestMessage, label: latestLabel } = formatStep(latest);
+                const display = latestMessage || latestLabel;
+                return (
+                  <div className="relative flex h-5 items-center gap-2 overflow-hidden text-xs leading-none">
+                    <Loader2 className="h-3 w-3 flex-shrink-0 animate-spin text-primary" />
+                    <span className="animate-shimmer-text truncate font-medium">
+                      {display}
+                    </span>
+                  </div>
+                );
+              })()
             ) : (
               <div>
                 <button
@@ -190,17 +203,27 @@ function Message({ message, isLast, isStreaming }) {
                   <span>See how I answered</span>
                 </button>
                 {showProgress && (
-                  <div className="mt-2 pl-2 space-y-1 border-l-2 border-border/50 ml-0.5 animate-fade-in">
-                    {progress.map((step, i) => {
-                      const { label, message: stepMessage } = formatStep(step);
-                      return (
-                        <div key={i} className="flex items-center gap-2 text-xs pl-2">
-                          <CheckCircle2 className="h-3 w-3 text-green-500 dark:text-green-400 flex-shrink-0" />
-                          <span className="font-medium text-foreground/70">{label}</span>
-                          <span className="text-muted-foreground">{stepMessage}</span>
+                  <div className="mt-2 ml-0.5 animate-fade-in space-y-2 border-l-2 border-border/50 pl-3">
+                    {groupProgressByStage(progress).map((group, gi) => (
+                      <div key={gi} className="space-y-1">
+                        <div className="flex items-center gap-2 text-xs">
+                          <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-green-500 dark:text-green-400" />
+                          <span className="font-medium text-foreground/80">{group.label}</span>
                         </div>
-                      );
-                    })}
+                        {group.messages.length > 0 && (
+                          <div className="space-y-0.5 text-xs text-muted-foreground">
+                            {group.messages.map((msg, mi) => (
+                              <div key={mi} className="flex gap-2">
+                                <span aria-hidden="true" className="w-3 flex-shrink-0 text-center text-border">
+                                  •
+                                </span>
+                                <span className="min-w-0">{msg}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -418,7 +441,7 @@ function Message({ message, isLast, isStreaming }) {
         )}
         </div>
 
-        {message.content && !isStreaming && (
+        {message.content && (
           <div className={cn(
             'pointer-events-none absolute z-10 transition-all duration-200',
             isUser ? 'right-0 top-full' : 'left-0 top-full',

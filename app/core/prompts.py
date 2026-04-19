@@ -532,6 +532,9 @@ Rules:
 - When updating, write the complete replacement — include all previously known durable
   facts merged with any new ones from this turn. Do not write a partial fragment.
 - Keep it concise and factual.
+- Format as flowing prose: one or more short paragraphs in third person. Do not use
+  key/value pairs, JSON, or markdown of any
+  kind. Write natural sentences.
 
 Alternatively you may return the same JSON directly as text (without a tool
 call). Either method works, but the `respond` tool is preferred.

@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 
 from app.core.state import PathfinderState
-from app.utils.progress import add_progress
 from app.utils.query_ingest import ingest_query
 
 log = logging.getLogger("pathfinder.nodes.query_ingestor")
@@ -34,17 +33,12 @@ async def query_ingestor(state: PathfinderState) -> PathfinderState:
     if not student_id or not query:
         return {**state, "step_progress": step_progress}
 
-    add_progress(
-        step_progress,
-        stage="Saving helpful context",
-        message="Looking for any new student details to remember.",
-    )
-
     try:
         applied = await ingest_query(
             student_id=student_id,
             session_id=session_id or None,
             query=query,
+            step_progress=step_progress,
         )
         ingestion_result = {
             "tool_call_log": list(applied.get("tool_call_log", []) or []),

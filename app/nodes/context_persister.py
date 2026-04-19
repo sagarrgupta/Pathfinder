@@ -45,8 +45,8 @@ async def context_persister(state: PathfinderState) -> PathfinderState:
 
     add_progress(
         step_progress,
-        stage="Saving helpful context",
-        message="Keeping useful details ready for future questions.",
+        stage="Updating session memory",
+        message="Saving the conversation context for future turns.",
     )
     updated_state["step_progress"] = step_progress
     return updated_state
