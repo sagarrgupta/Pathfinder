@@ -376,7 +376,9 @@ class GraphDB:
             rows = [dict(record["entity"]) async for record in result]
             return sanitize_neo4j_value(rows)
     
-    async def get_entity_by_identity(self, *, student_id: str, entity_type: str, identity: dict[str, str]) -> dict:
+    async def get_entity_by_identity(
+        self, *, student_id: str, entity_type: str, identity: dict[str, str]
+    ) -> dict[str, Any] | None:
         """Find an existing entity inside a student by type + identity."""
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
         if not identity:
@@ -400,7 +402,7 @@ class GraphDB:
             )
             record = await result.single()
             if not record:
-                raise ValueError("entity not found")
+                return None
             return sanitize_neo4j_value(dict(record["entity"]))
 
     async def get_student_schema(self, *, student_id: str) -> dict[str, Any]:

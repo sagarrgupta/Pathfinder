@@ -24,10 +24,11 @@ This document traces what happens from the moment a user submits a query in the 
                     │                                       │
                     │  1. input_guard                       │
                     │  2. orchestrator                      │
-                    │  3. specialist_runner  ◄── Doc Analyst│
-                    │  4. response_validator                │
-                    │  5. context_persister                 │
-                    │  6. responder                         │
+                    │  3. query_ingestor                    │
+                    │  4. specialist_runner  ◄── Doc Analyst│
+                    │  5. response_validator                │
+                    │  6. context_persister                 │
+                    │  7. responder                         │
                     └────────────────┬─────────────────────┘
                                      │
           ┌──────────────────────────┼──────────────────────────┐
@@ -77,7 +78,7 @@ Before handing control to LangGraph, the API layer performs several setup steps:
 
 3. **Read uploaded files** — Each uploaded file is validated (extension check against the allowed list, size check against the 10 MB limit) and its raw bytes are read into memory as a `dict` with `{filename, content, size, content_type}`.
 
-4. **Compile the LangGraph workflow** — The five-node `StateGraph` is compiled with the SQLite checkpointer. The compiled graph is cached after the first run so it is not rebuilt on every request. The SQLite database lives at `data/pathfinder.db` (or a configured path) outside the OneDrive sync folder to avoid file-locking issues.
+4. **Compile the LangGraph workflow** — The seven-node `StateGraph` is compiled with the SQLite checkpointer. The compiled graph is cached after the first run so it is not rebuilt on every request. The SQLite database lives at `data/pathfinder.db` (or a configured path) outside the OneDrive sync folder to avoid file-locking issues.
 
 5. **Build initial state** — An initial `PathfinderState` dictionary is constructed with the query, files, IDs, reasoning level, and an empty `step_progress` list.
 
@@ -85,7 +86,7 @@ Before handing control to LangGraph, the API layer performs several setup steps:
 
 ---
 
-## Phase 3 · LangGraph Workflow (Six Nodes)
+## Phase 3 · LangGraph Workflow (Seven Nodes)
 
 LangGraph calls each node in sequence. Each node receives the full `PathfinderState`, makes changes, and returns an updated state. After each node completes, the API checks for new entries in `step_progress` and immediately emits a **progress SSE event** to the browser.
 
@@ -98,8 +99,9 @@ Every node reads and writes this typed dictionary:
 | Input | `query`, `files`, `session_id`, `student_id`, `reasoning` |
 | Guard | `is_blocked`, `block_reason`, `topic_guard_enabled` |
 | Orchestrator output | `selected_specialist`, `routing_scores`, `routing_reason` |
+| Query ingestor output | `latest_query_ingestion_result` (chat-message ingestion summary, graph updates, schema after) |
 | Retrieved data | `session_context`, `long_context`, `student_schema`, `tool_call_log` |
-| Specialist output | `specialist_output` (message, stop_reason, next contexts) |
+| Specialist output | `specialist_output` (message, stop_reason, next contexts), `latest_ingestion_result` (document ingestion summary, when files attached) |
 | Evaluated output | `citations`, `final_answer` |
 | Progress | `step_progress` (list of stage/message dicts emitted as SSE) |
 | LangGraph-managed | `messages` (full conversation history, accumulated across turns) |
@@ -151,16 +153,62 @@ The topic guard check (via `topic_guard_enabled` in state, defaulting to `True`)
 
 ---
 
-### Node 3 — Specialist Runner
+### Node 3 — Query Ingestor
+
+**File:** `app/nodes/query_ingestor.py` (delegates to `app/utils/query_ingest.py`)  
+**Purpose:** Opportunistically extend the student's knowledge graph with durable, novel information the student just disclosed in their chat message — *before* the specialist reads the graph to answer.
+
+This node mirrors the document-ingestion loop but works on a single chat message rather than a file. It is intentionally biased toward NOT writing: the default outcome of any turn is no writes, and writes happen only when the message clearly carries useful info that is not already in the graph.
+
+#### Step-by-step
+
+1. **Skip-fast guards** — If `is_blocked` is True, or `student_id` / `query` is empty, the node returns immediately without doing any LLM work.
+
+2. **Load the current schema** — `GraphDB.get_student_schema()` returns the canonical sections, entity types, relationship vocabulary, and counts so the agent can dedup against existing structure before writing.
+
+3. **Build the prompt** — `QUERY_INGESTION_AGENT_SYSTEM_PROMPT` plus the user-prompt template, populated with the schema and the trimmed chat message (≤ 8 000 chars).
+
+4. **Run the agentic loop** — Same shape as document ingestion, with the chat-ingester tool subset bound to the LLM via `get_agent_tool_schemas("query_ingestor")`. Up to 30 tool calls per round, up to 100 rounds, terminated by the model's final JSON.
+
+5. **Decision system the agent must apply** (in order; stop on the first failure):
+   - **Source test** — the message must be the student disclosing something about themselves, not asking a question or speaking hypothetically.
+   - **Durability test** — the information must remain meaningful beyond this turn (transient mood / "what I want right now" fails).
+   - **Specificity test** — concrete enough to encode as graph structure.
+   - **Novelty test** — not already represented; the agent uses lookup tools to verify before writing.
+
+6. **Persist the run** — Whether or not anything was written, the node records `latest_query_ingestion_result` with `model_summary` (`summary`, `saved_items`, `stop_reason ∈ {ingested, already_present, no_useful_info}`), `tool_call_log`, `graph_updates`, and `graph_schema_after`.
+
+7. **Emit progress** — `"Saving helpful context → Looking for any new student details to remember."`
+
+#### Tool surface (excludes vs the full registry)
+
+The chat ingester is a graph-only writer — it has no document, so it cannot write chunks or attach grounding edges. It also cannot answer the user. Excluded from its view:
+
+- All web tools (`search_web`, `fetch_url`, `find_official_sources`)
+- `respond` (the specialist's terminal tool)
+- All chunk write tools (`upsert_chunk`, `upsert_chunk_metadata`, `batch_upsert_chunks`)
+- All grounding tools (`link_entity_to_chunk`, `link_entity_to_document`)
+- All destructive / admin tools (`delete_chunk`, `delete_document_chunks`, `create_vector_index`, `vector_health_check`)
+- Broad chunk retrieval (`get_chunks_for_student`)
+
+Everything else — schema introspection, typed lookups, `hybrid_search` for dedup, and graph-write tools (`upsert_section`, `upsert_graph_node`, `upsert_graph_relation`, `upsert_entity_field`, `upsert_nested_field`, `update_student`) — is available.
+
+#### Failure handling
+
+If the agent loop raises, the failure is logged as a `processing_issues` entry with `type=query_ingestion_failed` and `status=degraded`. The workflow continues to the specialist, which still answers using the graph as it exists.
+
+---
+
+### Node 4 — Specialist Runner
 
 **File:** `app/nodes/specialist_runner.py`  
 **Purpose:** Gather information using tools and produce the answer. This is the most complex node and where the majority of the turn's compute time is spent.
 
-#### 3a. Document ingestion (if files were uploaded)
+#### 4a. Document ingestion (if files were uploaded)
 
 If files are attached, the **Doc Analyst** sub-step runs before the main reasoning loop. See [Phase 3 · Doc Analyst Sub-Step](#doc-analyst-sub-step) below for the full breakdown.
 
-#### 3b. Context assembly
+#### 4b. Context assembly
 
 Before the LLM loop begins, the runner assembles the context the specialist will see:
 
@@ -174,13 +222,13 @@ Before the LLM loop begins, the runner assembles the context the specialist will
 
 All of this is serialized to JSON and included in the HumanMessage sent to the LLM.
 
-#### 3c. LLM binding and tool context
+#### 4c. LLM binding and tool context
 
 - The LLM is instantiated with the `reasoning` level from state (controls LM Studio's extended-thinking parameter).
-- The full tool registry is bound to the LLM in OpenAI function-calling format (`llm.bind_tools(get_tool_schemas())`).
+- The **specialist's** subset of the tool registry is bound to the LLM via `llm.bind_tools(get_agent_tool_schemas("specialist"))`. The specialist is **read-only** against the graph: it has lookup, traversal, vector, web, and `respond` tools, but every graph- and chunk-write tool is excluded (those belong to the document and query ingesters that already ran). See [Per-agent tool surfaces](#per-agent-tool-surfaces) below.
 - A `ToolContext` object is created holding the `student_id`, `session_id`, and a snapshot of the working state. Every tool handler receives this context so it knows which student's graph to operate on.
 
-#### 3d. The agentic tool-use loop (up to 12 iterations)
+#### 4d. The agentic tool-use loop (up to 12 iterations)
 
 ```
 messages = [SystemMessage(specialist_prompt), HumanMessage(query + context)]
@@ -219,7 +267,7 @@ for _ in range(12):
 
 All three specialists share the same base instruction set, including the tool escalation order (see below) and the required `respond` tool output format.
 
-#### 3e. Tool escalation order (what the LLM is instructed to do)
+#### 4e. Tool escalation order (what the LLM is instructed to do)
 
 1. Check the context blocks already in the prompt — if the answer is there, use it directly.
 2. Use **graph lookup tools** for typed queries against the student's knowledge graph.
@@ -229,7 +277,9 @@ All three specialists share the same base instruction set, including the tool es
 6. If the first search doesn't yield the answer, try a **second `search_web`** with a rephrased query.
 7. Call **`respond`** to deliver the final answer only after tool use is complete.
 
-#### 3f. Tool catalog
+#### 4f. Tool catalog (full registry)
+
+The catalog below lists every tool the system implements. Which tools a given LLM call actually sees is decided per-agent by `app/tools/tools.py::get_agent_tool_schemas(agent)` — see [Per-agent tool surfaces](#per-agent-tool-surfaces).
 
 **Graph tools** (read/write Neo4j knowledge graph):
 
@@ -283,9 +333,19 @@ All three specialists share the same base instruction set, including the tool es
 |---|---|
 | `respond` | The terminal tool — the LLM calls this with `{message, stop_reason, next_session_context, next_long_context}` to signal it is done |
 
-#### 3g. Web-search safety net
+#### 4g. Web-search safety net
 
 After the LLM calls `respond`, the runner checks whether the answer says it couldn't find information despite not having fully exhausted web search. If both conditions are true (answer contains phrases like "couldn't find" / "not available", and fewer than 2 `search_web` or 2 `fetch_url` calls were made), the runner injects a nudge message and allows one additional loop iteration with a directive to rephrase the search and fetch a new URL. This retry is used at most once per turn.
+
+#### Per-agent tool surfaces
+
+The full tool registry is shared, but each LLM call sees only the subset appropriate for its role. Exclusions are declared in `app/tools/tools.py` and applied uniformly via `get_agent_tool_schemas(agent)` and `execute_agent_tool(agent, …)`.
+
+| Agent | Role | Excluded tools | Why |
+|---|---|---|---|
+| `document_ingestor` | Build graph + grounding from a freshly-stored document | web tools, `respond`, all chunk-write tools, broad chunk fetch, admin/destructive tools | Chunks were already written by Doc Analyst; the agent's job is to read text and extend the graph |
+| `query_ingestor` | Extend graph from a chat message (no document) | web tools, `respond`, all chunk-write tools, all grounding tools, broad chunk fetch, admin/destructive tools | No document or chunk exists for a chat message, so chunk-writing and chunk-grounding are out of scope |
+| `specialist` | Read graph + web, then answer | every graph-write tool (`upsert_*`, `update_student`, `link_entity_to_*`), every chunk-write tool, admin/destructive tools | Ingestion already ran in earlier nodes; the specialist must remain read-only so it can't double-write or violate dedup |
 
 ---
 
@@ -364,7 +424,7 @@ Each stage is wrapped in `try/except`. Failures are recorded as structured `proc
 
 ---
 
-### Node 4 — Response Validator
+### Node 5 — Response Validator
 
 **File:** `app/nodes/response_validator.py`  
 **Purpose:** Validate the specialist's output and extract citations.
@@ -379,20 +439,20 @@ Each stage is wrapped in `try/except`. Failures are recorded as structured `proc
 
 ---
 
-### Node 5 — Context Persister
+### Node 6 — Context Persister
 
 **File:** `app/nodes/context_persister.py`  
 **Purpose:** Write context updates back to the graph so they are available in future turns.
 
 1. **Session context** — The specialist's `next_session_context` (a short summary of what this session is about) is written into state. It will be loaded by the next turn's Specialist Runner from the SQLite checkpointer via LangGraph's conversation history, or from state if within the same streaming call.
 
-2. **Long-term context** — If the specialist produced a `next_long_context` (a durable summary of student facts like name, program, preferences, goals), it is written to the Neo4j `Student` node's `long_context_summary` property via `GraphDB.update_student()`. This persists across sessions and is loaded at the start of every future specialist run.
+2. **Long-term context** — If the specialist produced a `next_long_context` (a durable summary of student facts like name, program, preferences, goals), it is written to the Neo4j `Student` node's `long_context` property via `GraphDB.update_student()`. This persists across sessions and is loaded at the start of every future specialist run.
 
 3. Emits a progress event: `"Saving helpful context → Keeping useful details ready for future questions."`
 
 ---
 
-### Node 6 — Responder
+### Node 7 — Responder
 
 **File:** `app/nodes/responder.py`  
 **Purpose:** Package the final answer and close the turn.
@@ -442,6 +502,7 @@ data: {
   "session_context": "...",
   "long_context": "...",
   "document_ingestion": {...},
+  "query_ingestion": {"summary": "...", "saved_items": [...], "stop_reason": "ingested|already_present|no_useful_info", "graph_updates": {...}, "graph_schema_after": {...}, "tool_call_log": [...]},
   "dependency_status": {"neo4j": "connected", "llm": "connected", ...},
   "runtime_snapshot": {"selected_text_model": "google/gemma-4-26b-a4b", ...},
   "replay_id": "rpl_..."
@@ -466,7 +527,7 @@ Node 1 — Input Guard: detects block condition
     │
     │  Conditional edge: is_blocked → skip to responder
     ▼
-Node 6 — Responder: final_answer = block_reason
+Node 7 — Responder: final_answer = block_reason
     │
     ▼
 SSE: progress event(s) + token events (block message) + done event

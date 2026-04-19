@@ -176,9 +176,12 @@ def _build_llm(
     extra_body: dict[str, Any] | None = None,
 ) -> LoggingChatOpenAI:
     """Build one LM Studio client with the shared connection settings."""
+    # If not requiring an exact match, send 'local-model' so LM Studio uses whatever is in memory.
+    api_model = model if settings.LLM_REQUIRE_EXACT_MODEL else "local-model"
+
     kwargs: dict[str, Any] = {
         "llm_label": label,
-        "model": model,
+        "model": api_model,
         "base_url": settings.LLM_BASE_URL,
         "api_key": settings.LLM_API_KEY,
     }

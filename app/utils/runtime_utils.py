@@ -40,6 +40,8 @@ def _successful_tool_names(state: dict[str, Any]) -> list[str]:
             continue
         ingestion_result = dict(item.get("ingestion_result") or {})
         tool_call_log.extend(list(ingestion_result.get("tool_call_log", []) or []))
+    latest_query_ingestion = dict(state.get("latest_query_ingestion_result", {}) or {})
+    tool_call_log.extend(list(latest_query_ingestion.get("tool_call_log", []) or []))
     return [
         str(item.get("tool", "") or "")
         for item in tool_call_log

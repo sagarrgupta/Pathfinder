@@ -162,14 +162,6 @@ def _compact_field(field: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
-def _compact_section_list(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    sections = list(result.get("sections", []) or [])
-    return {
-        "count": len(sections),
-        "sections": [_compact_section(section) for section in sections],
-    }
-
-
 def _compact_entity_list(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
     entities = list(result.get("entities", []) or result.get("results", []) or [])
     summary = {
@@ -235,9 +227,21 @@ def _compact_write_field(_: dict[str, Any], result: dict[str, Any], __: ToolCont
     return {"field": _compact_field(dict(result.get("field") or {}))}
 
 
-def _compact_entity_lookup(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    entity = dict(result.get("entity") or result.get("node") or {})
-    return {"entity": _summarize_entity(entity)}
+def _compact_entity_lookup(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    if not result.get("found"):
+        summary = {"found": False}
+        entity_type = str(arguments.get("entity_type") or "").strip()
+        identity = dict(arguments.get("identity") or {})
+        node_id = str(arguments.get("node_id") or "").strip()
+        if entity_type:
+            summary["entity_type"] = entity_type
+        if identity:
+            summary["identity"] = identity
+        if node_id:
+            summary["node_id"] = node_id
+        return summary
+    entity = dict(result.get("entity") or {})
+    return {"found": True, "entity": _summarize_entity(dict(entity or {}))}
 
 
 def _compact_link_chunk(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
@@ -258,10 +262,16 @@ def _compact_link_document(arguments: dict[str, Any], result: dict[str, Any], __
     }
 
 
-def _compact_bfs(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+def _compact_bfs(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    if not result.get("found"):
+        return {
+            "found": False,
+            "start_node_id": str(arguments.get("start_node_id") or "").strip(),
+        }
     traversal = dict(result.get("traversal") or {})
     levels = list(traversal.get("levels", []) or [])
     return {
+        "found": True,
         "start_node": _summarize_entity(dict(traversal.get("start_node") or {})),
         "level_count": len(levels),
         "levels": [
@@ -298,6 +308,7 @@ def _compact_graph_data(_: dict[str, Any], result: dict[str, Any], __: ToolConte
     nodes = list(graph_data.get("nodes", []) or [])
     relationships = list(graph_data.get("relationships", []) or [])
     return {
+        "found": bool(result.get("found")),
         "node_count": len(nodes),
         "relationship_count": len(relationships),
         "node_labels": sorted(
@@ -329,8 +340,17 @@ def _compact_relation_list(arguments: dict[str, Any], result: dict[str, Any], __
     }
 
 
-def _compact_relation_detail(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    return {"relation": _summarize_relation_record(dict(result.get("relation") or {}))}
+def _compact_relation_detail(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    if not result.get("found"):
+        return {
+            "found": False,
+            "relationship_type": str(arguments.get("relationship_type") or "").strip(),
+            "target_entity_type": str(arguments.get("target_entity_type") or "").strip(),
+            "target_field": str(arguments.get("target_field", "id") or "id").strip(),
+            "target_value": str(arguments.get("target_value") or "").strip(),
+        }
+    relation = dict(result.get("relation") or {})
+    return {"found": True, "relation": _summarize_relation_record(dict(relation or {}))}
 
 
 def _compact_hybrid_search(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
@@ -421,7 +441,7 @@ async def _get_entity_by_identity(arguments: dict[str, Any], context: ToolContex
         entity_type=str(arguments.get("entity_type", "") or "").strip(),
         identity=dict(arguments.get("identity") or {}),
     )
-    return {"entity": entity}
+    return {"found": entity is not None, "entity": entity}
 
 
 async def _upsert_entity_field(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -490,18 +510,28 @@ async def _get_chunk_entities(arguments: dict[str, Any], context: ToolContext) -
 
 async def _bfs_neighbors(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     graph_db = await _graph_db(context)
-    traversal = await graph_db.bfs_neighbors(
-        student_id=_student_id(context),
-        start_node_id=str(arguments.get("start_node_id", "") or "").strip(),
-        max_depth=int(arguments.get("max_depth", 1) or 1),
-    )
-    return {"traversal": traversal}
+    try:
+        traversal = await graph_db.bfs_neighbors(
+            student_id=_student_id(context),
+            start_node_id=str(arguments.get("start_node_id", "") or "").strip(),
+            max_depth=int(arguments.get("max_depth", 1) or 1),
+        )
+    except ValueError as exc:
+        if str(exc) == "bfs neighbors not found":
+            return {"found": False, "traversal": None}
+        raise
+    return {"found": True, "traversal": traversal}
 
 
 async def _get_graph_data(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     graph_db = await _graph_db(context)
-    graph_data = await graph_db.get_graph_data(student_id=_student_id(context))
-    return {"graph_data": graph_data}
+    try:
+        graph_data = await graph_db.get_graph_data(student_id=_student_id(context))
+    except ValueError as exc:
+        if str(exc) == "full student not found":
+            return {"found": False, "graph_data": {"nodes": [], "relationships": []}}
+        raise
+    return {"found": True, "graph_data": graph_data}
 
 
 async def _get_student_schema(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -547,24 +577,34 @@ async def _typed_relation_lookup(arguments: dict[str, Any], context: ToolContext
 
 async def _fetch_node_by_id(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     graph_db = await _graph_db(context)
-    node = await graph_db.fetch_node_by_id(
-        student_id=_student_id(context),
-        entity_type=str(arguments.get("entity_type", "") or "").strip(),
-        node_id=str(arguments.get("node_id", "") or "").strip(),
-    )
-    return {"node": node}
+    try:
+        entity = await graph_db.fetch_node_by_id(
+            student_id=_student_id(context),
+            entity_type=str(arguments.get("entity_type", "") or "").strip(),
+            node_id=str(arguments.get("node_id", "") or "").strip(),
+        )
+    except ValueError as exc:
+        if str(exc) == "node not found":
+            return {"found": False, "entity": None}
+        raise
+    return {"found": True, "entity": entity}
 
 
 async def _fetch_relation_detail(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     graph_db = await _graph_db(context)
-    relation = await graph_db.fetch_relation_detail(
-        student_id=_student_id(context),
-        relationship_type=str(arguments.get("relationship_type", "") or "").strip(),
-        target_entity_type=str(arguments.get("target_entity_type", "") or "").strip(),
-        target_field=str(arguments.get("target_field", "id") or "id").strip(),
-        target_value=str(arguments.get("target_value", "") or "").strip(),
-    )
-    return {"relation": relation}
+    try:
+        relation = await graph_db.fetch_relation_detail(
+            student_id=_student_id(context),
+            relationship_type=str(arguments.get("relationship_type", "") or "").strip(),
+            target_entity_type=str(arguments.get("target_entity_type", "") or "").strip(),
+            target_field=str(arguments.get("target_field", "id") or "id").strip(),
+            target_value=str(arguments.get("target_value", "") or "").strip(),
+        )
+    except ValueError as exc:
+        if str(exc) == "relation not found":
+            return {"found": False, "relation": None}
+        raise
+    return {"found": True, "relation": relation}
 
 
 async def _hybrid_search(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
