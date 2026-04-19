@@ -1,209 +1,525 @@
-# Pathfinder: Current System Architecture
+# Pathfinder — Query Flow
 
-> Architecture reference for the Pathfinder codebase. For a **single end-to-end flow diagram** (every branch, tool surface, and SSE step), see [`PATHFINDER_ARCHITECTURE_FLOW.md`](PATHFINDER_ARCHITECTURE_FLOW.md).
-
-Last updated: 2026-04-17
+This document traces what happens from the moment a user submits a query in the React UI until the streamed response is fully rendered. The flow covers the happy path, the blocked-query path, and the document upload sub-path.
 
 ---
 
-## 1. What Pathfinder Is
+## System at a Glance
 
-Local-first student advising stack: **FastAPI** backend, **React** UI, **LangGraph** chat workflow, **Neo4j** as durable profile and evidence store, **SQLite** LangGraph checkpoints, **LM Studio** + **Ollama** for inference/embeddings, optional **web search** chain, **replay/eval** on the filesystem.
-
----
-
-## 2. System Layers
-
-```mermaid
-flowchart TB
-    subgraph client [Client]
-        UI[React SPA<br/>Chat · Profile · Replays · Settings]
-    end
-
-    subgraph api [API]
-        R[FastAPI<br/>app/main.py · app/api/routes.py]
-    end
-
-    subgraph runtime [Chat runtime]
-        RS[runtime_session.py<br/>dependency snapshot + runtime metadata<br/>+ minimal initial PathfinderState]
-        G[graph.py<br/>5-node StateGraph + SqliteSaver]
-    end
-
-    subgraph agents [Graph nodes]
-        IG[input_guard]
-        OR[orchestrator]
-        SR[specialist_runner]
-        LV[response_validator]
-        RP[responder]
-    end
-
-    subgraph data [Persistence]
-        N4j[(Neo4j<br/>profile · docs · vectors · memory)]
-        SQL[(SQLite<br/>checkpoints thread_id = student:session)]
-        FS[[Filesystem<br/>replays · eval fixtures]]
-    end
-
-    subgraph integrations [Integrations]
-        LM[LM Studio<br/>text + vision]
-        OL[Ollama<br/>embeddings]
-        WS[Web search chain]
-    end
-
-    UI -->|HTTP + SSE /chat| R
-    R --> RS --> G
-    G --> IG --> OR --> SR --> LV --> RP
-    SR --> N4j
-    SR --> LM
-    SR --> WS
-    G --> SQL
-    R --> FS
-    N4j --- OL
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  React / Vite Frontend  (Vite dev server, port 5173)                            │
+│                                                                                 │
+│  ChatPage ──► InputArea ──POST /api/v1/chat──────────────────────────────────▶  │
+│          ◄── SSE stream ── progress events ── token chunks ── done event ◄──    │
+└─────────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                    ┌────────────────▼─────────────────────┐
+                    │  FastAPI  (Uvicorn, port 8001)        │
+                    │  /api/v1/chat  →  event_stream()      │
+                    └────────────────┬─────────────────────┘
+                                     │
+                    ┌────────────────▼─────────────────────┐
+                    │  LangGraph  StateGraph                │
+                    │                                       │
+                    │  1. input_guard                       │
+                    │  2. orchestrator                      │
+                    │  3. specialist_runner  ◄── Doc Analyst│
+                    │  4. response_validator                │
+                    │  5. context_persister                 │
+                    │  6. responder                         │
+                    └────────────────┬─────────────────────┘
+                                     │
+          ┌──────────────────────────┼──────────────────────────┐
+          │                          │                           │
+   ┌──────▼──────┐          ┌────────▼───────┐        ┌─────────▼──────┐
+   │  LM Studio  │          │     Neo4j      │        │    SQLite      │
+   │  (port 1234)│          │  (port 7687)   │        │  Checkpointer  │
+   │  Text LLM   │          │  Graph + Vector│        │  Chat history  │
+   └─────────────┘          └────────────────┘        └────────────────┘
+          │
+   ┌──────▼──────┐
+   │   Ollama    │
+   │  (port 11434│
+   │  Embeddings │
+   └─────────────┘
 ```
 
 ---
 
-## 3. One Chat Turn (summary)
+## Phase 1 · HTTP Request (React → FastAPI)
 
-1. `POST /api/v1/chat` resolves `student_id` / `session_id`, optional document replace, validates uploads.
-2. `build_chat_runtime_session()` records dependency/runtime metadata and builds the minimal initial `PathfinderState` needed to start the graph.
-3. Compiled graph runs with config `thread_id = "{student_id}:{session_id}"`, `recursion_limit = 15`.
-4. Route streams **SSE**: `progress` (from `step_progress`), `token` (word-split `final_answer`), then `done` (`build_done_payload`).
-5. **Best-effort** after streaming: `build_replay_artifact` / `save_replay_artifact` (failures are logged; user answer is not rolled back).
+**Endpoint:** `POST /api/v1/chat`  
+**Content-Type:** `multipart/form-data`
 
----
+The frontend sends the following fields:
 
-## 4. LangGraph Workflow
-
-Compiled in `app/core/workflow.py`. Nodes live under `app/nodes/`.
-
-```mermaid
-flowchart LR
-    START([START]) --> IG[input_guard]
-    IG -->|blocked| RP[responder]
-    IG -->|ok| OR[orchestrator]
-    OR -->|default| SR[specialist_runner]
-    OR -->|short-circuit| RP
-    SR -->|default| LV[response_validator]
-    SR -->|short-circuit| RP
-    LV --> RP
-    RP --> END([END])
-```
-
-| Node | Role |
+| Field | Description |
 |---|---|
-| `input_guard` | Empty / max length / SQL-injection-style patterns when topic guard is on. Sets `is_blocked` + `block_reason`. |
-| `orchestrator` | Loads profile, builds session summary, **LLM scores** `academic` / `career` / `general` (fast `reasoning=none`), **heuristic fallback** if the LLM fails; boosts for files and certain `request_plan` hints; writes `routing_*` and `next_node`. |
-| `specialist_runner` | Optional `doc_analyst` pre-ingest; reuses orchestrator profile/session summary when possible; runs `hybrid_search`; builds short + long context; **binds canonical tools** from `app/tools/tools.py`; agent loop with optional one-shot web-search retry nudge. |
-| `response_validator` | Normalizes output, citations from successful `tool_call_log`, fixed confidence heuristic. |
-| `responder` | Block path → `block_reason`; else `final_answer` ≈ `draft_answer`, minimal rewrite. |
+| `query` | The user's text message (max 4,000 chars enforced later) |
+| `session_id` | UUID identifying this conversation thread; auto-generated on first turn |
+| `student_id` | Identifies which student's graph to operate on |
+| `files` | Zero or more uploaded files (PDF, DOCX, PNG, JPG, HEIF — max 10 MB each) |
+| `replace_filenames` | Comma-separated filenames to overwrite if they already exist in the graph |
+| `reasoning` | LLM reasoning effort: `low`, `medium`, or `high` |
 
-**Not in this graph:** older multi-advisor branches, a dedicated `build_memory_pack` node. Retrieval strategy label from `execution_registry` (`memory_pack`) is metadata for settings/UI; live context is assembled inside `specialist_runner` and tools.
+The API immediately returns a **Server-Sent Events (SSE) response** (`text/event-stream`) so the UI can display progress in real time while the backend works. The actual answer is not buffered and sent at the end — it is streamed as the last part of the SSE sequence.
 
 ---
 
-## 5. Runtime Decisions (quick reference)
+## Phase 2 · FastAPI Setup (Before the Graph Runs)
 
-| Area | Implementation |
+Before handing control to LangGraph, the API layer performs several setup steps:
+
+1. **Resolve student ID** — If a `student_id` was provided, it ensures the student node exists in Neo4j (creating it if needed). If none was provided, a new student ID is generated and the node is created.
+
+2. **Handle document replacement** — If `replace_filenames` contains any filenames, the API looks up the existing document nodes for those filenames in Neo4j and deletes them (along with their chunks) before re-ingestion. This keeps the graph clean when a document is re-uploaded.
+
+3. **Read uploaded files** — Each uploaded file is validated (extension check against the allowed list, size check against the 10 MB limit) and its raw bytes are read into memory as a `dict` with `{filename, content, size, content_type}`.
+
+4. **Compile the LangGraph workflow** — The five-node `StateGraph` is compiled with the SQLite checkpointer. The compiled graph is cached after the first run so it is not rebuilt on every request. The SQLite database lives at `data/pathfinder.db` (or a configured path) outside the OneDrive sync folder to avoid file-locking issues.
+
+5. **Build initial state** — An initial `PathfinderState` dictionary is constructed with the query, files, IDs, reasoning level, and an empty `step_progress` list.
+
+6. **Set LangGraph thread ID** — The `thread_id` passed to LangGraph is `"{student_id}:{session_id}"`. This is what the SQLite checkpointer uses to load and save conversation history, giving each student/session pair its own persistent message thread.
+
+---
+
+## Phase 3 · LangGraph Workflow (Six Nodes)
+
+LangGraph calls each node in sequence. Each node receives the full `PathfinderState`, makes changes, and returns an updated state. After each node completes, the API checks for new entries in `step_progress` and immediately emits a **progress SSE event** to the browser.
+
+### PathfinderState — the shared data bag
+
+Every node reads and writes this typed dictionary:
+
+| Field group | Key fields |
 |---|---|
-| Workflow | `langgraph.graph.StateGraph` + `PathfinderState` (`app/core/state.py`) |
-| Checkpointing | SQLite via `app/core/memory.py` |
-| Tools | Same tool surface for chat and MCP (`app/tools/tools.py`, `app/mcp_server.py`) |
-| Streaming | SSE from `POST /api/v1/chat` |
-| Replay persistence | Filesystem JSON artifacts via `app/services/replay_store.py` |
+| Input | `query`, `files`, `session_id`, `student_id`, `reasoning` |
+| Guard | `is_blocked`, `block_reason`, `topic_guard_enabled` |
+| Orchestrator output | `selected_specialist`, `routing_scores`, `routing_reason` |
+| Retrieved data | `session_context`, `long_context`, `student_schema`, `tool_call_log` |
+| Specialist output | `specialist_output` (message, stop_reason, next contexts) |
+| Evaluated output | `citations`, `final_answer` |
+| Progress | `step_progress` (list of stage/message dicts emitted as SSE) |
+| LangGraph-managed | `messages` (full conversation history, accumulated across turns) |
 
 ---
 
-## 6. Memory, Retrieval, and Long Context
+### Node 1 — Input Guard
 
-```mermaid
-flowchart LR
-    subgraph turn [Per turn specialist_runner]
-        P[get_full_student]
-        S[build_session_summary]
-        H[hybrid_search k=5]
-        LC[build_long_context_payload<br/>notes · manifest · small_facts]
-        T[MCP-style tools<br/>RAG · graph · web · utility writes]
-    end
+**File:** `app/nodes/input_guard.py`  
+**Purpose:** Protect the system before doing any expensive LLM or database work.
 
-    N4j[(Neo4j)]
-    P & S & H & LC --> N4j
-    T <--> N4j
+The guard runs three sequential checks. If any check fails, it sets `is_blocked = True` and `block_reason` with a user-facing message, then exits early. The conditional edge in the workflow routes a blocked state directly to *Responder*, bypassing all other nodes.
+
+| Check | What it looks for |
+|---|---|
+| Empty query | `query` is blank after stripping whitespace |
+| Query too long | `len(query) > 4000` characters |
+| Injection patterns | 9 regex patterns for SQL/Cypher injection (e.g. `UNION SELECT`, `DROP TABLE`, `OR 1=1`, `--` comments) |
+
+The topic guard check (via `topic_guard_enabled` in state, defaulting to `True`) controls whether the injection patterns are applied. This can be toggled via the `/api/v1/settings` endpoint.
+
+**On pass:** sets `is_blocked = False`, emits a progress event ("Checking your question"), and passes to Orchestrator.
+
+---
+
+### Node 2 — Orchestrator
+
+**File:** `app/nodes/orchestrator.py`  
+**Purpose:** Use the LLM as a lightweight classifier to route the query to the most relevant specialist.
+
+#### Step-by-step:
+
+1. **Fetch brief student profile** — Queries Neo4j for the student node and extracts the first four non-empty fields as a context hint (e.g. `"Profile: name=Sagar, program=CS, semester=3"`).
+
+2. **Build a routing prompt** — Constructs a prompt listing the three specialist descriptions:
+   - `academic` — degree records, grades, deadlines, enrollment, graduation requirements
+   - `career` — job search, resume, skill assessment, professional development
+   - `general` — profile questions, uploaded documents, greetings, cross-domain requests
+
+3. **Call the LLM** — Sends the prompt to LM Studio (`get_text_llm("none")` — reasoning disabled for speed). The LLM returns a JSON object: `{"academic": 7, "career": 2, "general": 1}`.
+
+4. **Parse scores** — The JSON is parsed with the project's robust `parse_json_object()` utility (handles malformed JSON, extra text, etc.). Scores are cast to `float`.
+
+5. **Select specialist** — The highest-scoring specialist wins. Ties break toward `general`. If no specialist scores above 0 and the query matches a simple conversational pattern (hello, thanks, bye), `general` is selected.
+
+6. **Emit progress** — Adds a progress entry: `"Choosing the best approach → Focusing on {specialist_label} for this question."` and returns the updated state with `selected_specialist`, `routing_scores`, and `routing_reason`.
+
+**Fallback:** If the LLM call fails for any reason, the orchestrator falls back to `{"academic": 0, "career": 0, "general": 5.0}` — always routing to the general specialist without crashing the turn.
+
+---
+
+### Node 3 — Specialist Runner
+
+**File:** `app/nodes/specialist_runner.py`  
+**Purpose:** Gather information using tools and produce the answer. This is the most complex node and where the majority of the turn's compute time is spent.
+
+#### 3a. Document ingestion (if files were uploaded)
+
+If files are attached, the **Doc Analyst** sub-step runs before the main reasoning loop. See [Phase 3 · Doc Analyst Sub-Step](#doc-analyst-sub-step) below for the full breakdown.
+
+#### 3b. Context assembly
+
+Before the LLM loop begins, the runner assembles the context the specialist will see:
+
+| Context piece | Source |
+|---|---|
+| `student_schema` | Neo4j — full graph manifest: sections, entity types, relationship vocabulary, counts |
+| `student` profile | Neo4j — root student node properties |
+| `session_context` | State — short text summary of what this session has been about so far |
+| `long_context` | Neo4j — stored on the student node; durable summary that persists across sessions |
+| `recent_messages` | State — the last 10 conversation turns (HumanMessage / AIMessage pairs) |
+
+All of this is serialized to JSON and included in the HumanMessage sent to the LLM.
+
+#### 3c. LLM binding and tool context
+
+- The LLM is instantiated with the `reasoning` level from state (controls LM Studio's extended-thinking parameter).
+- The full tool registry is bound to the LLM in OpenAI function-calling format (`llm.bind_tools(get_tool_schemas())`).
+- A `ToolContext` object is created holding the `student_id`, `session_id`, and a snapshot of the working state. Every tool handler receives this context so it knows which student's graph to operate on.
+
+#### 3d. The agentic tool-use loop (up to 12 iterations)
+
+```
+messages = [SystemMessage(specialist_prompt), HumanMessage(query + context)]
+
+for _ in range(12):
+    ai_msg = await llm.ainvoke(messages)   # call LM Studio
+
+    if ai_msg has tool_calls:
+        for each tool_call (max 6 per round):
+            result = await execute_tool(tool_name, args, tool_context)
+
+            # Append compact result as ToolMessage for LLM to read
+            messages.append(ToolMessage(...))
+
+            # Log full result for replay artifact
+            tool_call_log.append({call_id, tool, input, status, output, result_summary})
+
+            if tool_name == "respond":
+                # LLM signals it is done → capture final payload
+                final_payload = result
+                break  (with possible web-retry check)
+
+        # If "respond" was not called in this round, loop again
+
+    else:
+        # LLM returned plain text instead of a tool call
+        # Parse it as JSON; fall back to treating it as the message text
+        final_payload = parse response text
+        break
 ```
 
-- **Conversation continuity:** LangGraph checkpoints in SQLite, keyed by `student_id:session_id`.
-- **Durable student memory:** Neo4j (entities, documents/chunks, candidate facts, evidence, recommendations).
-- **Long context:** `app/services/long_context.py` — surfaced on Profile, editable `long_context_notes`, included in specialist payload. Consolidation: `app/services/consolidation.py`.
+**Specialist system prompts** differ in focus:
+- **Academic** — prioritize accuracy, verify against graph data and document chunks before answering, prefer official sources for institutional rules
+- **Career** — prioritize actionable advice, connect to actual profile data to highlight real strengths/gaps, use web search to ground market claims
+- **General** — flexible generalist; answer simple turns without tool calls, synthesize across domains for cross-cutting questions
 
----
+All three specialists share the same base instruction set, including the tool escalation order (see below) and the required `respond` tool output format.
 
-## 7. Neo4j and Ingestion (concise)
+#### 3e. Tool escalation order (what the LLM is instructed to do)
 
-**Neo4j** (`app/adapters/neo4j/graphDB.py`): student lifecycle, full profile reads, entity/document CRUD, facts/evidence/recommendations, graph export for UI.
+1. Check the context blocks already in the prompt — if the answer is there, use it directly.
+2. Use **graph lookup tools** for typed queries against the student's knowledge graph.
+3. Use **`hybrid_search`** for semantic evidence retrieval over document chunks.
+4. If local sources are insufficient, use **`search_web`** to find live/external information.
+5. After a web search, use **`fetch_url`** to read the full content of the most promising result page.
+6. If the first search doesn't yield the answer, try a **second `search_web`** with a rephrased query.
+7. Call **`respond`** to deliver the final answer only after tool use is complete.
 
-**Ingestion:** PDF / image / DOCX via `doc_analyst` + `app/adapters/pdf/extractor.py`; free text via `app/services/profile_text.py`. Chat uploads: pre-ingest inside `specialist_runner`. Direct upload: `POST /api/v1/documents` calls `doc_analyst`.
+#### 3f. Tool catalog
 
----
+**Graph tools** (read/write Neo4j knowledge graph):
 
-## 8. Web Search
-
-Provider order (fallback chain): **Tavily → Google CSE → Brave → DuckDuckGo**. Wired through `app/services/execution_registry.py` and `app/adapters/web_search/*`.
-
----
-
-## 9. API Surface (prefix `/api/v1`)
-
-| Group | Endpoints |
+| Tool | Purpose |
 |---|---|
-| Chat & ingest | `POST /chat`, `GET /documents/check`, `POST /documents`, `POST /profile/text` |
-| Profiles | `GET`/`POST /profiles`, `GET`/`PUT /profile`, `DELETE /profile/entity/{label}/{name}`, `PUT /profile/entity`, `GET /profile/graph`, `DELETE /profile/reset` |
-| Recommendations | `GET`/`POST /recommendations`, `PUT /recommendations/{recommendation_id}/outcome` |
-| Sessions & replay | `GET /sessions`, `DELETE /sessions/{session_id}`, `PUT /sessions/{session_id}/promote-doc`, `GET /replays`, `GET /replays/{replay_id}`, `GET /replays/{replay_id}/evaluate`, `GET /replays/evaluate/recent`, `GET /eval/benchmarks`, `GET /eval/analytics` |
-| Ops | `GET`/`PUT /settings`, `DELETE /settings/delete-all-data`, `GET /health`, `GET /background/status` |
+| `get_student_schema` | Returns canonical sections, entity types, relationship vocabulary, and counts for this student's graph |
+| `typed_node_lookup` | Returns entities of a specific type, with optional field filters |
+| `typed_relation_lookup` | Returns entities connected via a specific relationship type |
+| `fetch_relation_detail` | Fetches one specific relationship by type and target field value |
+| `list_relationship_types` | Returns all relationship type names + counts present in the graph |
+| `list_entity_types` | Returns all entity type names + counts |
+| `get_section_entities` | Returns all entities under one section |
+| `get_entity_by_identity` | Looks up one entity by its stable identity fields |
+| `bfs_neighbors` | Traverses the graph outward from a node, level by level |
+| `upsert_section` | Creates or updates a section (grouping container) |
+| `upsert_graph_node` | Creates or updates one entity node in the graph |
+| `upsert_graph_relation` | Creates or updates a typed edge between two entities |
+| `upsert_entity_field` | Attaches a structured Field node to an entity (for complex sub-detail) |
+| `upsert_nested_field` | Attaches a child Field to a parent Field (for deeper nesting) |
+| `list_entity_fields` | Returns Field nodes attached to an entity |
+| `link_entity_to_chunk` | Creates `(:Entity)-[:MENTIONED_IN]->(:Chunk)` provenance link |
+| `link_entity_to_document` | Creates `(:Entity)-[:DERIVED_FROM]->(:Document)` provenance link |
+| `get_chunk_entities` | Returns entities linked to a specific chunk |
+| `update_student` | Updates root student node properties (name, summaries, preferences) |
+
+**Vector tools** (read/write Neo4j vector index):
+
+| Tool | Purpose |
+|---|---|
+| `hybrid_search` | Semantic similarity search over document chunks, enriched with graph entity context; returns chunks + related entities |
+| `get_chunk` | Fetches one chunk by ID |
+| `get_chunks_for_document` | Returns all chunks for a document |
+| `get_chunks_for_student` | Returns all chunks across all documents for the student |
+| `get_chunk_neighbors` | Returns a chunk with its immediate document context |
+| `get_document_search_context` | Returns chunk summaries for a document in retrieval-friendly shape |
+| `upsert_chunk` | Writes one chunk with auto-generated embedding |
+| `batch_upsert_chunks` | Writes many chunks in one call (used during ingestion) |
+| `delete_chunk` / `delete_document_chunks` | Chunk cleanup tools |
+
+**Web tools** (external information):
+
+| Tool | Purpose |
+|---|---|
+| `search_web` | Runs through a provider fallback chain: Tavily → Google CSE → Brave → DuckDuckGo (free, no key needed). Returns up to 10 results. |
+| `fetch_url` | Fetches one URL and extracts readable text content (strips HTML, preserves structure) |
+| `find_official_sources` | Like `search_web` but filters results to `.edu`, `.gov`, `.ac.`, and `official`/`catalog` domains |
+
+**Utility tools:**
+
+| Tool | Purpose |
+|---|---|
+| `respond` | The terminal tool — the LLM calls this with `{message, stop_reason, next_session_context, next_long_context}` to signal it is done |
+
+#### 3g. Web-search safety net
+
+After the LLM calls `respond`, the runner checks whether the answer says it couldn't find information despite not having fully exhausted web search. If both conditions are true (answer contains phrases like "couldn't find" / "not available", and fewer than 2 `search_web` or 2 `fetch_url` calls were made), the runner injects a nudge message and allows one additional loop iteration with a directive to rephrase the search and fetch a new URL. This retry is used at most once per turn.
 
 ---
 
-## 10. Frontend
+### Doc Analyst Sub-Step
 
-Router: `frontend/src/App.jsx` — routes `/chat`, `/profile`, `/replays`, `/settings`. API client: `frontend/src/services/api.js` (HTTP + SSE). Profile page shows long-context preview and edits `long_context_notes`.
+**File:** `app/nodes/doc_analyst.py`  
+**Triggered by:** Files being present in state when Specialist Runner begins.
 
----
+This sub-step runs as a synchronous call from within `specialist_runner` (not as a separate LangGraph node). It processes each uploaded file through a five-stage pipeline:
 
-## 11. MCP Server
+#### Stage 1 — Text Extraction
 
-`app/mcp_server.py` exposes the **same canonical tool set** as `specialist_runner` for external MCP clients.
+The extraction method depends on file type:
 
----
+| File type | Extractor |
+|---|---|
+| PDF | PyMuPDF — page-by-page text extraction; falls back to vision LLM if a page has no selectable text (scanned page) |
+| DOCX | `python-docx` — paragraph-level extraction |
+| PNG / JPG / HEIF | Vision LLM (LM Studio) — `get_vision_llm()` describes the image content as text |
 
-## 12. Repository Layout
+Each page is returned as `{page_number, text}`. All pages are joined into `full_text` with `\n\n` separators.
 
-```text
-app/
-  api/          FastAPI routes
-  agents/       LangGraph nodes (input_guard, orchestrator, specialist_runner, …)
-  adapters/   Neo4j, LLM, embeddings, PDF, web search
-  config/
-  core/         graph, state, memory, quality helpers
-  schemas/
-  services/     runtime_session, consolidation, long_context, replay/eval, …
-  tools/        shared MCP/OpenAI-style tool surface
-  utils/
-  main.py
-  mcp_server.py
+#### Stage 2 — Text Chunking
 
-frontend/src/pages/    ChatPage, ProfilePage, ReplayPage, SettingsPage
-tests/                 replay / benchmark fixtures
-data/                  local artifacts
-graphify-out/          generated graph reports
+`RecursiveCharacterTextSplitter` splits `full_text` into overlapping chunks:
+- Chunk size: **700 tokens** (configurable via `CHUNK_SIZE`)
+- Chunk overlap: **120 tokens** (configurable via `CHUNK_OVERLAP`)
+- Separators tried in order: `\n\n`, `\n`, `. `, ` `, `""` (character-level fallback)
+
+A page locator function is built so each chunk can be mapped back to its source page number.
+
+#### Stage 3 — Embedding
+
+Chunk texts are sent in a batch to **Ollama** (`mxbai-embed-large`, 1024-dimensional vectors). Each chunk gets an embedding vector.
+
+#### Stage 4 — Vector Storage
+
+Chunks + embeddings are written to the Neo4j vector index (`chunk_embeddings`) via `VectorDB.batch_upsert_chunks()`. Each chunk node in Neo4j stores: `chunk_id`, `text`, `embedding`, `chunk_index`, `page_number`, and a link to its parent `Document` node.
+
+A `Document` node for this file is also created in Neo4j and linked to the `Student` node at this step.
+
+#### Stage 5 — LLM-Guided Graph Ingestion
+
+The most important step: the document content is handed to a separate LLM call (`DOCUMENT_INGESTION_AGENT_SYSTEM_PROMPT`) that reads the full text, inspects the existing graph schema, and uses a subset of the graph/vector tool catalog to build out the student's knowledge graph.
+
+The ingestion agent's mental model for graph structure:
+
+```
+Student
+  └─ Section  (a named conceptual area, e.g. "Courses", "Work Experience")
+       └─ Entity  (a distinct concept, e.g. a Course node with type "Course")
+            ├─ properties  (direct scalar attributes: grade, credits, semester, GPA)
+            └─ Field  (structured sub-detail for complex nested content)
+                 └─ nested Field  (deeper structure within a field)
+
+Evidence provenance:
+  Entity ──MENTIONED_IN──▶ Chunk    (precise, chunk-level grounding)
+  Entity ──DERIVED_FROM──▶ Document (broad, document-level grounding)
+
+Relationships between entities:
+  Entity ──<dynamic type>──▶ Entity  (semantic edges defined by the ingestion agent)
 ```
 
+The ingestion agent is strongly instructed to:
+- Batch multiple tool calls per round (5–10 parallel calls are expected)
+- Exhaust the document before stopping (count items, verify extraction completeness)
+- Create relationships between entities, not just flat node lists
+- Ground every important entity back to a chunk via `link_entity_to_chunk`
+- Reuse existing sections and entities rather than creating duplicates
+
+After all tool calls finish, the agent returns a JSON summary (`{summary, key_takeaways, saved_items, stop_reason}`) which is stored in `latest_ingestion_result` in state.
+
+#### Error handling
+
+Each stage is wrapped in `try/except`. Failures are recorded as structured `processing_issues` entries with a type (`extraction_failed`, `embedding_failed`, `ingestion_failed`) and forwarded to the done event. A failed stage does not crash the turn — the specialist runner continues with whatever context was successfully prepared.
+
 ---
 
-## 13. When You Change the System
+### Node 4 — Response Validator
 
-Keep this file, [`PATHFINDER_ARCHITECTURE_FLOW.md`](PATHFINDER_ARCHITECTURE_FLOW.md), and these modules aligned:
+**File:** `app/nodes/response_validator.py`  
+**Purpose:** Validate the specialist's output and extract citations.
 
-- `app/core/graph.py`
-- `app/core/state.py`
-- `app/api/routes.py`
-- `app/nodes/orchestrator.py`
-- `app/nodes/specialist_runner.py`
+1. **Message validation** — If `specialist_output.message` is empty or missing, substitutes `"I could not generate a response."` rather than crashing.
+
+2. **Citation extraction** — Scans through the full `tool_call_log`. For each tool call that succeeded (`status == "ok"`) and whose result summary contains a `title` or `url` field, a citation entry is added. Duplicates are removed. At most 8 citations are kept. These citations typically come from `search_web` and `fetch_url` results.
+
+3. **State updates** — Writes `final_answer`, normalizes `specialist_output`, sets `citations`, and sets `stop_reason`.
+
+4. Emits a progress event: `"Preparing your answer → Final checks on the response and sources."`
+
+---
+
+### Node 5 — Context Persister
+
+**File:** `app/nodes/context_persister.py`  
+**Purpose:** Write context updates back to the graph so they are available in future turns.
+
+1. **Session context** — The specialist's `next_session_context` (a short summary of what this session is about) is written into state. It will be loaded by the next turn's Specialist Runner from the SQLite checkpointer via LangGraph's conversation history, or from state if within the same streaming call.
+
+2. **Long-term context** — If the specialist produced a `next_long_context` (a durable summary of student facts like name, program, preferences, goals), it is written to the Neo4j `Student` node's `long_context_summary` property via `GraphDB.update_student()`. This persists across sessions and is loaded at the start of every future specialist run.
+
+3. Emits a progress event: `"Saving helpful context → Keeping useful details ready for future questions."`
+
+---
+
+### Node 6 — Responder
+
+**File:** `app/nodes/responder.py`  
+**Purpose:** Package the final answer and close the turn.
+
+- If `is_blocked` is True, the `block_reason` is used as the final answer.
+- Otherwise, `specialist_output.message` becomes `final_answer`.
+- Appends an `AIMessage(content=final_answer)` to the `messages` list — this is what LangGraph persists to SQLite so the answer appears in conversation history on future turns.
+- Emits the final progress event: `"Answer ready → Sharing the final response now."`
+
+---
+
+## Phase 4 · SSE Stream Delivery
+
+After `graph.astream()` completes, the API sends three categories of SSE events in sequence:
+
+### 1. Progress events (emitted throughout the run)
+
+```
+event: progress
+data: {"stage": "Checking your question", "message": "Making sure everything looks good before I begin."}
+```
+
+Each node emits one or more of these as it runs. The UI renders them as status indicators above the final answer.
+
+### 2. Token events (streamed final answer)
+
+```
+event: token
+data: {"content": "Based on your transcript, you have completed..."}
+```
+
+The `final_answer` string is split into 120-character chunks (`_TOKEN_CHUNK_SIZE`) and emitted as a sequence of token events. The UI appends these chunks to progressively render the response as it arrives.
+
+### 3. Done event (metadata + replay ID)
+
+```
+event: done
+data: {
+  "session_id": "...",
+  "student_id": "...",
+  "selected_specialist": "academic",
+  "routing_scores": {"academic": 8, "career": 1, "general": 2},
+  "routing_reason": "Selected academic via llm routing (score 8.0).",
+  "citations": [{"title": "...", "url": "...", "tool": "search_web"}],
+  "tool_call_log": [...],
+  "specialist_output": {"message": "...", "stop_reason": "answered", ...},
+  "session_context": "...",
+  "long_context": "...",
+  "document_ingestion": {...},
+  "dependency_status": {"neo4j": "connected", "llm": "connected", ...},
+  "runtime_snapshot": {"selected_text_model": "google/gemma-4-26b-a4b", ...},
+  "replay_id": "rpl_..."
+}
+```
+
+Just before sending the done event, the API saves a **replay artifact** — a complete JSON snapshot of the turn — to `data/replays/` on disk. The frontend receives the `replay_id` so the user can look up the turn later via `/api/v1/replays/{replay_id}`.
+
+---
+
+## Blocked Query Path
+
+```
+User query
+    │
+    ▼
+FastAPI: resolve student, read files, build initial state
+    │
+    ▼
+Node 1 — Input Guard: detects block condition
+    │  (is_blocked = True, block_reason = "...")
+    │
+    │  Conditional edge: is_blocked → skip to responder
+    ▼
+Node 6 — Responder: final_answer = block_reason
+    │
+    ▼
+SSE: progress event(s) + token events (block message) + done event
+```
+
+No LLM routing, no specialist, no tool calls. The turn completes in milliseconds.
+
+---
+
+## Document Upload Path (standalone `/api/v1/documents`)
+
+The `/api/v1/documents` endpoint (separate from chat) lets files be uploaded outside a conversation turn. It runs the same `doc_analyst()` function directly — no LangGraph workflow, no LLM routing or specialist. The endpoint returns a `DocumentUploadResponse` with `{document_id, filename, entities_extracted, chunks_stored}` synchronously.
+
+---
+
+## Key Configuration Values
+
+All settings are loaded from the `.env` file (or environment variables):
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `LLM_BASE_URL` | `http://localhost:1234/v1` | LM Studio OpenAI-compatible endpoint |
+| `LLM_MODEL` | `google/gemma-4-26b-a4b` | Text LLM used for routing, specialist, and ingestion |
+| `VISION_MODEL` | `google/gemma-4-26b-a4b` | Vision LLM for image/scanned-page extraction |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama embedding service |
+| `EMBEDDING_MODEL` | `mxbai-embed-large` | Embedding model name |
+| `EMBEDDING_DIMENSIONS` | `1024` | Must match actual model output dimensions |
+| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j Bolt connection |
+| `SQLITE_DB_PATH` | `data/pathfinder.db` | LangGraph conversation checkpointer |
+| `CHUNK_SIZE` | `700` | Chars per text chunk during ingestion |
+| `CHUNK_OVERLAP` | `120` | Overlap between consecutive chunks |
+| `TOP_K` | `6` | Default number of chunks returned by vector search |
+| `TOPIC_GUARD_ENABLED` | `True` | Whether injection pattern checks run |
+| `MAX_FILE_SIZE_MB` | `10` | File upload size limit |
+| `ALLOWED_FILE_TYPES` | `.pdf .png .jpg .jpeg .heif .heic .docx` | Accepted upload extensions |
+
+---
+
+## Neo4j Graph Schema (Key Node/Edge Types)
+
+```
+(:Student)
+  ─[:HAS_SECTION]──▶ (:Section)
+                        ─[:HAS_ENTITY]──▶ (:Entity:<DynamicType>)
+                                            ─[:HAS_FIELD]──▶ (:Field)
+                                                               ─[:HAS_FIELD]──▶ (:Field)
+                                            ─[:MENTIONED_IN]──▶ (:Chunk)
+                                            ─[:DERIVED_FROM]──▶ (:Document)
+                                            ─[:<dynamic>]──▶ (:Entity:<DynamicType>)
+
+(:Student) ─[:HAS_DOCUMENT]──▶ (:Document) ─[:HAS_CHUNK]──▶ (:Chunk)
+(:Chunk) has a 1024-dimensional embedding vector stored on the node
+         and is indexed by the Neo4j vector index "chunk_embeddings"
+```
+
+The `hybrid_search` tool combines vector similarity on `Chunk` nodes with graph traversal back to related `Entity` nodes, giving the LLM both raw text excerpts and structured graph context in a single query result.
