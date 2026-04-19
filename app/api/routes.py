@@ -57,7 +57,7 @@ def _student_info(student: dict[str, Any]) -> StudentInfo:
     extra = {
         k: v for k, v in student.items()
         if k not in {"id", "name", "created_at", "updated_at",
-                      "long_context_summary", "long_context_notes"}
+                      "long_context"}
         and v is not None and str(v).strip()
     }
     return StudentInfo(
@@ -263,6 +263,7 @@ async def chat(
 
             # Done event
             latest_ingestion = dict(final_state.get("latest_ingestion_result", {}) or {})
+            latest_query_ingestion = dict(final_state.get("latest_query_ingestion_result", {}) or {})
             done_payload = {
                 "session_id": session_id,
                 "student_id": resolved_student_id,
@@ -279,6 +280,7 @@ async def chat(
                 "session_context": str(final_state.get("session_context", "") or ""),
                 "long_context": str(final_state.get("long_context", "") or ""),
                 "document_ingestion": latest_ingestion,
+                "query_ingestion": latest_query_ingestion,
                 "runtime_snapshot": runtime_snapshot,
             }
             try:
@@ -409,7 +411,7 @@ async def get_student(student_id: Optional[str] = Query(default=None)):
         root_properties=student,
         sections=sections,
         section_items=section_items,
-        long_context=str(student.get("long_context_summary", "") or ""),
+        long_context=str(student.get("long_context", "") or ""),
         student_schema=student_schema,
     )
 
@@ -419,7 +421,7 @@ async def update_student(update: StudentUpdate):
     """Update a specific student field."""
     resolved_student_id = await _resolve_student_id(update.student_id)
     value = update.value
-    if update.field == "long_context_summary":
+    if update.field == "long_context":
         value = str(update.value or "")
     result = await (await _graph_db()).update_student(
         student_id=resolved_student_id,
@@ -463,9 +465,14 @@ async def get_student_graph(student_id: Optional[str] = Query(default=None)):
 
 
 @router.get("/replays", response_model=list[ReplayArtifactInfo])
-async def get_replays(limit: int = Query(default=25, ge=1, le=100)):
+async def get_replays(
+    limit: int = Query(default=25, ge=1, le=100),
+):
     """List recent replay artifacts for debugging and evaluation."""
-    return [ReplayArtifactInfo(**item) for item in list_replay_artifacts(limit=limit)]
+    return [
+        ReplayArtifactInfo(**item)
+        for item in list_replay_artifacts(limit=limit)
+    ]
 
 
 @router.get("/replays/{replay_id}")

@@ -11,6 +11,7 @@ from langgraph.graph import END, StateGraph
 from app.nodes.input_guard import input_guard
 from app.nodes.response_validator import response_validator
 from app.nodes.orchestrator import orchestrator
+from app.nodes.query_ingestor import query_ingestor
 from app.nodes.responder import responder
 from app.nodes.specialist_runner import specialist_runner
 from app.nodes.context_persister import context_persister
@@ -35,6 +36,7 @@ def build_workflow() -> StateGraph:
         ("response_validator", response_validator),
         ("context_persister", context_persister),
         ("responder", responder),
+        ("query_ingestor", query_ingestor),
     ):
         workflow.add_node(name, node)
 
@@ -45,7 +47,8 @@ def build_workflow() -> StateGraph:
         lambda state: "responder" if state.get("is_blocked") else "orchestrator",
         {"orchestrator": "orchestrator", "responder": "responder"},
     )
-    workflow.add_edge("orchestrator", "specialist_runner")
+    workflow.add_edge("orchestrator", "query_ingestor")
+    workflow.add_edge("query_ingestor", "specialist_runner")
     workflow.add_edge("specialist_runner", "response_validator")
     workflow.add_edge("response_validator", "context_persister")
     workflow.add_edge("context_persister", "responder")

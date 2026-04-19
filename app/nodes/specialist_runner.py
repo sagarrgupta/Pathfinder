@@ -19,18 +19,25 @@ from app.core.prompts import (
 )
 from app.core.state import PathfinderState
 from app.tools.graph_tools import get_driver as get_graph_driver
-from app.tools.tools import ToolContext, build_tool_transcript_payload, execute_tool, get_tool_schemas
+from app.tools.tools import (
+    ToolContext,
+    build_tool_transcript_payload,
+    execute_agent_tool,
+    get_agent_tool_schemas,
+)
 from app.utils.json_extract import parse_json_object
 from app.utils.progress import add_progress
 from app.utils.runtime_utils import build_recent_conversation_window
 
 log = logging.getLogger("pathfinder.agents.specialist_runner")
 
+_AGENT_PROFILE = "specialist"
 _SPECIALIST_CONFIG = {
     "academic": ACADEMIC_SPECIALIST_SYSTEM_PROMPT,
     "career": CAREER_SPECIALIST_SYSTEM_PROMPT,
     "general": GENERAL_SPECIALIST_SYSTEM_PROMPT,
 }
+
 _MESSAGE_FIELD_RE = re.compile(r'"message"\s*:\s*"((?:\\.|[^"])*)"', re.DOTALL)
 _SPECIAL_TOKEN_RE = re.compile(r"<\|.*?\|>")
 
@@ -110,6 +117,10 @@ def _normalize_specialist_payload(payload: dict[str, Any], session_context: str)
     """Normalize the specialist final payload into the required runtime shape."""
     next_session_context = str(payload.get("next_session_context", "") or "").strip()
     if not next_session_context:
+        log.warning(
+            "LLM omitted next_session_context — carrying forward previous session context unchanged. "
+            "Check that the respond tool / JSON output includes this required field."
+        )
         next_session_context = session_context
     next_long_context = payload.get("next_long_context")
     if next_long_context in ("", [], {}):
@@ -156,7 +167,7 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
     raw_session_messages = working_state.get("messages", [])
     session_messages = list(raw_session_messages) if isinstance(raw_session_messages, list) else []
     session_context = str(working_state.get("session_context", "") or "").strip()
-    long_context = str(student.get("long_context_summary", "") or "").strip()
+    long_context = str(student.get("long_context", "") or "").strip()
 
     prompt_context = {
         "student_schema": student_schema,
@@ -165,7 +176,7 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
         "long_context": long_context,
     }
 
-    llm = get_text_llm(reasoning).bind_tools(get_tool_schemas())
+    llm = get_text_llm(reasoning).bind_tools(get_agent_tool_schemas(_AGENT_PROFILE))
     tool_context = ToolContext(
         student_id=student_id,
         session_id=session_id,
@@ -205,7 +216,7 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
             for call in ai_msg.tool_calls[:6]:
                 tool_name = str(call.get("name", "") or "")
                 args = call.get("args", {}) if isinstance(call.get("args", {}), dict) else {}
-                result = await execute_tool(tool_name, args, tool_context)
+                result = await execute_agent_tool(_AGENT_PROFILE, tool_name, args, tool_context)
                 compact = build_tool_transcript_payload(tool_name, args, result, tool_context)
                 tool_call_log.append(
                     {

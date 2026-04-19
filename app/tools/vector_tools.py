@@ -186,14 +186,25 @@ def _compact_health_check(_: dict[str, Any], result: dict[str, Any], __: ToolCon
 
 async def _get_chunk(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     vector_db = await _vector_db(context)
-    chunk = await vector_db.get_chunk(
-        chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
-    )
-    return {"chunk": chunk}
+    try:
+        chunk = await vector_db.get_chunk(
+            chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
+        )
+    except ValueError as exc:
+        if str(exc) == "chunk not found":
+            return {"found": False, "chunk": None}
+        raise
+    return {"found": True, "chunk": chunk}
 
 
-def _compact_get_chunk(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    return {"chunk": _compact_chunk_result(dict(result.get("chunk") or {}))}
+def _compact_get_chunk(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    if not result.get("found"):
+        return {
+            "found": False,
+            "chunk_id": str(arguments.get("chunk_id", "") or "").strip(),
+        }
+    chunk = dict(result.get("chunk") or {})
+    return {"found": True, "chunk": _compact_chunk_result(dict(chunk or {}))}
 
 
 async def _get_chunks_for_document(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -244,17 +255,31 @@ def _compact_delete_chunk(arguments: dict[str, Any], result: dict[str, Any], __:
 
 async def _get_chunk_neighbors(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     vector_db = await _vector_db(context)
-    neighbors = await vector_db.get_chunk_neighbors(
-        chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
-    )
-    return {"neighbors": neighbors}
-
-
-def _compact_chunk_neighbors(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    neighbors = list(result.get("neighbors", []) or [])
+    try:
+        neighbors = await vector_db.get_chunk_neighbors(
+            chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
+        )
+    except ValueError as exc:
+        if str(exc) == "chunk not found":
+            return {"found": False, "chunk": None, "document": None}
+        raise
     return {
-        "count": len(neighbors),
-        "neighbors": [_compact_chunk_result(dict(chunk)) for chunk in neighbors[:10] if isinstance(chunk, dict)],
+        "found": True,
+        "chunk": dict(neighbors.get("chunk") or {}),
+        "document": dict(neighbors.get("document") or {}),
+    }
+
+
+def _compact_chunk_neighbors(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    if not result.get("found"):
+        return {
+            "found": False,
+            "chunk_id": str(arguments.get("chunk_id", "") or "").strip(),
+        }
+    return {
+        "found": True,
+        "chunk": _compact_chunk_result(dict(result.get("chunk") or {})),
+        "document": pick_scalar_fields(dict(result.get("document") or {}), limit=6),
     }
 
 

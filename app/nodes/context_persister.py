@@ -15,7 +15,13 @@ log = logging.getLogger("pathfinder.agents.context_persister")
 async def context_persister(state: PathfinderState) -> PathfinderState:
     """saves next session context and optional next long context before response rendering."""
     output = state.get("specialist_output", {}) if isinstance(state.get("specialist_output", {}), dict) else {}
-    next_session_context = str(output.get("next_session_context", "") or state.get("session_context", "") or "").strip()
+    # `specialist_runner._normalize_specialist_payload` already guarantees a
+    # non-empty `next_session_context` (it falls back to the previous one and
+    # logs there). This second fallback is purely defensive in case the
+    # specialist normalization is ever bypassed.
+    next_session_context = str(
+        output.get("next_session_context", "") or state.get("session_context", "") or ""
+    ).strip()
     next_long_context = output.get("next_long_context")
 
     step_progress = list(state.get("step_progress", []))
@@ -31,7 +37,7 @@ async def context_persister(state: PathfinderState) -> PathfinderState:
             graph_db = GraphDB(await get_graph_driver())
             await graph_db.update_student(
                 student_id=str(state.get("student_id", "") or ""),
-                updates={"long_context_summary": long_context_text},
+                updates={"long_context": long_context_text},
             )
             updated_state["long_context"] = long_context_text
         except Exception as exc:

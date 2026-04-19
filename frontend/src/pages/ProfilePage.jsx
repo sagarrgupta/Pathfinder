@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const HIDDEN_FIELDS = new Set(['id', 'created_at', 'updated_at', 'long_context_notes', 'long_context_summary']);
+const HIDDEN_FIELDS = new Set(['id', 'created_at', 'updated_at', 'long_context']);
 const HIDDEN_ENTITY_FIELDS = new Set([
   'id',
   'student_id',
@@ -257,7 +257,7 @@ export default function ProfilePage() {
                   student={student}
                   onSaveLongContext={async (text) => {
                     try {
-                      await updateStudent('long_context_summary', text, state.activeStudentId);
+                      await updateStudent('long_context', text, state.activeStudentId);
                       toast.success('Saved');
                       await refreshStudent(state.activeStudentId);
                     } catch (err) {
@@ -450,7 +450,7 @@ function EditableField({ label, value, fieldKey, onSave }) {
 }
 
 function AdvancedPanel({ student, onSaveLongContext }) {
-  const longContext = student?.long_context || student?.root_properties?.long_context_summary || '';
+  const longContext = student?.long_context || student?.root_properties?.long_context || '';
   const [summary, setSummary] = useState(longContext);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);

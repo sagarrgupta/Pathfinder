@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # ---------- LM Studio (Text + Vision LLM) ----------
     LLM_BASE_URL: str = "http://localhost:1234/v1"
     LLM_MODEL: str = "google/gemma-4-26b-a4b"
+    LLM_REQUIRE_EXACT_MODEL: bool = False
     LLM_API_KEY: str = "sk-no-key"
     VISION_MODEL: str = "google/gemma-4-26b-a4b"
 

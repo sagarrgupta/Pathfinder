@@ -14,83 +14,24 @@ from app.core.prompts import (
     DOCUMENT_INGESTION_AGENT_SYSTEM_PROMPT,
     DOCUMENT_INGESTION_AGENT_USER_PROMPT,
 )
-from app.tools.graph_tools import get_driver as get_graph_driver, get_graph_tool_specs
-from app.tools.tools import ToolContext, ToolSpec, build_tool_transcript_payload
-from app.tools.vector_tools import get_vector_tool_specs
+from app.tools.graph_tools import get_driver as get_graph_driver
+from app.tools.tools import (
+    ToolContext,
+    build_tool_transcript_payload,
+    execute_agent_tool,
+    get_agent_tool_schemas,
+)
+from app.utils.ingest_common import build_graph_updates
 from app.utils.json_extract import parse_json_object
 
 log = logging.getLogger("pathfinder.utils.document_ingest")
 
+_AGENT_PROFILE = "document_ingestor"
 _QUERY_LIMIT = 400
 _DOCUMENT_LIMIT = 24000
 _CHUNK_PROMPT_LIMIT = 24000
 _INGESTION_TOOL_LIMIT = 30
 _INGESTION_ROUNDS = 100
-_INGESTION_TOOL_SPECS: tuple[ToolSpec, ...] | None = None
-_INGESTION_TOOL_SCHEMAS: tuple[dict[str, Any], ...] | None = None
-_INGESTION_TOOL_BY_NAME: dict[str, ToolSpec] | None = None
-
-# Tools that the ingestion agent should NOT see —
-# web search, conversation utilities, cleanup, index creation, respond,
-# chunk write tools (chunks are already stored before ingestion), and
-# visualization-only helpers.
-_INGESTION_EXCLUDED_TOOLS: set[str] = {
-    # Web — not relevant during document ingestion
-    "search_web",
-    "fetch_url",
-    "find_official_sources",
-    "respond",
-    # Destructive / admin tools the ingestion agent should never call
-    "delete_document_chunks",
-    "delete_chunk",
-    "create_vector_index",
-    "vector_health_check",
-    # Chunk write tools — chunks are pre-stored before ingestion runs
-    "upsert_chunk",
-    "upsert_chunk_metadata",
-    "batch_upsert_chunks",
-    # Broad retrieval the ingestion agent doesn't need
-    "get_chunks_for_student",
-}
-
-
-def _get_ingestion_tool_specs() -> list[ToolSpec]:
-    """Return only the tools relevant for document ingestion."""
-    global _INGESTION_TOOL_SPECS, _INGESTION_TOOL_BY_NAME
-    if _INGESTION_TOOL_SPECS is None:
-        specs = tuple(
-            spec
-            for spec in (
-                *get_graph_tool_specs(),
-                *get_vector_tool_specs(),
-            )
-            if spec.name not in _INGESTION_EXCLUDED_TOOLS
-        )
-        _INGESTION_TOOL_SPECS = specs
-        _INGESTION_TOOL_BY_NAME = {spec.name: spec for spec in specs}
-    return list(_INGESTION_TOOL_SPECS)
-
-
-def _get_ingestion_tool_schemas() -> list[dict[str, Any]]:
-    """Return OpenAI-compatible schemas for the ingestion tool subset."""
-    global _INGESTION_TOOL_SCHEMAS
-    if _INGESTION_TOOL_SCHEMAS is None:
-        _INGESTION_TOOL_SCHEMAS = tuple(
-            spec.as_openai_schema() for spec in _get_ingestion_tool_specs()
-        )
-    return list(_INGESTION_TOOL_SCHEMAS)
-
-
-async def _ingestion_execute_tool(
-    name: str, arguments: dict[str, Any], context: ToolContext
-) -> dict[str, Any]:
-    """Execute one tool from the ingestion subset."""
-    if _INGESTION_TOOL_BY_NAME is None:
-        _get_ingestion_tool_specs()
-    spec = (_INGESTION_TOOL_BY_NAME or {}).get(name)
-    if spec is not None:
-        return await spec.handler(arguments, context)
-    return {"error": f"unknown tool: {name}"}
 
 
 def _normalize_model_summary(payload: dict[str, Any]) -> dict[str, Any]:
@@ -113,88 +54,6 @@ def _normalize_model_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_graph_updates(tool_call_log: list[dict[str, Any]]) -> dict[str, Any]:
-    """Summarize what this ingestion run changed from successful tool writes."""
-    sections_touched: list[str] = []
-    entity_types_touched: list[str] = []
-    relationship_types_touched: list[str] = []
-    sample_entities_written: list[dict[str, Any]] = []
-    seen_sections: set[str] = set()
-    seen_entity_types: set[str] = set()
-    seen_relationship_types: set[str] = set()
-    seen_entity_samples: set[str] = set()
-    counts = {
-        "sections_upserted": 0,
-        "entities_written": 0,
-        "relationships_written": 0,
-        "chunk_links_written": 0,
-        "document_links_written": 0,
-        "field_writes": 0,
-    }
-
-    for item in tool_call_log:
-        if not isinstance(item, dict) or item.get("status") != "ok":
-            continue
-        tool_name = str(item.get("tool", "") or "")
-        args = dict(item.get("input") or {})
-
-        if tool_name == "upsert_section":
-            counts["sections_upserted"] += 1
-            key = str(args.get("key", "") or "").strip()
-            if key and key not in seen_sections:
-                seen_sections.add(key)
-                sections_touched.append(key)
-            continue
-
-        if tool_name == "upsert_graph_node":
-            counts["entities_written"] += 1
-            entity_type = str(args.get("entity_type", "") or "").strip()
-            if entity_type and entity_type not in seen_entity_types:
-                seen_entity_types.add(entity_type)
-                entity_types_touched.append(entity_type)
-            identity = dict(args.get("identity") or {})
-            if entity_type and identity:
-                identity_signature = json.dumps(
-                    {"entity_type": entity_type, "identity": identity},
-                    sort_keys=True,
-                    ensure_ascii=True,
-                    default=str,
-                )
-                if identity_signature not in seen_entity_samples and len(sample_entities_written) < 5:
-                    seen_entity_samples.add(identity_signature)
-                    sample_entities_written.append(
-                        {"entity_type": entity_type, "identity": identity}
-                    )
-            continue
-
-        if tool_name == "upsert_graph_relation":
-            counts["relationships_written"] += 1
-            relationship_type = str(args.get("relationship_type", "") or "").strip()
-            if relationship_type and relationship_type not in seen_relationship_types:
-                seen_relationship_types.add(relationship_type)
-                relationship_types_touched.append(relationship_type)
-            continue
-
-        if tool_name == "link_entity_to_chunk":
-            counts["chunk_links_written"] += 1
-            continue
-
-        if tool_name == "link_entity_to_document":
-            counts["document_links_written"] += 1
-            continue
-
-        if tool_name in {"upsert_entity_field", "upsert_nested_field"}:
-            counts["field_writes"] += 1
-
-    return {
-        "sections_touched": sections_touched,
-        "entity_types_touched": entity_types_touched,
-        "relationship_types_touched": relationship_types_touched,
-        "counts": counts,
-        "sample_entities_written": sample_entities_written,
-    }
-
-
 async def ingest_document(
     *,
     student_id: str,
@@ -208,7 +67,7 @@ async def ingest_document(
 ) -> dict[str, Any]:
     """Use the tool registry to ingest one document into the student graph."""
     graph_db = GraphDB(await get_graph_driver())
-    llm = get_text_llm().bind_tools(_get_ingestion_tool_schemas())
+    llm = get_text_llm().bind_tools(get_agent_tool_schemas(_AGENT_PROFILE))
     tool_context = ToolContext(
         student_id=student_id,
         session_id=session_id or "",
@@ -248,7 +107,7 @@ async def ingest_document(
                 tool_name = str(call.get("name", "") or "")
                 args = call.get("args", {}) if isinstance(call.get("args", {}), dict) else {}
                 try:
-                    result = await _ingestion_execute_tool(tool_name, args, tool_context)
+                    result = await execute_agent_tool(_AGENT_PROFILE, tool_name, args, tool_context)
                 except Exception as e:
                     result = {"error": str(e)}
                 compact = build_tool_transcript_payload(tool_name, args, result, tool_context)
@@ -283,7 +142,7 @@ async def ingest_document(
         break
 
     model_summary = _normalize_model_summary(final_payload)
-    graph_updates = _build_graph_updates(tool_call_log)
+    graph_updates = build_graph_updates(tool_call_log)
     graph_schema_after = await graph_db.get_student_schema(student_id=student_id)
     return {
         "tool_call_log": tool_call_log,

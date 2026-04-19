@@ -3,11 +3,13 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time
+import logging
 from typing import Any, Awaitable, Callable
 
 from mcp.types import Tool
 
 _SUMMARY_FIELD_LIMIT = 10
+log = logging.getLogger("pathfinder.tools")
 
 try:
     from neo4j.time import Date as Neo4jDate
@@ -46,6 +48,76 @@ _TOOL_SPECS: tuple["ToolSpec", ...] | None = None
 _TOOL_SCHEMAS: tuple[dict[str, Any], ...] | None = None
 _MCP_TOOLS: tuple[Tool, ...] | None = None
 _TOOL_SPEC_BY_NAME: dict[str, "ToolSpec"] | None = None
+
+# Per-agent tool exclusions. Each set lists the tool names the agent must
+# NOT see. The model never receives these schemas and `execute_agent_tool`
+# rejects calls to them.
+
+# Document ingester: writes graph structure + grounding to pre-stored chunks.
+# No web, no respond, no chunk writes (already done), no admin.
+_DOCUMENT_INGESTOR_EXCLUDED_TOOLS: frozenset[str] = frozenset({
+    "search_web",
+    "fetch_url",
+    "find_official_sources",
+    "respond",
+    "delete_chunk",
+    "delete_document_chunks",
+    "create_vector_index",
+    "vector_health_check",
+    "upsert_chunk",
+    "upsert_chunk_metadata",
+    "batch_upsert_chunks",
+    "get_chunks_for_student",
+})
+
+# Chat-message ingester: writes graph structure only. No chunks (no document
+# to own them), no grounding (nothing to link to), no web, no respond, no admin.
+_QUERY_INGESTOR_EXCLUDED_TOOLS: frozenset[str] = frozenset({
+    "search_web",
+    "fetch_url",
+    "find_official_sources",
+    "respond",
+    "delete_chunk",
+    "delete_document_chunks",
+    "create_vector_index",
+    "vector_health_check",
+    "upsert_chunk",
+    "upsert_chunk_metadata",
+    "batch_upsert_chunks",
+    "link_entity_to_chunk",
+    "link_entity_to_document",
+    "get_chunks_for_student",
+})
+
+# Specialist (the answering agent): READ-ONLY against the graph. Ingestion ran
+# before it; its job is to read and respond. Web and `respond` stay enabled.
+_SPECIALIST_EXCLUDED_TOOLS: frozenset[str] = frozenset({
+    "upsert_section",
+    "upsert_graph_node",
+    "upsert_graph_relation",
+    "upsert_entity_field",
+    "upsert_nested_field",
+    "update_student",
+    "link_entity_to_chunk",
+    "link_entity_to_document",
+    "upsert_chunk",
+    "upsert_chunk_metadata",
+    "batch_upsert_chunks",
+    "delete_chunk",
+    "delete_document_chunks",
+    "create_vector_index",
+    "vector_health_check",
+})
+
+_AGENT_TOOL_EXCLUSIONS: dict[str, frozenset[str]] = {
+    "document_ingestor": _DOCUMENT_INGESTOR_EXCLUDED_TOOLS,
+    "query_ingestor": _QUERY_INGESTOR_EXCLUDED_TOOLS,
+    "specialist": _SPECIALIST_EXCLUDED_TOOLS,
+}
+
+_AGENT_TOOL_SPECS_CACHE: dict[str, tuple["ToolSpec", ...]] = {}
+_AGENT_TOOL_SCHEMAS_CACHE: dict[str, tuple[dict[str, Any], ...]] = {}
+_AGENT_TOOL_BY_NAME_CACHE: dict[str, dict[str, "ToolSpec"]] = {}
 
 
 def _wrap_handler(handler: ToolHandler) -> ToolHandler:
@@ -156,8 +228,65 @@ async def execute_tool(name: str, arguments: dict[str, Any], context: ToolContex
     """Execute one registered tool by name."""
     spec = get_tool_spec(name)
     if spec is not None:
-        return await spec.handler(arguments, context)
+        try:
+            return await spec.handler(arguments, context)
+        except ValueError as exc:
+            log.warning("Tool %s returned recoverable error: %s", name, exc)
+            return {"error": str(exc)}
     return {"error": f"unknown tool: {name}"}
+
+
+def list_agent_profiles() -> list[str]:
+    """Return the names of registered agent tool profiles."""
+    return list(_AGENT_TOOL_EXCLUSIONS.keys())
+
+
+def _resolve_agent_profile(agent: str) -> frozenset[str]:
+    """Look up the exclusion set for an agent, raising on unknown profiles."""
+    if agent not in _AGENT_TOOL_EXCLUSIONS:
+        valid = ", ".join(sorted(_AGENT_TOOL_EXCLUSIONS.keys()))
+        raise ValueError(f"unknown agent profile {agent!r}; valid profiles: {valid}")
+    return _AGENT_TOOL_EXCLUSIONS[agent]
+
+
+def get_agent_tool_specs(agent: str) -> list[ToolSpec]:
+    """Return the ToolSpec subset visible to a specific agent profile."""
+    cached = _AGENT_TOOL_SPECS_CACHE.get(agent)
+    if cached is not None:
+        return list(cached)
+    excluded = _resolve_agent_profile(agent)
+    specs = tuple(spec for spec in get_tool_specs() if spec.name not in excluded)
+    _AGENT_TOOL_SPECS_CACHE[agent] = specs
+    _AGENT_TOOL_BY_NAME_CACHE[agent] = {spec.name: spec for spec in specs}
+    return list(specs)
+
+
+def get_agent_tool_schemas(agent: str) -> list[dict[str, Any]]:
+    """Return OpenAI-compatible schemas for the agent's tool subset."""
+    cached = _AGENT_TOOL_SCHEMAS_CACHE.get(agent)
+    if cached is not None:
+        return list(cached)
+    schemas = tuple(spec.as_openai_schema() for spec in get_agent_tool_specs(agent))
+    _AGENT_TOOL_SCHEMAS_CACHE[agent] = schemas
+    return list(schemas)
+
+
+async def execute_agent_tool(
+    agent: str, name: str, arguments: dict[str, Any], context: ToolContext
+) -> dict[str, Any]:
+    """Execute one tool, rejecting names not allowed for the given agent profile."""
+    if agent not in _AGENT_TOOL_BY_NAME_CACHE:
+        get_agent_tool_specs(agent)
+    spec = _AGENT_TOOL_BY_NAME_CACHE.get(agent, {}).get(name)
+    if spec is None:
+        if name in (_AGENT_TOOL_EXCLUSIONS.get(agent) or frozenset()):
+            return {"error": f"tool '{name}' is not available to agent '{agent}'"}
+        return {"error": f"unknown tool: {name}"}
+    try:
+        return await spec.handler(arguments, context)
+    except ValueError as exc:
+        log.warning("Agent %s tool %s returned recoverable error: %s", agent, name, exc)
+        return {"error": str(exc)}
 
 
 def summarize_tool_usage(tool_names: list[str]) -> dict[str, str]:

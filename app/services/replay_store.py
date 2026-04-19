@@ -33,8 +33,12 @@ def build_replay_artifact(
     tool_call_log = list(final_state.get("tool_call_log", []) or [])
     specialist_output = final_state.get("specialist_output", {}) or {}
     latest_ingestion_result = dict(final_state.get("latest_ingestion_result", {}) or {})
+    latest_query_ingestion_result = dict(final_state.get("latest_query_ingestion_result", {}) or {})
     documents = list(latest_ingestion_result.get("documents", []) or [])
     latest_schema = dict(final_state.get("student_schema") or {})
+    query_schema_after = dict(latest_query_ingestion_result.get("graph_schema_after") or {})
+    if query_schema_after:
+        latest_schema = query_schema_after
     for item in reversed(documents):
         if not isinstance(item, dict):
             continue
@@ -66,6 +70,7 @@ def build_replay_artifact(
         "long_context": str(final_state.get("long_context", "") or ""),
         "student_schema": latest_schema,
         "document_ingestion": latest_ingestion_result,
+        "query_ingestion": latest_query_ingestion_result,
     }
 
 

@@ -44,6 +44,7 @@ class PathfinderState(TypedDict, total=False):
     long_context: str                         # Stored student-scoped summary carried across turns
     student_schema: dict[str, Any]            # Canonical bounded student graph schema manifest
     latest_ingestion_result: dict[str, Any]   # Last document-ingestion summary for debugging/replays
+    latest_query_ingestion_result: dict[str, Any]  # Last opportunistic chat-message ingestion summary
     tool_call_log: list[dict[str, Any]]       # Provenance log of tool calls/results used this turn
     specialist_output: dict[str, Any]         # Structured result from the selected specialist
 
