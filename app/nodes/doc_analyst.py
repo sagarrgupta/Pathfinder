@@ -194,6 +194,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                 file_type=file_type,
                 full_text=full_text,
                 chunks=prompt_chunks,
+                step_progress=step_progress,
             )
             ingestion_result = {
                 "tool_call_log": list(applied.get("tool_call_log", []) or []),

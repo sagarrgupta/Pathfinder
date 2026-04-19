@@ -42,7 +42,11 @@ from app.schemas.models import (
 )
 from app.tools.graph_tools import get_driver as get_graph_driver
 from app.utils.ids import generate_session_id, generate_student_id
-from app.utils.progress import normalize_progress_entry
+from app.utils.progress import (
+    normalize_progress_entry,
+    reset_live_emitter,
+    set_live_emitter,
+)
 from app.utils.runtime_utils import infer_method
 
 log = logging.getLogger("pathfinder.api")
@@ -210,96 +214,117 @@ async def chat(
     file_data = [await _read_upload_file(upload) for upload in files]
 
     async def event_stream():
-        try:
-            graph = await get_compiled_workflow()
-            turn_reasoning = _normalize_reasoning(reasoning if str(reasoning or "").strip() else _reasoning)
-            dependency_status = await _get_dependency_status()
-            runtime_snapshot = {
-                "session_id": session_id,
-                "student_id": resolved_student_id,
-                "selected_text_model": settings.LLM_MODEL,
-                "reasoning": turn_reasoning,
-                "dependency_status": dependency_status,
-            }
-            initial_state = {
-                "messages": [("human", query)],
-                "query": query,
-                "files": file_data,
-                "session_id": session_id,
-                "student_id": resolved_student_id,
-                "topic_guard_enabled": _topic_guard_enabled,
-                "reasoning": turn_reasoning,
-                "step_progress": [],
-            }
-            config = {
-                "configurable": {"thread_id": f"{resolved_student_id}:{session_id}"},
-                "recursion_limit": 15,
-            }
+        # Outbound queue: (event_name, payload) tuples consumed by the SSE
+        # generator. Sentinel `None` signals graph completion. Using one queue
+        # lets us interleave live progress (pushed mid-node) with graph
+        # state-update events (pushed when a node returns).
+        outbound: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
 
-            # Stream graph execution
-            last_progress_count = 0
-            final_state = {}
-
-            async for event in graph.astream(initial_state, config=config):
-                # event is a dict {node_name: state_update}
-                for node_name, state_update in event.items():
-                    final_state.update(state_update)
-
-                    # Emit new progress messages
-                    progress = state_update.get("step_progress", [])
-                    if len(progress) > last_progress_count:
-                        for entry in progress[last_progress_count:]:
-                            payload = normalize_progress_entry(entry, fallback_stage="Working")
-                            yield f"event: progress\ndata: {json.dumps(payload)}\n\n"
-                        last_progress_count = len(progress)
-
-            # Emit final answer
-            final_answer = str(final_state.get("final_answer", "") or "I couldn't generate a response.")
-
-            # Stream the exact final answer in bounded chunks so markdown/newlines survive intact.
-            for start in range(0, len(final_answer), _TOKEN_CHUNK_SIZE):
-                chunk = final_answer[start : start + _TOKEN_CHUNK_SIZE]
-                yield f"event: token\ndata: {json.dumps({'content': chunk})}\n\n"
-
-            # Done event
-            latest_ingestion = dict(final_state.get("latest_ingestion_result", {}) or {})
-            latest_query_ingestion = dict(final_state.get("latest_query_ingestion_result", {}) or {})
-            done_payload = {
-                "session_id": session_id,
-                "student_id": resolved_student_id,
-                "citations": final_state.get("citations", []),
-                "method": infer_method(final_state),
-                "dependency_status": dependency_status,
-                "processing_issues": final_state.get("processing_issues", []),
-                "stop_reason": final_state.get("stop_reason", ""),
-                "selected_specialist": final_state.get("selected_specialist", ""),
-                "routing_scores": final_state.get("routing_scores", {}),
-                "routing_reason": final_state.get("routing_reason", ""),
-                "tool_call_log": final_state.get("tool_call_log", []),
-                "specialist_output": final_state.get("specialist_output", {}),
-                "session_context": str(final_state.get("session_context", "") or ""),
-                "long_context": str(final_state.get("long_context", "") or ""),
-                "document_ingestion": latest_ingestion,
-                "query_ingestion": latest_query_ingestion,
-                "runtime_snapshot": runtime_snapshot,
-            }
+        def push_progress(entry: dict[str, str]) -> None:
+            payload = normalize_progress_entry(entry, fallback_stage="Working")
             try:
-                artifact = build_replay_artifact(
-                    query=query,
-                    done_payload=done_payload,
-                    final_state=final_state,
-                    student_id=resolved_student_id,
-                    session_id=session_id,
-                )
-                saved_artifact = await asyncio.to_thread(save_replay_artifact, artifact)
-                done_payload["replay_id"] = saved_artifact.get("id", "")
-            except Exception as exc:
-                log.warning("Failed to persist replay artifact for session %s: %s", session_id, exc)
-            yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
+                outbound.put_nowait(("progress", payload))
+            except Exception:
+                pass
 
-        except Exception as exc:
-            log.error("Chat error: %s", exc, exc_info=True)
-            yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+        live_token = set_live_emitter(push_progress)
+
+        async def run_graph() -> None:
+            try:
+                graph = await get_compiled_workflow()
+                turn_reasoning = _normalize_reasoning(reasoning if str(reasoning or "").strip() else _reasoning)
+                dependency_status = await _get_dependency_status()
+                runtime_snapshot = {
+                    "session_id": session_id,
+                    "student_id": resolved_student_id,
+                    "selected_text_model": settings.LLM_MODEL,
+                    "reasoning": turn_reasoning,
+                    "dependency_status": dependency_status,
+                }
+                initial_state = {
+                    "messages": [("human", query)],
+                    "query": query,
+                    "files": file_data,
+                    "session_id": session_id,
+                    "student_id": resolved_student_id,
+                    "topic_guard_enabled": _topic_guard_enabled,
+                    "reasoning": turn_reasoning,
+                    "step_progress": [],
+                }
+                config = {
+                    "configurable": {"thread_id": f"{resolved_student_id}:{session_id}"},
+                    "recursion_limit": 15,
+                }
+
+                final_state: dict[str, Any] = {}
+
+                async for event in graph.astream(initial_state, config=config):
+                    for _node_name, state_update in event.items():
+                        final_state.update(state_update)
+
+                final_answer = str(final_state.get("final_answer", "") or "I couldn't generate a response.")
+
+                for start in range(0, len(final_answer), _TOKEN_CHUNK_SIZE):
+                    chunk = final_answer[start : start + _TOKEN_CHUNK_SIZE]
+                    outbound.put_nowait(("token", {"content": chunk}))
+
+                latest_ingestion = dict(final_state.get("latest_ingestion_result", {}) or {})
+                latest_query_ingestion = dict(final_state.get("latest_query_ingestion_result", {}) or {})
+                done_payload = {
+                    "session_id": session_id,
+                    "student_id": resolved_student_id,
+                    "citations": final_state.get("citations", []),
+                    "method": infer_method(final_state),
+                    "dependency_status": dependency_status,
+                    "processing_issues": final_state.get("processing_issues", []),
+                    "stop_reason": final_state.get("stop_reason", ""),
+                    "selected_specialist": final_state.get("selected_specialist", ""),
+                    "routing_scores": final_state.get("routing_scores", {}),
+                    "routing_reason": final_state.get("routing_reason", ""),
+                    "tool_call_log": final_state.get("tool_call_log", []),
+                    "specialist_output": final_state.get("specialist_output", {}),
+                    "session_context": str(final_state.get("session_context", "") or ""),
+                    "long_context": str(final_state.get("long_context", "") or ""),
+                    "document_ingestion": latest_ingestion,
+                    "query_ingestion": latest_query_ingestion,
+                    "runtime_snapshot": runtime_snapshot,
+                }
+                try:
+                    artifact = build_replay_artifact(
+                        query=query,
+                        done_payload=done_payload,
+                        final_state=final_state,
+                        student_id=resolved_student_id,
+                        session_id=session_id,
+                    )
+                    saved_artifact = await asyncio.to_thread(save_replay_artifact, artifact)
+                    done_payload["replay_id"] = saved_artifact.get("id", "")
+                except Exception as exc:
+                    log.warning("Failed to persist replay artifact for session %s: %s", session_id, exc)
+                outbound.put_nowait(("done", done_payload))
+
+            except Exception as exc:
+                log.error("Chat error: %s", exc, exc_info=True)
+                outbound.put_nowait(("error", {"error": str(exc)}))
+            finally:
+                outbound.put_nowait(None)
+
+        graph_task = asyncio.create_task(run_graph())
+        try:
+            while True:
+                item = await outbound.get()
+                if item is None:
+                    break
+                event_name, payload = item
+                yield f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
+        finally:
+            reset_live_emitter(live_token)
+            if not graph_task.done():
+                graph_task.cancel()
+                try:
+                    await graph_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

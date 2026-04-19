@@ -60,6 +60,16 @@ export default function ProfilePage() {
   const fileInputRef = useRef(null);
   const student = state.student;
 
+  // Refresh the student snapshot whenever the page mounts so that nodes added
+  // via chat (document ingestion, context persister, etc.) are reflected
+  // immediately when the user navigates here from another page.
+  useEffect(() => {
+    if (!state.activeStudentId) return;
+    refreshStudent(state.activeStudentId).catch(() => {
+      // Silent failure — stale data still renders.
+    });
+  }, [state.activeStudentId, refreshStudent]);
+
   const performUpload = async (file, replace = false) => {
     setIsUploading(true);
     setProcessingStep('Processing and ingesting document...');

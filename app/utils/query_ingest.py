@@ -30,6 +30,7 @@ from app.tools.tools import (
 )
 from app.utils.ingest_common import build_graph_updates
 from app.utils.json_extract import parse_json_object
+from app.utils.progress import add_progress
 
 log = logging.getLogger("pathfinder.utils.query_ingest")
 
@@ -58,8 +59,10 @@ async def ingest_query(
     student_id: str,
     session_id: str | None,
     query: str,
+    step_progress: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Use the chat-ingestion tool surface to opportunistically ingest one chat message."""
+    progress_sink: list[dict[str, str]] = step_progress if step_progress is not None else []
     graph_db = GraphDB(await get_graph_driver())
     llm = get_text_llm().bind_tools(get_agent_tool_schemas(_AGENT_PROFILE))
     tool_context = ToolContext(
@@ -80,12 +83,33 @@ async def ingest_query(
     tool_call_log: list[dict[str, Any]] = []
     final_payload: dict[str, Any] = {}
 
-    for _ in range(_INGESTION_ROUNDS):
+    for round_idx in range(_INGESTION_ROUNDS):
+        if round_idx == 0:
+            add_progress(
+                progress_sink,
+                stage="Reading your message",
+                message="Thinking through what you said.",
+            )
+        else:
+            add_progress(
+                progress_sink,
+                stage="Reading your message",
+                message=f"Continuing review (step {round_idx + 1}).",
+            )
         ai_msg = await llm.ainvoke(messages)
         messages.append(ai_msg)
         if not isinstance(ai_msg, AIMessage):
             break
         if ai_msg.tool_calls:
+            tool_count = min(len(ai_msg.tool_calls), _INGESTION_TOOL_LIMIT)
+            add_progress(
+                progress_sink,
+                stage="Reading your message",
+                message=(
+                    f"Checking the graph for {tool_count} detail"
+                    f"{'s' if tool_count != 1 else ''}."
+                ),
+            )
             for call in ai_msg.tool_calls[:_INGESTION_TOOL_LIMIT]:
                 tool_name = str(call.get("name", "") or "")
                 args = call.get("args", {}) if isinstance(call.get("args", {}), dict) else {}
@@ -122,6 +146,27 @@ async def ingest_query(
                 "stop_reason": "",
             }
         break
+
+    saved_count = (
+        len(final_payload.get("saved_items") or [])
+        if isinstance(final_payload, dict)
+        else 0
+    )
+    if saved_count > 0:
+        add_progress(
+            progress_sink,
+            stage="Reading your message",
+            message=(
+                f"Saved {saved_count} new detail"
+                f"{'s' if saved_count != 1 else ''} to your profile."
+            ),
+        )
+    else:
+        add_progress(
+            progress_sink,
+            stage="Reading your message",
+            message="No new details to remember from this message.",
+        )
 
     model_summary = _normalize_query_summary(final_payload)
     graph_updates = build_graph_updates(tool_call_log)
