@@ -31,7 +31,7 @@ _AGENT_PROFILE = "document_ingestor"
 _QUERY_LIMIT = 400
 _DOCUMENT_LIMIT = 24000
 _CHUNK_PROMPT_LIMIT = 24000
-_INGESTION_TOOL_LIMIT = 30
+_INGESTION_TOOL_LIMIT = 10
 _INGESTION_ROUNDS = 100
 
 
@@ -72,7 +72,7 @@ async def ingest_document(
     graph_db = GraphDB(await get_graph_driver())
 
     llm = get_text_llm().bind_tools(get_agent_tool_schemas(_AGENT_PROFILE))
-    
+
     tool_context = ToolContext(
         student_id=student_id,
         session_id=session_id or "",
