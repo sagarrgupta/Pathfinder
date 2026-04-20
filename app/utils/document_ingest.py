@@ -70,7 +70,9 @@ async def ingest_document(
     """Use the tool registry to ingest one document into the student graph."""
     progress_sink: list[dict[str, str]] = step_progress if step_progress is not None else []
     graph_db = GraphDB(await get_graph_driver())
+
     llm = get_text_llm().bind_tools(get_agent_tool_schemas(_AGENT_PROFILE))
+    
     tool_context = ToolContext(
         student_id=student_id,
         session_id=session_id or "",

@@ -88,17 +88,6 @@ async def _graph_db(context: ToolContext) -> GraphDB:
 def _student_id(context: ToolContext) -> str:
     return str(context.student_id or "").strip()
 
-
-def _compact_section(section: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(section, dict):
-        return {}
-    return {
-        "key": str(section.get("key") or "").strip(),
-        "description": str(section.get("description") or "").strip(),
-        "parent_key": str(section.get("parent_key") or "").strip(),
-    }
-
-
 def _summarize_entity(entity: dict[str, Any], *, limit: int = 10) -> dict[str, Any]:
     if not isinstance(entity, dict):
         return {"value": bounded_text(entity)}
@@ -162,31 +151,39 @@ def _compact_field(field: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
-def _compact_entity_list(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    entities = list(result.get("entities", []) or result.get("results", []) or [])
-    summary = {
-        "count": len(entities),
-        "items": [_summarize_entity(entity) for entity in entities[:20]],
-    }
-    section_key = str(arguments.get("section_key") or "").strip()
-    entity_type = str(arguments.get("entity_type") or "").strip()
-    if section_key:
-        summary["section_key"] = section_key
-    if entity_type:
-        summary["entity_type"] = entity_type
-    return summary
-
-
-def _compact_field_list(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    fields = list(result.get("fields", []) or [])
-    return {
-        "count": len(fields),
-        "fields": [_compact_field(field) for field in fields[:20]],
-    }
+async def _upsert_section(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    section = await graph_db.upsert_section(
+        student_id=_student_id(context),
+        key=str(arguments.get("key", "") or "").strip(),
+        description=str(arguments.get("description", "") or "").strip(),
+        parent_key=str(arguments.get("parent_key", "") or "").strip(),
+    )
+    return {"section": section}
 
 
 def _compact_write_section(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
     return {"section": _compact_section(dict(result.get("section") or {}))}
+
+
+
+def _compact_section(section: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(section, dict):
+        return {}
+    return {
+        "key": str(section.get("key") or "").strip(),
+        "description": str(section.get("description") or "").strip(),
+        "parent_key": str(section.get("parent_key") or "").strip(),
+    }
+
+
+async def _update_student(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    student = await graph_db.update_student(
+        student_id=_student_id(context),
+        updates=dict(arguments.get("updates") or {}),
+    )
+    return {"student": student}
 
 
 def _compact_write_student(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
@@ -197,6 +194,18 @@ def _compact_write_student(arguments: dict[str, Any], result: dict[str, Any], __
     }
 
 
+async def _upsert_graph_node(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    node = await graph_db.upsert_graph_node(
+        student_id=_student_id(context),
+        entity_type=str(arguments.get("entity_type", "") or "").strip(),
+        section_key=str(arguments.get("section_key", "") or "").strip(),
+        identity=dict(arguments.get("identity") or {}),
+        properties=dict(arguments.get("properties") or {}),
+    )
+    return {"node": node}
+
+
 def _compact_write_node(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
     return {
         "entity_type": str(arguments.get("entity_type") or "").strip(),
@@ -204,6 +213,20 @@ def _compact_write_node(arguments: dict[str, Any], result: dict[str, Any], __: T
         "identity": dict(arguments.get("identity") or {}),
         "node": _summarize_entity(dict(result.get("node") or {})),
     }
+
+
+async def _upsert_graph_relation(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    relation = await graph_db.upsert_graph_relation(
+        student_id=_student_id(context),
+        source_entity_type=str(arguments.get("source_entity_type", "") or "").strip(),
+        source_identity=dict(arguments.get("source_identity") or {}),
+        target_entity_type=str(arguments.get("target_entity_type", "") or "").strip(),
+        target_identity=dict(arguments.get("target_identity") or {}),
+        relationship_type=str(arguments.get("relationship_type", "") or "").strip(),
+        properties=dict(arguments.get("properties") or {}),
+    )
+    return {"relation": relation}
 
 
 def _compact_write_relation(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
@@ -223,9 +246,38 @@ def _compact_write_relation(arguments: dict[str, Any], result: dict[str, Any], _
     }
 
 
-def _compact_write_field(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    return {"field": _compact_field(dict(result.get("field") or {}))}
+def _compact_entity_list(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    entities = list(result.get("entities", []) or result.get("results", []) or [])
+    summary = {
+        "count": len(entities),
+        "items": [_summarize_entity(entity) for entity in entities[:20]],
+    }
+    section_key = str(arguments.get("section_key") or "").strip()
+    entity_type = str(arguments.get("entity_type") or "").strip()
+    if section_key:
+        summary["section_key"] = section_key
+    if entity_type:
+        summary["entity_type"] = entity_type
+    return summary
 
+
+async def _get_section_entities(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    entities = await graph_db.get_section_entities(
+        student_id=_student_id(context),
+        section_key=str(arguments.get("section_key", "") or "").strip(),
+    )
+    return {"entities": entities}
+
+
+async def _get_entity_by_identity(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    entity = await graph_db.get_entity_by_identity(
+        student_id=_student_id(context),
+        entity_type=str(arguments.get("entity_type", "") or "").strip(),
+        identity=dict(arguments.get("identity") or {}),
+    )
+    return {"found": entity is not None, "entity": entity}
 
 def _compact_entity_lookup(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
     if not result.get("found"):
@@ -244,6 +296,63 @@ def _compact_entity_lookup(arguments: dict[str, Any], result: dict[str, Any], __
     return {"found": True, "entity": _summarize_entity(dict(entity or {}))}
 
 
+
+async def _upsert_entity_field(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    field = await graph_db.upsert_entity_field(
+        student_id=_student_id(context),
+        entity_type=str(arguments.get("entity_type", "") or "").strip(),
+        identity=dict(arguments.get("identity") or {}),
+        field_name=str(arguments.get("field_name", "") or "").strip(),
+        field_value=arguments.get("field_value"),
+    )
+    return {"field": field}
+
+
+def _compact_write_field(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    return {"field": _compact_field(dict(result.get("field") or {}))}
+
+
+async def _list_entity_fields(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    fields = await graph_db.list_entity_fields(
+        student_id=_student_id(context),
+        entity_type=str(arguments.get("entity_type", "") or "").strip(),
+        identity=dict(arguments.get("identity") or {}),
+    )
+    return {"fields": fields}
+
+
+def _compact_field_list(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    fields = list(result.get("fields", []) or [])
+    return {
+        "count": len(fields),
+        "fields": [_compact_field(field) for field in fields[:20]],
+    }
+
+
+async def _upsert_nested_field(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    field = await graph_db.upsert_nested_field(
+        student_id=_student_id(context),
+        parent_field_id=str(arguments.get("parent_field_id", "") or "").strip(),
+        field_name=str(arguments.get("field_name", "") or "").strip(),
+        field_value=arguments.get("field_value"),
+    )
+    return {"field": field}
+
+
+async def _link_entity_to_chunk(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    entity = await graph_db.link_entity_to_chunk(
+        student_id=_student_id(context),
+        entity_type=str(arguments.get("entity_type", "") or "").strip(),
+        identity=dict(arguments.get("identity") or {}),
+        chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
+    )
+    return {"entity": entity}
+
+
 def _compact_link_chunk(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
     return {
         "entity_type": str(arguments.get("entity_type") or "").strip(),
@@ -253,6 +362,17 @@ def _compact_link_chunk(arguments: dict[str, Any], result: dict[str, Any], __: T
     }
 
 
+async def _link_entity_to_document(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    entity = await graph_db.link_entity_to_document(
+        student_id=_student_id(context),
+        entity_type=str(arguments.get("entity_type", "") or "").strip(),
+        identity=dict(arguments.get("identity") or {}),
+        document_id=str(arguments.get("document_id", "") or "").strip(),
+    )
+    return {"entity": entity}
+
+
 def _compact_link_document(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
     return {
         "entity_type": str(arguments.get("entity_type") or "").strip(),
@@ -260,6 +380,30 @@ def _compact_link_document(arguments: dict[str, Any], result: dict[str, Any], __
         "document_id": str(arguments.get("document_id") or "").strip(),
         "entity": _summarize_entity(dict(result.get("entity") or {})),
     }
+
+
+async def _get_chunk_entities(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    entities = await graph_db.get_chunk_entities(
+        student_id=_student_id(context),
+        chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
+    )
+    return {"entities": entities}
+
+
+async def _bfs_neighbors(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    try:
+        traversal = await graph_db.bfs_neighbors(
+            student_id=_student_id(context),
+            start_node_id=str(arguments.get("start_node_id", "") or "").strip(),
+            max_depth=int(arguments.get("max_depth", 1) or 1),
+        )
+    except ValueError as exc:
+        if str(exc) == "bfs neighbors not found":
+            return {"found": False, "traversal": None}
+        raise
+    return {"found": True, "traversal": traversal}
 
 
 def _compact_bfs(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
@@ -284,23 +428,15 @@ def _compact_bfs(arguments: dict[str, Any], result: dict[str, Any], __: ToolCont
     }
 
 
-def _compact_schema(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    return dict(result.get("student_schema") or {})
-
-
-def _compact_entity_types(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    return {
-        "entity_types": list(result.get("entity_types", []) or []),
-        "entity_counts": dict(result.get("entity_counts") or {}),
-    }
-
-
-def _compact_relationship_types(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    return {
-        "relationship_types": list(result.get("relationship_types", []) or []),
-        "relationship_counts": dict(result.get("relationship_counts") or {}),
-        "patterns": list(result.get("patterns", []) or [])[:20],
-    }
+async def _get_graph_data(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    graph_db = await _graph_db(context)
+    try:
+        graph_data = await graph_db.get_graph_data(student_id=_student_id(context))
+    except ValueError as exc:
+        if str(exc) == "full student not found":
+            return {"found": False, "graph_data": {"nodes": [], "relationships": []}}
+        raise
+    return {"found": True, "graph_data": graph_data}
 
 
 def _compact_graph_data(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
@@ -330,214 +466,14 @@ def _compact_graph_data(_: dict[str, Any], result: dict[str, Any], __: ToolConte
     }
 
 
-def _compact_relation_list(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    rows = list(result.get("results", []) or [])
-    return {
-        "relationship_type": str(arguments.get("relationship_type") or "").strip(),
-        "target_entity_type": str(arguments.get("target_entity_type") or "").strip(),
-        "count": len(rows),
-        "items": [_summarize_relation_record(row) for row in rows[:20]],
-    }
-
-
-def _compact_relation_detail(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    if not result.get("found"):
-        return {
-            "found": False,
-            "relationship_type": str(arguments.get("relationship_type") or "").strip(),
-            "target_entity_type": str(arguments.get("target_entity_type") or "").strip(),
-            "target_field": str(arguments.get("target_field", "id") or "id").strip(),
-            "target_value": str(arguments.get("target_value") or "").strip(),
-        }
-    relation = dict(result.get("relation") or {})
-    return {"found": True, "relation": _summarize_relation_record(dict(relation or {}))}
-
-
-def _compact_hybrid_search(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
-    rows = list(result.get("results", []) or [])
-    return {
-        "query": str(arguments.get("query") or "").strip(),
-        "count": len(rows),
-        "items": [
-            {
-                "score": row.get("score"),
-                "document": pick_scalar_fields(dict(row.get("document") or {}), limit=4),
-                "chunk": _summarize_chunk(dict(row.get("chunk") or row), text_limit=220),
-                "related_entities": [
-                    {
-                        "entity": _summarize_entity(dict(item.get("entity") or {})),
-                        "section": _compact_section(dict(item.get("section") or {})),
-                        "provenance": str(item.get("provenance") or ""),
-                    }
-                    for item in list(row.get("related_entities", []) or [])[:5]
-                    if isinstance(item, dict)
-                ],
-            }
-            for row in rows[:10]
-            if isinstance(row, dict)
-        ],
-    }
-
-
-async def _upsert_section(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    section = await graph_db.upsert_section(
-        student_id=_student_id(context),
-        key=str(arguments.get("key", "") or "").strip(),
-        description=str(arguments.get("description", "") or "").strip(),
-        parent_key=str(arguments.get("parent_key", "") or "").strip(),
-    )
-    return {"section": section}
-
-
-async def _update_student(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    student = await graph_db.update_student(
-        student_id=_student_id(context),
-        updates=dict(arguments.get("updates") or {}),
-    )
-    return {"student": student}
-
-
-async def _upsert_graph_node(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    node = await graph_db.upsert_graph_node(
-        student_id=_student_id(context),
-        entity_type=str(arguments.get("entity_type", "") or "").strip(),
-        section_key=str(arguments.get("section_key", "") or "").strip(),
-        identity=dict(arguments.get("identity") or {}),
-        properties=dict(arguments.get("properties") or {}),
-    )
-    return {"node": node}
-
-
-async def _upsert_graph_relation(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    relation = await graph_db.upsert_graph_relation(
-        student_id=_student_id(context),
-        source_entity_type=str(arguments.get("source_entity_type", "") or "").strip(),
-        source_identity=dict(arguments.get("source_identity") or {}),
-        target_entity_type=str(arguments.get("target_entity_type", "") or "").strip(),
-        target_identity=dict(arguments.get("target_identity") or {}),
-        relationship_type=str(arguments.get("relationship_type", "") or "").strip(),
-        properties=dict(arguments.get("properties") or {}),
-    )
-    return {"relation": relation}
-
-
-async def _get_section_entities(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    entities = await graph_db.get_section_entities(
-        student_id=_student_id(context),
-        section_key=str(arguments.get("section_key", "") or "").strip(),
-    )
-    return {"entities": entities}
-
-
-async def _get_entity_by_identity(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    entity = await graph_db.get_entity_by_identity(
-        student_id=_student_id(context),
-        entity_type=str(arguments.get("entity_type", "") or "").strip(),
-        identity=dict(arguments.get("identity") or {}),
-    )
-    return {"found": entity is not None, "entity": entity}
-
-
-async def _upsert_entity_field(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    field = await graph_db.upsert_entity_field(
-        student_id=_student_id(context),
-        entity_type=str(arguments.get("entity_type", "") or "").strip(),
-        identity=dict(arguments.get("identity") or {}),
-        field_name=str(arguments.get("field_name", "") or "").strip(),
-        field_value=arguments.get("field_value"),
-    )
-    return {"field": field}
-
-
-async def _list_entity_fields(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    fields = await graph_db.list_entity_fields(
-        student_id=_student_id(context),
-        entity_type=str(arguments.get("entity_type", "") or "").strip(),
-        identity=dict(arguments.get("identity") or {}),
-    )
-    return {"fields": fields}
-
-
-async def _upsert_nested_field(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    field = await graph_db.upsert_nested_field(
-        student_id=_student_id(context),
-        parent_field_id=str(arguments.get("parent_field_id", "") or "").strip(),
-        field_name=str(arguments.get("field_name", "") or "").strip(),
-        field_value=arguments.get("field_value"),
-    )
-    return {"field": field}
-
-
-async def _link_entity_to_chunk(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    entity = await graph_db.link_entity_to_chunk(
-        student_id=_student_id(context),
-        entity_type=str(arguments.get("entity_type", "") or "").strip(),
-        identity=dict(arguments.get("identity") or {}),
-        chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
-    )
-    return {"entity": entity}
-
-
-async def _link_entity_to_document(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    entity = await graph_db.link_entity_to_document(
-        student_id=_student_id(context),
-        entity_type=str(arguments.get("entity_type", "") or "").strip(),
-        identity=dict(arguments.get("identity") or {}),
-        document_id=str(arguments.get("document_id", "") or "").strip(),
-    )
-    return {"entity": entity}
-
-
-async def _get_chunk_entities(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    entities = await graph_db.get_chunk_entities(
-        student_id=_student_id(context),
-        chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
-    )
-    return {"entities": entities}
-
-
-async def _bfs_neighbors(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    try:
-        traversal = await graph_db.bfs_neighbors(
-            student_id=_student_id(context),
-            start_node_id=str(arguments.get("start_node_id", "") or "").strip(),
-            max_depth=int(arguments.get("max_depth", 1) or 1),
-        )
-    except ValueError as exc:
-        if str(exc) == "bfs neighbors not found":
-            return {"found": False, "traversal": None}
-        raise
-    return {"found": True, "traversal": traversal}
-
-
-async def _get_graph_data(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    graph_db = await _graph_db(context)
-    try:
-        graph_data = await graph_db.get_graph_data(student_id=_student_id(context))
-    except ValueError as exc:
-        if str(exc) == "full student not found":
-            return {"found": False, "graph_data": {"nodes": [], "relationships": []}}
-        raise
-    return {"found": True, "graph_data": graph_data}
-
-
 async def _get_student_schema(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     graph_db = await _graph_db(context)
     schema = await graph_db.get_student_schema(student_id=_student_id(context))
     return {"student_schema": schema}
+
+
+def _compact_schema(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    return dict(result.get("student_schema") or {})
 
 
 async def _list_entity_types(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -546,10 +482,25 @@ async def _list_entity_types(arguments: dict[str, Any], context: ToolContext) ->
     return entity_types
 
 
+def _compact_entity_types(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    return {
+        "entity_types": list(result.get("entity_types", []) or []),
+        "entity_counts": dict(result.get("entity_counts") or {}),
+    }
+
+
 async def _list_relationship_types(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     graph_db = await _graph_db(context)
     relationship_types = await graph_db.list_relationship_types(student_id=_student_id(context))
     return relationship_types
+
+
+def _compact_relationship_types(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    return {
+        "relationship_types": list(result.get("relationship_types", []) or []),
+        "relationship_counts": dict(result.get("relationship_counts") or {}),
+        "patterns": list(result.get("patterns", []) or [])[:20],
+    }
 
 
 async def _typed_node_lookup(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -573,6 +524,16 @@ async def _typed_relation_lookup(arguments: dict[str, Any], context: ToolContext
         limit=int(arguments.get("limit", 20) or 20),
     )
     return {"results": results}
+
+
+def _compact_relation_list(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    rows = list(result.get("results", []) or [])
+    return {
+        "relationship_type": str(arguments.get("relationship_type") or "").strip(),
+        "target_entity_type": str(arguments.get("target_entity_type") or "").strip(),
+        "count": len(rows),
+        "items": [_summarize_relation_record(row) for row in rows[:20]],
+    }
 
 
 async def _fetch_node_by_id(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
@@ -607,6 +568,19 @@ async def _fetch_relation_detail(arguments: dict[str, Any], context: ToolContext
     return {"found": True, "relation": relation}
 
 
+def _compact_relation_detail(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    if not result.get("found"):
+        return {
+            "found": False,
+            "relationship_type": str(arguments.get("relationship_type") or "").strip(),
+            "target_entity_type": str(arguments.get("target_entity_type") or "").strip(),
+            "target_field": str(arguments.get("target_field", "id") or "id").strip(),
+            "target_value": str(arguments.get("target_value") or "").strip(),
+        }
+    relation = dict(result.get("relation") or {})
+    return {"found": True, "relation": _summarize_relation_record(dict(relation or {}))}
+
+
 async def _hybrid_search(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     graph_db = await _graph_db(context)
     results = await graph_db.hybrid_search(
@@ -615,6 +589,32 @@ async def _hybrid_search(arguments: dict[str, Any], context: ToolContext) -> dic
         k=int(arguments.get("k", 5) or 5),
     )
     return {"results": results}
+
+
+def _compact_hybrid_search(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    rows = list(result.get("results", []) or [])
+    return {
+        "query": str(arguments.get("query") or "").strip(),
+        "count": len(rows),
+        "items": [
+            {
+                "score": row.get("score"),
+                "document": pick_scalar_fields(dict(row.get("document") or {}), limit=4),
+                "chunk": _summarize_chunk(dict(row.get("chunk") or row), text_limit=220),
+                "related_entities": [
+                    {
+                        "entity": _summarize_entity(dict(item.get("entity") or {})),
+                        "section": _compact_section(dict(item.get("section") or {})),
+                        "provenance": str(item.get("provenance") or ""),
+                    }
+                    for item in list(row.get("related_entities", []) or [])[:5]
+                    if isinstance(item, dict)
+                ],
+            }
+            for row in rows[:10]
+            if isinstance(row, dict)
+        ],
+    }
 
 
 def get_graph_tool_specs() -> list[ToolSpec]:
