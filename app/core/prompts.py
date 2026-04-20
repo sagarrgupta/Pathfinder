@@ -46,8 +46,8 @@ Think of the graph as a living profile that grows with every document:
 
   Student  —  the root identity node (already exists)
     └─ Section  —  a named conceptual area that organizes related knowledge
-         └─ Entity  —  a distinct concept, record, or item extracted from evidence
-              └─ Field  —  a structured attribute or sub-detail of the entity
+         └─ Nested Section OR Entity  —  a distinct concept, record, or item extracted from evidence
+              └─ Nested Entity OR Field  —  a structured attribute or sub-detail of the entity
                    └─ nested Field  —  deeper structure within a field
 
 Evidence provenance connects extracted knowledge back to its source:
