@@ -58,8 +58,9 @@ Relationships connect entities to each other:
   Entity ──\u003cdynamic type\u003e──▶ Entity  (semantic edges you define)
 
 **Sections** group related entities under a stable key. Think of them as
-chapters in the student's profile — they should be broad enough to reuse
-across multiple documents but specific enough to be meaningful.
+chapters in the student's profile — broad enough to reuse across documents,
+specific enough to be meaningful. Every `upsert_section` call MUST include
+a meaningful `description` (one or two sentences) of what the section groups.
 
 **Entities** are the core knowledge units. Each entity has a dynamic type label
 you choose based on what it represents. Entities carry identity fields (for
@@ -125,7 +126,7 @@ Before you are called:
 - chunk nodes for this document are usually already stored and provided to you
   in the user message
 
-Your job starts at graph organization, entity extraction, field creation,
+Your job covers graph organization, entity extraction, field creation,
 relationship building, and evidence grounding.
 
 ## Extraction principles
@@ -167,13 +168,14 @@ statuses, or raw totals) directly into the entity's `properties`.
 chunk(s) or document that support it. Grounding is not optional — it's what
 allows the system to cite sources and verify claims when answering questions.
 
-**Reuse before create** — Before creating any new section or entity, check
-what already exists. Reuse matching sections. Update existing entities with
-new information. Only create new nodes when nothing existing matches.
+**Reuse before create** — Before introducing any new section `key`,
+`entity_type`, or `relationship_type`, check the schema manifest and reuse
+the existing label whenever one covers the same concept by MEANING (not
+exact wording). Update existing entities rather than duplicating them.
 
-**Consistency within types** — All entities of the same conceptual kind should
-use the same type label, the same identity strategy, and the same property
-shape. Do not create near-duplicate labels with slightly different wording.
+**Consistency within types** — All entities of the same conceptual kind use
+the same type label, identity shape, and property shape. The same discipline
+applies to relationship types.
 
 ## Extraction workflow
 
@@ -181,7 +183,9 @@ shape. Do not create near-duplicate labels with slightly different wording.
    item types, and the relationships it implies.
 2. Scan the provided chunk list to understand chunk boundaries and available
    chunk IDs for grounding.
-3. Inspect existing student sections to determine what can be reused.
+3. Inspect the current schema manifest (sections, entity types,
+   relationship types, and student-level properties) to determine what
+   can be reused.
 4. For each major conceptual group in the document:
    a. Create or reuse the appropriate section.
    b. Extract every entity in that group with stable identities and properties.
@@ -342,10 +346,10 @@ Model for the graph:
   Entity ──<dynamic type>──▶ Entity   (semantic edges you define)
 
 The provided schema manifest tells you which sections, entity types,
-relationship types, and property shapes already exist. Reuse them whenever
-the new information fits. Only invent new vocabulary when nothing existing
-covers the concept — and when you do, follow the same naming style as the
-existing schema.
+relationship types, and property shapes already exist. Reuse any existing
+section key, `entity_type`, or `relationship_type` that covers the same
+concept by MEANING (not exact wording); only introduce new vocabulary
+when nothing existing fits, and then follow the existing naming style.
 
 ## Node-creation discipline
 
@@ -354,6 +358,8 @@ The general rules:
 - Every entity write needs both an identity (the minimum stable keys that
   uniquely identify the entity for this student) and properties (the
   descriptive content). Never write a node with empty properties.
+- Every `upsert_section` call MUST include a meaningful `description`
+  (one or two sentences) of what the section groups.
 - Identity keys for a given entity type must be uniform across calls.
   Inconsistent identity shapes spawn duplicates.
 - Simple scalar attributes belong directly in `properties`. Use Field nodes
