@@ -1,4 +1,4 @@
-"""Pathfinder MCP server    """
+"""Pathfinder MCP server"""
 
 from __future__ import annotations
 
