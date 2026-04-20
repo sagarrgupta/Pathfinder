@@ -72,7 +72,7 @@ class VectorDB:
                 "document_id": document_id,
             }
         metadata = metadata or {}
-        metadata_json = json.dumps(metadata, ensure_ascii=True)
+        metadata_json = json.dumps(metadata, ensure_ascii=True, default=str)
 
         async with self.driver.session() as session:
             result = await session.run(
