@@ -53,7 +53,7 @@ _LIGHT_CONVERSATION_RE = re.compile(
     r"^\s*(hi|hello|hey|yo|good morning|good afternoon|good evening|thanks|thank you|bye|goodbye|see you)\b[!. ]*$",
     re.IGNORECASE,
 )
-async def _llm_route(query: str, context_hint: str) -> dict[str, float] | None:
+async def _llm_route(query: str, context_hint: str) -> dict[str, float]:
     """Ask the LLM to score specialist relevance. Returns general on failure."""
     specialists_block = "\n".join(
         f"- {name}: {desc}" for name, desc in _SPECIALIST_DESCRIPTIONS.items()
