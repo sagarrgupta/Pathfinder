@@ -44,7 +44,7 @@ function generateSmartTitle(query) {
 }
 
 export default function ChatPage() {
-  const { state, dispatch, createSession } = useApp();
+  const { state, dispatch, createSession, refreshStudent } = useApp();
   const [files, setFiles] = useState([]);
   const [replaceFlags, setReplaceFlags] = useState({});  // filename -> true if user chose to replace
   const abortRef = useRef(null);
@@ -222,6 +222,11 @@ export default function ChatPage() {
             },
           });
           dispatch({ type: 'SET_STREAMING', payload: false });
+
+          if (state.activeStudentId) {
+            refreshStudent(state.activeStudentId).catch(() => {
+            });
+          }
 
           // Smart auto-title from first query
           const currentMessages = state.messagesBySession[sid] || [];
