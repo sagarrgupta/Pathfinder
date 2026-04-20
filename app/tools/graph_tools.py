@@ -622,13 +622,13 @@ def get_graph_tool_specs() -> list[ToolSpec]:
     return [
         ToolSpec(
             name="update_student",
-            description="Create the root student node if needed and update scalar student properties in one step. Use this for student-level attributes such as name, summaries, preferences, or other root properties that belong directly on the student node rather than in a section entity.",
+            description="Create the root student node if needed and update scalar student properties in one step. This is one valid home for attributes that identify or describe the student as a person; an alternative home is a section that groups personal information as entities. Pick whichever shape the existing schema already uses for that kind of attribute and stay consistent. Before calling this, inspect `student.property_keys` in the provided schema manifest and REUSE existing keys whenever one already covers the attribute, so the same fact does not end up under multiple parallel keys.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "updates": {
                         "type": "object",
-                        "description": "Scalar student properties to create or update on the root student node.",
+                        "description": "Scalar student properties to create or update on the root student node. Reuse existing keys from the student manifest when available; only introduce a new key when none of the existing keys fits the attribute.",
                         "additionalProperties": JSON_VALUE_SCHEMA,
                     },
                 },
@@ -640,15 +640,15 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="upsert_section",
-            description="Create or update one student-owned section that groups related entities. Use this to organize graph content under a stable section key and to reuse an existing section when new evidence belongs to the same part of the student graph.",
+            description="Create or update one student-owned section that groups related entities. Before calling this, inspect the existing sections in the provided schema manifest and REUSE the `key` of any existing section whose description already covers the same conceptual area as the new content. Match by meaning, not by exact wording. Only create a new section when no existing section reasonably covers the concept. You MUST provide a meaningful `description` explaining what the section groups — empty descriptions are not acceptable.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "key": {"type": "string", "description": "Stable section key that identifies the grouping this entity set belongs to."},
-                    "description": {"type": "string", "description": "Optional plain-language description of the section's purpose or the kind of information it groups."},
+                    "description": {"type": "string", "minLength": 1, "description": "Required plain-language description (one or two sentences) of what this section groups and why it exists in the student's profile. Never leave empty. This is how future agents understand the section's purpose."},
                     "parent_key": {"type": "string", "description": "Optional parent section key if this section should be nested under another existing section."},
                 },
-                "required": ["key"],
+                "required": ["key", "description"],
                 "additionalProperties": False,
             },
             handler=_upsert_section,
@@ -656,12 +656,12 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="upsert_graph_node",
-            description="Create or update one dynamic entity under a student-owned section. Use this to store the main concept as `(:Entity:<DynamicType>)`, keep stable identity fields on the entity itself, and attach the entity to the section that should own it.",
+            description="Create or update one dynamic entity under a student-owned section. Before calling this, inspect the `entity_manifest` in the provided schema and REUSE any existing `entity_type` label that already covers the same conceptual kind as the new entity — match by meaning, not by exact wording, so the graph does not fragment into parallel near-duplicate types. Keep identity keys uniform across every call of a given type. Only introduce a new `entity_type` when no existing label reasonably fits. Properties must never be empty — put every descriptive attribute the source reveals into `properties`.",
             input_schema={
                 "type": "object",
                 "properties": {
-                    "entity_type": {"type": "string", "description": "Dynamic entity label that describes the kind of concept being stored."},
-                    "section_key": {"type": "string", "description": "Section key that should own this entity."},
+                    "entity_type": {"type": "string", "description": "Dynamic entity label that describes the kind of concept being stored. Reuse an existing label from the `entity_manifest` whenever one already covers this concept; only introduce a new label when none fits."},
+                    "section_key": {"type": "string", "description": "Section key that should own this entity. Reuse an existing section key when one already covers this area."},
                     "identity": IDENTITY_SCHEMA,
                     "properties": PROPERTIES_SCHEMA,
                 },
@@ -673,7 +673,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="upsert_graph_relation",
-            description="Create or update a typed relationship between two existing entities owned by the same student. Use this after both entities already exist and you need to connect them with an explicit semantic edge.",
+            description="Create or update a typed relationship between two existing entities owned by the same student. Before calling this, inspect the `relationship_manifest` in the provided schema and REUSE any existing `relationship_type` that already expresses the same semantic connection — match by meaning, not by exact wording, so the edge vocabulary stays consistent and typed lookups keep working. Only introduce a new relationship type when no existing one reasonably fits.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -681,7 +681,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
                     "source_identity": IDENTITY_SCHEMA,
                     "target_entity_type": {"type": "string", "description": "Dynamic entity type for the target entity."},
                     "target_identity": IDENTITY_SCHEMA,
-                    "relationship_type": {"type": "string", "description": "Relationship type to create between the source and target entities."},
+                    "relationship_type": {"type": "string", "description": "Relationship type to create between the source and target entities. Reuse an existing type from the `relationship_manifest` whenever one already expresses this connection; only introduce a new type when none fits."},
                     "properties": PROPERTIES_SCHEMA,
                 },
                 "required": ["source_entity_type", "source_identity", "target_entity_type", "target_identity", "relationship_type"],

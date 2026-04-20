@@ -441,6 +441,16 @@ class GraphDB:
         sections = await self.get_student_sections(student_id=student_id)
 
         async with self.driver.session() as session:
+            student_result = await session.run(
+                """
+                MATCH (s:Student {id: $student_id})
+                RETURN s {.*} AS student
+                """,
+                student_id=student_id,
+            )
+            student_record = await student_result.single()
+            student_props = dict(student_record["student"]) if student_record and student_record.get("student") else {}
+
             entity_result = await session.run(
                 """
                 MATCH (:Student {id: $student_id})-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(ent:Entity)
@@ -484,7 +494,9 @@ class GraphDB:
 
         entity_manifest = self._build_entity_manifest(entities)
         relationship_manifest = self._build_relationship_manifest(relationship_rows)
+        student_manifest = self._build_student_manifest(student_props)
         schema = {
+            "student": student_manifest,
             "sections": [
                 {
                     "key": str(section.get("key") or "").strip(),
@@ -1260,6 +1272,33 @@ class GraphDB:
     def _entity_owner_key(self, student_id: str, entity_type: str, identity: dict[str, str]) -> str:
         normalized_identity = json.dumps(identity, sort_keys=True, ensure_ascii=True)
         return f"{student_id}:{entity_type}:{normalized_identity}"
+
+    def _build_student_manifest(self, student_props: dict[str, Any]) -> dict[str, Any]:
+        """Compact manifest of the root Student node's scalar properties.
+
+        Exposes current property keys and their values (truncated) so the
+        ingestion agent can reuse the same keys across documents instead of
+        inventing parallel near-duplicate property names.
+        """
+        if not isinstance(student_props, dict):
+            return {"property_keys": [], "properties": {}}
+        exposed: dict[str, Any] = {}
+        for key, value in student_props.items():
+            key_str = str(key or "").strip()
+            if not key_str or key_str in _SCHEMA_METADATA_KEYS or key_str == "id":
+                continue
+            if isinstance(value, (dict, list)):
+                continue
+            if value is None or value == "":
+                continue
+            value_str = str(value)
+            if len(value_str) > 160:
+                value_str = value_str[:157] + "..."
+            exposed[key_str] = value_str
+        return {
+            "property_keys": sorted(exposed.keys()),
+            "properties": exposed,
+        }
 
     def _build_entity_manifest(self, entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
         grouped: dict[str, dict[str, Any]] = {}
