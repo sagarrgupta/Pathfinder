@@ -260,13 +260,9 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
         SystemMessage(content=str(_SPECIALIST_CONFIG.get(selected_specialist, _SPECIALIST_CONFIG["general"]))),
         HumanMessage(
             content=(
-                "User query:\n"
-                f"{query}\n\n"
-                "Specialist context:\n"
-                f"{json.dumps(prompt_context, ensure_ascii=True)}\n\n"
-                "Tool contract reminder:\n"
-                "- Use MCP-style tools for graph, document, and web access.\n"
-                "- Return final JSON only after you are done with tool use."
+                f"User query:\n{query}\n\n"
+                f"Specialist context:\n{json.dumps(prompt_context, ensure_ascii=True)}\n\n"
+                "Reminder: use tools for graph/document/web access; return final JSON only after tool use is done."
             )
         ),
     ]
