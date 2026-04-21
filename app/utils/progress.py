@@ -31,12 +31,23 @@ _live_emitter: contextvars.ContextVar[LiveEmitter | None] = contextvars.ContextV
 
 
 def set_live_emitter(emitter: LiveEmitter | None) -> contextvars.Token:
-    """Register a live progress emitter for the current async context."""
+    """Install a callback that gets every new progress entry in real time.
+
+    The `/chat` SSE handler calls this at the top of a turn with a
+    closure that enqueues messages onto the outbound stream. Because
+    the emitter is stored on a `ContextVar`, it's automatically scoped
+    to the current task — nodes running for a different session in the
+    same process don't see each other's emitter.
+
+    Returns the reset token, which the caller must feed back into
+    `reset_live_emitter` in a `finally` block so emitters don't leak
+    between turns.
+    """
     return _live_emitter.set(emitter)
 
 
 def reset_live_emitter(token: contextvars.Token) -> None:
-    """Clear the live emitter previously installed with `set_live_emitter`."""
+    """Undo a prior `set_live_emitter`, restoring whatever was installed before."""
     _live_emitter.reset(token)
 
 
@@ -46,7 +57,14 @@ def add_progress(
     stage: str,
     message: str = "",
 ) -> list[dict[str, str]]:
-    """Append one user-facing progress item unless it duplicates the last one."""
+    """Record one progress line; stream it live if an emitter is installed.
+
+    De-duplicates back-to-back identical entries so nodes don't
+    accidentally spam the stream with the same "Searching..." line
+    on every loop iteration. The in-memory list is also what ends
+    up in the replay artifact, which gives us an exact record of
+    what the user saw during the turn.
+    """
     normalized_stage = str(stage or "").strip()
     normalized_message = str(message or "").strip()
     if not normalized_stage:
@@ -73,7 +91,12 @@ def add_progress(
 
 
 def normalize_progress_entry(entry: Any, *, fallback_stage: str) -> dict[str, str]:
-    """Normalize legacy/string progress values into the frontend shape."""
+    """Coerce a progress entry into the `{"stage", "message"}` shape the UI wants.
+
+    Older state objects / replay files sometimes carry raw strings
+    instead of dicts; we tolerate both so re-reading old replays
+    doesn't blow up the list view.
+    """
     if isinstance(entry, dict):
         stage = str(entry.get("stage", "") or fallback_stage).strip() or fallback_stage
         message = str(entry.get("message", "") or "").strip()

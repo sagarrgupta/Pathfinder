@@ -1,7 +1,13 @@
-"""LLM-powered specialist selector for the Pathfinder flow.
+"""Picks which specialist persona should answer this turn.
 
-Uses the text LLM as a lightweight classifier to semantically rank
-specialists instead of relying on brittle keyword lists.
+Pathfinder has three specialist prompts — `academic`, `career`, and
+`general`. Instead of hand-written keyword rules (which age badly as the
+product grows), we ask the local LLM to score each one on a 0–10 scale
+and pick the winner. The scoring prompt is kept tiny so it's fast and
+cheap. On failure we fall back to `general`, which is the catch-all.
+
+Downstream, `specialist_runner` reads `state["selected_specialist"]` and
+loads the matching system prompt from `app.core.prompts`.
 """
 
 from __future__ import annotations
@@ -53,8 +59,14 @@ _LIGHT_CONVERSATION_RE = re.compile(
     r"^\s*(hi|hello|hey|yo|good morning|good afternoon|good evening|thanks|thank you|bye|goodbye|see you)\b[!. ]*$",
     re.IGNORECASE,
 )
+
 async def _llm_route(query: str, context_hint: str) -> dict[str, float] | None:
-    """Ask the LLM to score specialist relevance. Returns general on failure."""
+    """Ask the LLM to rate how well each specialist fits this query.
+
+    Returns a `{name: score}` mapping. We default to a neutral
+    `general=5` on any error so the flow never hard-fails on routing —
+    a wrong specialist is recoverable, a crash is not.
+    """
     specialists_block = "\n".join(
         f"- {name}: {desc}" for name, desc in _SPECIALIST_DESCRIPTIONS.items()
     )
@@ -81,11 +93,20 @@ async def _llm_route(query: str, context_hint: str) -> dict[str, float] | None:
     except Exception as exc:
         log.warning("LLM routing failed (%s), falling back to heuristic", exc)
     return {"academic": 0.0, "career": 0.0, "general": 5.0}
+
 async def orchestrator(state: PathfinderState) -> PathfinderState:
-    """Score the request against the 3 specialist prompt families using the LLM."""
+    """Score the query against all specialists and pick the winner.
+
+    We hint the router with a few fields from the student's profile so it
+    can tell the difference between (say) an academic question from a
+    current student and the same wording from someone exploring careers.
+    Ties favor `general` since it's the safe fallback.
+    """
     query = str(state.get("query", "") or "")
     student_id = str(state.get("student_id", "") or "")
 
+    # Pull a handful of profile fields as routing context. The full profile
+    # is never sent here; just enough to disambiguate ambiguous wording.
     student = await GraphDB(await get_graph_driver()).get_student(student_id=student_id) or {}
     fields = [f"{k}={v}" for k, v in list(student.items())[:4] if v]
     context_hint = f"Profile: {', '.join(fields)}" if fields else ""
@@ -93,12 +114,14 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     routing_scores = await _llm_route(query, context_hint)
     routing_method = "llm"
 
+    # Highest score wins; on a tie, prefer `general` (safer default).
     selected_specialist = max(
         routing_scores.items(),
         key=lambda item: (item[1], item[0] == "general"),
     )[0]
     top_score = float(routing_scores.get(selected_specialist, 0.0) or 0.0)
 
+    # Build a short human-readable explanation for the replay/debug view.
     if top_score <= 0.0 and _LIGHT_CONVERSATION_RE.match(str(query or "").strip()):
         routing_reason = "Light conversational turn — routed to general."
     elif top_score <= 0.0:
@@ -109,6 +132,8 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
             f"(score {top_score:.1f})."
         )
 
+    # Friendly SSE progress line so the UI can say "focusing on X" instead
+    # of "orchestrator" while the backend thinks.
     step_progress = list(state.get("step_progress", []))
     specialist_label = {
         "academic": "academic planning",

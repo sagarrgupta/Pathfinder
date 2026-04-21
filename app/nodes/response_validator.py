@@ -1,4 +1,13 @@
-"""Lightweight post-specialist validator."""
+"""Polishes the specialist's output before it reaches the user.
+
+After `specialist_runner` finishes its tool-calling loop, this node:
+- guarantees a non-empty answer string (fallback if the model returned nothing),
+- builds a deduplicated list of citations from web-search / fetch tool calls,
+- re-exports the canonical `specialist_output` shape for downstream nodes.
+
+It is intentionally lightweight — no extra LLM calls — so it cannot
+introduce new failure modes; think of it as a janitor, not a second pass.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +18,12 @@ from app.utils.progress import add_progress
 
 
 def _citations_from_tool_log(tool_log: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pick source URLs/titles out of successful web tool calls.
+
+    The tool transcript is already compact, so we just scan for items that
+    expose a `url` or `title`. Duplicates (same title+url) are dropped so
+    the UI doesn't show the same reference three times.
+    """
     citations = []
     for item in tool_log:
         if not isinstance(item, dict) or item.get("status") != "ok":
@@ -29,11 +44,12 @@ def _citations_from_tool_log(tool_log: list[dict[str, Any]]) -> list[dict[str, A
             continue
         seen.add(key)
         deduped.append(citation)
+    # Cap at 8 — more than that and the UI gets noisy.
     return deduped[:8]
 
 
 async def response_validator(state: PathfinderState) -> PathfinderState:
-    """Validate specialist output shape """
+    """Clean up the specialist output and attach citations."""
     output = state.get("specialist_output", {}) if isinstance(state.get("specialist_output", {}), dict) else {}
     message = str(output.get("message", "") or "").strip()
     if not message:

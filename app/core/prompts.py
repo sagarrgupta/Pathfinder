@@ -1,3 +1,21 @@
+"""System prompts for every LLM-driven step in Pathfinder.
+
+Each constant here is a long instruction block that gets passed as the
+`SystemMessage` when we invoke the local LLM. The prompts are the main
+"programming" of the agents — they tell the model what role it is playing,
+what tools it may call, how to reason, and what JSON shape to return.
+
+Who uses what:
+- `DOCUMENT_INGESTION_*`  -> `app.utils.document_ingest.ingest_document`
+- `QUERY_INGESTION_*`     -> `app.utils.query_ingest.ingest_query`
+- `ACADEMIC/CAREER/GENERAL_SPECIALIST_SYSTEM_PROMPT`
+                          -> `app.nodes.specialist_runner`
+
+Keeping all prompts in one place makes it easy to tune model behavior
+without touching the orchestration code that calls them.
+"""
+
+
 DOCUMENT_INGESTION_AGENT_SYSTEM_PROMPT = """You are Pathfinder's document ingestion agent. Your purpose is to
 transform uploaded documents into a richly connected knowledge graph that
 enables an intelligent academic guidance system to give accurate, personalized,

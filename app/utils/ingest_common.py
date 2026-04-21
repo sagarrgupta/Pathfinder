@@ -1,9 +1,12 @@
 """Shared helpers for the document and chat-message ingestion pipelines.
 
-Both `app.utils.document_ingest` and `app.utils.query_ingest` summarize their
-LLM-driven graph writes the same way, so the summary builder lives here and
-is imported by both. Anything specific to one pipeline (prompt formatting,
-agent loop, model-summary normalization) stays in its own module.
+Both `app.utils.document_ingest` and `app.utils.query_ingest` log every
+tool call the ingestion agent makes, and both want the same "what did
+this ingestion actually change?" summary afterwards — so the summary
+builder lives here and is shared by both.
+
+Anything pipeline-specific (prompt templates, the agent loop itself,
+final-answer normalization) stays in the per-pipeline module.
 """
 
 from __future__ import annotations
@@ -13,7 +16,25 @@ from typing import Any
 
 
 def build_graph_updates(tool_call_log: list[dict[str, Any]]) -> dict[str, Any]:
-    """Summarize what an ingestion run changed from its successful tool writes."""
+    """Distill a raw tool-call log into a human-friendly change summary.
+
+    The ingestion agents emit dozens of tool calls per document
+    (upserts, linkages, field writes, failed attempts, ...). This
+    function walks the log, keeps only the successful writes, and
+    produces a compact report with:
+
+    - `sections_touched` / `entity_types_touched` / `relationship_types_touched`
+      — de-duplicated names that actually got written to,
+    - `counts` — per-operation counters (sections_upserted, entities,
+      relationships, chunk/document links, field writes),
+    - `sample_entities_written` — up to 5 representative
+      `{entity_type, identity}` pairs so the replay viewer can show
+      "here's what we learned" without dumping every node.
+
+    This report is what shows up in the `graph_updates` block of a
+    replay artifact and in the UI "Saved N details from your file"
+    toast.
+    """
     sections_touched: list[str] = []
     entity_types_touched: list[str] = []
     relationship_types_touched: list[str] = []

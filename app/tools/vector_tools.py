@@ -1,4 +1,23 @@
-"""Vector MCP tools."""
+"""Tools for storing and retrieving document chunks + their embeddings.
+
+Uploaded files become a pile of `Chunk` nodes in Neo4j, each with:
+- a stable chunk id (document_id + index),
+- the original text,
+- an embedding vector stored in the `chunk_embeddings` vector index,
+- links to its parent document (and optionally to graph entities via
+  `link_entity_to_chunk` in `graph_tools.py`).
+
+This file owns the CRUD surface for those chunks. Actual embedding math
+is delegated to `app.adapters.neo4j.vectorDB` so this layer stays thin;
+its real job is to:
+1. expose the operations as MCP/LLM tools,
+2. return shapes that are small enough for the LLM transcript,
+3. give every tool a `compact_handler` that summarizes chunks safely
+   (dropping raw vectors, truncating text previews).
+
+The vector index itself is shared across all students; scoping to the
+current student happens via the chunk/document relationships in Neo4j.
+"""
 
 from __future__ import annotations
 
@@ -47,7 +66,12 @@ CHUNK_INPUT_SCHEMA: dict[str, Any] = {
 
 
 async def get_driver() -> AsyncDriver:
-    """Return or create the singleton Neo4j async driver."""
+    """Lazily build one shared Neo4j async driver for all vector tools.
+
+    We refuse to start without a password rather than silently defaulting
+    to blank credentials — that used to let the app "work" against a dev
+    database by accident in production.
+    """
     global _driver
     if _driver is None:
         if not str(settings.NEO4J_PASSWORD or "").strip():
@@ -63,7 +87,7 @@ async def get_driver() -> AsyncDriver:
 
 
 async def close_driver() -> None:
-    """Close the Neo4j driver on shutdown."""
+    """Close the vector-tools driver on shutdown (called from app lifespan)."""
     global _driver
     if _driver is not None:
         await _driver.close()
@@ -72,6 +96,7 @@ async def close_driver() -> None:
 
 
 async def _vector_db(context: ToolContext) -> VectorDB:
+    """Return a `VectorDB` adapter bound to the shared driver + index config."""
     driver = getattr(context, "driver", None) or await get_driver()
     return VectorDB(
         driver,
@@ -81,28 +106,40 @@ async def _vector_db(context: ToolContext) -> VectorDB:
 
 
 def _summarize_chunk(chunk: dict[str, Any], *, text_limit: int = 240) -> dict[str, Any]:
+    """Shrink a chunk row to the few fields the LLM actually needs.
+
+    We drop any raw embedding vector (huge and useless in prompts), keep
+    identifiers and page/score metadata, and truncate the text preview.
+    Used by every compact_handler in this file so tool output stays small.
+    """
     if not isinstance(chunk, dict):
         return {"value": bounded_text(chunk, limit=text_limit)}
     summary: dict[str, Any] = {}
+    # Keep only high-signal chunk identifiers for compact tool responses.
     for key in ("chunk_id", "id", "document_id", "chunk_index", "page_number", "score"):
         value = chunk.get(key)
         if value not in (None, "", [], {}):
             normalized_key = "chunk_id" if key == "id" else key
             summary[normalized_key] = value
+    # Build a short preview from whichever text-like field is available.
     text = chunk.get("text") or chunk.get("content") or chunk.get("snippet") or ""
     if text:
         summary["text_preview"] = bounded_text(text, limit=text_limit)
     metadata = chunk.get("metadata")
     if isinstance(metadata, dict):
+        # Drop large vectors and keep a few scalar metadata fields.
         metadata_summary = pick_scalar_fields(metadata, exclude={"embedding"}, limit=6)
         if metadata_summary:
             summary["metadata"] = metadata_summary
     return summary or {"value": bounded_text(chunk, limit=text_limit)}
 
-
 def _compact_chunk_result(chunk: dict[str, Any]) -> dict[str, Any]:
+    """Slightly tighter preview (220 chars) for list-of-chunks responses."""
     return _summarize_chunk(chunk, text_limit=220)
+
+
 async def _create_vector_index(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Create (or no-op) the Neo4j vector index used by similarity search."""
     vector_db = await _vector_db(context)
     await vector_db.create_vector_index()
     return {"status": "success", "index_name": _VECTOR_INDEX_NAME}
@@ -113,6 +150,11 @@ def _compact_create_vector_index(_: dict[str, Any], result: dict[str, Any], __: 
 
 
 async def _upsert_chunk_metadata(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Write chunk text + metadata without generating an embedding.
+
+    Used when chunk content needs to exist first (e.g., for linking) but
+    embedding generation will happen in a later batched call.
+    """
     vector_db = await _vector_db(context)
     chunk = await vector_db.upsert_chunk_metadata(
         chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
@@ -122,12 +164,12 @@ async def _upsert_chunk_metadata(arguments: dict[str, Any], context: ToolContext
     )
     return {"chunk": chunk}
 
-
 def _compact_upsert_chunk_metadata(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
     return {"chunk": _compact_chunk_result(dict(result.get("chunk") or {}))}
 
 
 async def _upsert_chunk(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Full write path: metadata + embedding generation + document link, atomic."""
     vector_db = await _vector_db(context)
     chunk = await vector_db.upsert_chunk(
         chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
@@ -143,6 +185,11 @@ def _compact_upsert_chunk(_: dict[str, Any], result: dict[str, Any], __: ToolCon
 
 
 async def _batch_upsert_chunks(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Insert many chunks for one document in a single round-trip.
+
+    This is the hot path used by `doc_analyst` during upload; much faster
+    than calling `upsert_chunk` once per chunk for large documents.
+    """
     vector_db = await _vector_db(context)
     result = await vector_db.batch_upsert_chunks(
         document_id=str(arguments.get("document_id", "") or "").strip(),
@@ -161,6 +208,7 @@ def _compact_batch_upsert(arguments: dict[str, Any], result: dict[str, Any], __:
 
 
 async def _delete_document_chunks(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Remove every chunk tied to one document (used for re-ingestion)."""
     vector_db = await _vector_db(context)
     result = await vector_db.delete_document_chunks(
         document_id=str(arguments.get("document_id", "") or "").strip(),
@@ -176,6 +224,7 @@ def _compact_delete_document_chunks(arguments: dict[str, Any], result: dict[str,
 
 
 async def _health_check(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Ping Neo4j + report vector index metadata (used by diagnostics page)."""
     vector_db = await _vector_db(context)
     return await vector_db.health_check()
 
@@ -185,6 +234,7 @@ def _compact_health_check(_: dict[str, Any], result: dict[str, Any], __: ToolCon
 
 
 async def _get_chunk(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Fetch one chunk by id. Returns `{found: False}` instead of raising."""
     vector_db = await _vector_db(context)
     try:
         chunk = await vector_db.get_chunk(
@@ -195,7 +245,6 @@ async def _get_chunk(arguments: dict[str, Any], context: ToolContext) -> dict[st
             return {"found": False, "chunk": None}
         raise
     return {"found": True, "chunk": chunk}
-
 
 def _compact_get_chunk(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
     if not result.get("found"):
@@ -208,6 +257,7 @@ def _compact_get_chunk(arguments: dict[str, Any], result: dict[str, Any], __: To
 
 
 async def _get_chunks_for_document(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Return every chunk attached to one document."""
     vector_db = await _vector_db(context)
     chunks = await vector_db.get_chunks_for_document(
         document_id=str(arguments.get("document_id", "") or "").strip(),
@@ -220,11 +270,13 @@ def _compact_get_chunks_for_document(arguments: dict[str, Any], result: dict[str
     return {
         "document_id": str(arguments.get("document_id", "") or "").strip(),
         "count": len(chunks),
+        # Cap at 20 so a large document doesn't explode the LLM context.
         "chunks": [_compact_chunk_result(dict(chunk)) for chunk in chunks[:20] if isinstance(chunk, dict)],
     }
 
 
 async def _get_chunks_for_student(_: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Return chunks across all documents owned by the active student."""
     vector_db = await _vector_db(context)
     chunks = await vector_db.get_chunks_for_student(student_id=str(context.student_id or "").strip())
     return {"chunks": chunks}
@@ -239,6 +291,7 @@ def _compact_get_chunks_for_student(_: dict[str, Any], result: dict[str, Any], _
 
 
 async def _delete_chunk(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Remove one chunk without touching siblings — targeted cleanup."""
     vector_db = await _vector_db(context)
     result = await vector_db.delete_chunk(
         chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
@@ -254,12 +307,19 @@ def _compact_delete_chunk(arguments: dict[str, Any], result: dict[str, Any], __:
 
 
 async def _get_chunk_neighbors(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Return a chunk plus the document it belongs to.
+
+    Useful when the specialist wants to cite a chunk but also needs the
+    parent document's title/filename for context.
+    """
     vector_db = await _vector_db(context)
     try:
         neighbors = await vector_db.get_chunk_neighbors(
             chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
         )
     except ValueError as exc:
+        # Translate "not found" into a structured response instead of raising
+        # — the model can react to a boolean, not to an exception.
         if str(exc) == "chunk not found":
             return {"found": False, "chunk": None, "document": None}
         raise
@@ -284,6 +344,12 @@ def _compact_chunk_neighbors(arguments: dict[str, Any], result: dict[str, Any], 
 
 
 async def _get_document_search_context(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Return chunk summaries for one document in a retrieval-friendly shape.
+
+    Used when the specialist wants an overview of a document without
+    running vector search first (useful right after an upload when the
+    document's chunks are already "in context").
+    """
     vector_db = await _vector_db(context)
     chunks = await vector_db.get_document_search_context(
         document_id=str(arguments.get("document_id", "") or "").strip(),
@@ -308,7 +374,7 @@ def _compact_document_search_context(arguments: dict[str, Any], result: dict[str
 
 
 def get_vector_tool_specs() -> list[ToolSpec]:
-    """Return vector tool definitions for chunk storage and retrieval."""
+    """Register all chunk CRUD + retrieval tools with the shared registry."""
     return [
         ToolSpec(
             name="create_vector_index",

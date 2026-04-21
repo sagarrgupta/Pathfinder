@@ -1,4 +1,17 @@
-"""Utility MCP tools."""
+"""The `respond` tool — the only way an agent finishes a turn.
+
+Every specialist / ingestion loop ends when the LLM calls `respond` with
+its final payload. The runners watch for this call and break out of
+their tool loop as soon as it succeeds, so without `respond` a turn
+would just keep looping until it hit the safety cap.
+
+The payload carries four fields:
+- `message`              : text shown to the user
+- `stop_reason`          : short tag like "answered" or "need_more_info"
+- `next_session_context` : rolling summary saved for the next turn
+- `next_long_context`    : durable notes written to the student node
+                           (null = leave the stored value alone)
+"""
 
 from __future__ import annotations
 
@@ -8,6 +21,7 @@ from app.tools.tools import ToolContext, ToolSpec, bounded_text
 
 
 async def _respond(arguments: dict[str, Any], _context: ToolContext) -> dict[str, Any]:
+    """Echo the payload straight back; runners use this as "turn complete" signal."""
     return {
         "message": str(arguments.get("message", "") or ""),
         "stop_reason": str(arguments.get("stop_reason", "") or ""),
@@ -17,6 +31,7 @@ async def _respond(arguments: dict[str, Any], _context: ToolContext) -> dict[str
 
 
 def _compact_respond(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    """Shrink the final payload for the transcript so we don't echo full answer twice."""
     next_long_context = result.get("next_long_context")
     return {
         "message_preview": bounded_text(result.get("message"), limit=240),
@@ -27,7 +42,7 @@ def _compact_respond(_: dict[str, Any], result: dict[str, Any], __: ToolContext)
 
 
 def get_utility_tool_specs() -> list[ToolSpec]:
-    """Return session/context utility tool definitions."""
+    """Register the `respond` tool with the shared registry."""
     return [
         ToolSpec(
             name="respond",

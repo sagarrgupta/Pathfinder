@@ -1,4 +1,19 @@
-"""Workflow assembly for the simplified Pathfinder chat flow."""
+"""Wires the Pathfinder nodes into a LangGraph flow.
+
+Every chat turn walks this graph from `input_guard` down to `responder`.
+Each node is a small async function in `app/nodes/` that reads the shared
+`PathfinderState` and returns an updated copy. The edges below define the
+fixed order; the only branch is the guard deciding whether to short-circuit
+straight to the responder (for blocked input) or proceed through the full
+pipeline.
+
+High-level flow:
+    input_guard -> orchestrator -> query_ingestor -> specialist_runner
+                -> response_validator -> context_persister -> responder -> END
+
+The compiled graph is cached behind an async lock so the API server can
+build it once and reuse it for every request.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +41,12 @@ _compiled_workflow_lock = asyncio.Lock()
 
 
 def build_workflow() -> StateGraph:
-    """Build the simplified Pathfinder workflow."""
+    """Register every node and connect them in the fixed turn order.
+
+    We register nodes first, then declare edges. The only conditional edge
+    is right after the input guard: blocked turns skip everything and jump
+    straight to the responder so we can return the block reason quickly.
+    """
     workflow = StateGraph(PathfinderState)
 
     for name, node in (
@@ -42,11 +62,14 @@ def build_workflow() -> StateGraph:
 
     workflow.set_entry_point("input_guard")
 
+    # Guard fans out to either the responder (blocked) or the normal path.
     workflow.add_conditional_edges(
         "input_guard",
         lambda state: "responder" if state.get("is_blocked") else "orchestrator",
         {"orchestrator": "orchestrator", "responder": "responder"},
     )
+    # Normal path: classify -> harvest facts from query -> answer ->
+    # validate/cite -> save context -> render final answer.
     workflow.add_edge("orchestrator", "query_ingestor")
     workflow.add_edge("query_ingestor", "specialist_runner")
     workflow.add_edge("specialist_runner", "response_validator")
@@ -59,7 +82,13 @@ def build_workflow() -> StateGraph:
 
 
 async def get_compiled_workflow():
-    """Build and compile the workflow with the SQLite checkpointer."""
+    """Return the cached compiled graph, building it once per checkpointer.
+
+    Compilation is expensive-ish and only needs to happen once. We key the
+    cache by the checkpointer's id() so that if tests swap in a fresh
+    checkpointer (e.g., after a reset), the workflow is rebuilt to bind to
+    the new storage instead of holding onto the old connection.
+    """
     checkpointer = await get_checkpointer()
     checkpointer_id = id(checkpointer)
 

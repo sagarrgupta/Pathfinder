@@ -1,4 +1,30 @@
-"""Graph MCP tools."""
+"""Tools for reading and writing the student knowledge graph.
+
+This file is the single most used tool surface in Pathfinder. Everything
+the agents know about a student — their profile, enrollment, courses,
+goals, uploaded documents, relationships between those — lives in a
+Neo4j graph, and these tools are the only sanctioned way to change or
+query it.
+
+Mental model:
+    (Student) -[:HAS_SECTION]-> (Section) -[:HAS_ENTITY]-> (Entity)
+                                                               |
+                                                       [:HAS_FIELD]-> (Field)
+                                                       [:RELATES_TO]-> (Entity)
+                                                       [:GROUNDED_IN]-> (Chunk|Document)
+
+- `Sections` group related entities ("academic", "career", "personal").
+- `Entities` are real things (a course, a job, a goal).
+- `Fields` hold typed properties on entities, either scalar or nested.
+- `Relations` connect entities to each other.
+- `Chunks` and `Documents` live in `vector_tools.py` but entities can be
+  grounded in them via `link_entity_to_*` so the answer can cite evidence.
+
+Which agent uses which tool is enforced by the profile system in
+`tools.py`: specialists are read-only here; only the ingestion agents
+can upsert. Every tool has a `compact_handler` that trims Neo4j payloads
+down to scalar/short-text summaries before they reach the LLM transcript.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +44,13 @@ from app.tools.tools import (
 
 log = logging.getLogger("pathfinder.neo4j.graph")
 
+# Shared async Neo4j driver for every graph tool. Same Neo4j instance is
+# used by `vector_tools.py`; they just keep their own cached drivers.
 _driver: Optional[AsyncDriver] = None
+
+# Keys we strip from entity summaries. They're either auto-managed
+# (timestamps), redundant (student_id), or already exposed elsewhere
+# (nested field/chunk/document lists shown separately in the compact form).
 _TRANSCRIPT_METADATA_KEYS = {
     "created_at",
     "updated_at",
@@ -42,12 +74,18 @@ JSON_VALUE_SCHEMA: dict[str, Any] = {
     ]
 }
 
+# Reusable JSON-schema fragment: the composite key that uniquely names an
+# entity inside one student's graph (e.g. {"course_code": "CSC 500"}).
+# Referenced by almost every upsert tool below.
 IDENTITY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": "Stable identity fields that uniquely identify an entity inside a student graph, such as {'key': 'value'}.",
     "additionalProperties": {"type": "string"},
 }
 
+# Reusable fragment for free-form properties on an entity/relation. Good
+# for short summary values, bad for deeply nested structures — those
+# should use the dedicated field/nested-field tools.
 PROPERTIES_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": "Flexible JSON properties to store on the entity or relationship. Use this for summary attributes, not for nested field trees.",
@@ -56,7 +94,7 @@ PROPERTIES_SCHEMA: dict[str, Any] = {
 
 
 async def get_driver() -> AsyncDriver:
-    """Return (or create) the singleton Neo4j async driver."""
+    """Lazy-init a shared Neo4j driver; refuse to run without a password."""
     global _driver
     if _driver is None:
         if not str(settings.NEO4J_PASSWORD or "").strip():
@@ -72,7 +110,7 @@ async def get_driver() -> AsyncDriver:
 
 
 async def close_driver() -> None:
-    """Close the Neo4j driver on shutdown."""
+    """Close the driver cleanly at app shutdown (called from the lifespan hook)."""
     global _driver
     if _driver is not None:
         await _driver.close()
@@ -81,14 +119,23 @@ async def close_driver() -> None:
 
 
 async def _graph_db(context: ToolContext) -> GraphDB:
+    """Wrap the shared driver in the `GraphDB` adapter (which holds queries)."""
     driver = getattr(context, "driver", None) or await get_driver()
     return GraphDB(driver)
 
 
 def _student_id(context: ToolContext) -> str:
+    """Pull the current student id from the tool context as a trimmed string."""
     return str(context.student_id or "").strip()
 
+
 def _summarize_entity(entity: dict[str, Any], *, limit: int = 10) -> dict[str, Any]:
+    """Keep just the entity_type + a handful of scalar fields for LLM transcripts.
+
+    Drops metadata (timestamps, ids, redundant linkage lists) so the model
+    sees only what matters for reasoning. If there are no usable scalar
+    fields we fall back to a short stringified preview.
+    """
     if not isinstance(entity, dict):
         return {"value": bounded_text(entity)}
     summary: dict[str, Any] = {}
@@ -104,8 +151,8 @@ def _summarize_entity(entity: dict[str, Any], *, limit: int = 10) -> dict[str, A
     )
     return summary or {"value": bounded_text(entity)}
 
-
 def _summarize_relation_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Compact view of an edge: type + both endpoints as summarized entities."""
     if not isinstance(record, dict):
         return {"value": bounded_text(record)}
     return {
@@ -117,8 +164,8 @@ def _summarize_relation_record(record: dict[str, Any]) -> dict[str, Any]:
         "relationship": pick_scalar_fields(dict(record.get("relationship") or {}), limit=6),
     }
 
-
 def _summarize_chunk(chunk: dict[str, Any], *, text_limit: int = 240) -> dict[str, Any]:
+    """Compact view of a chunk row — id/parent/index + short text preview."""
     if not isinstance(chunk, dict):
         return {"value": bounded_text(chunk, limit=text_limit)}
     summary: dict[str, Any] = {}
@@ -137,8 +184,8 @@ def _summarize_chunk(chunk: dict[str, Any], *, text_limit: int = 240) -> dict[st
             summary["metadata"] = metadata_summary
     return summary or {"value": bounded_text(chunk, limit=text_limit)}
 
-
 def _compact_field(field: dict[str, Any]) -> dict[str, Any]:
+    """Compact view of an entity field — just id/key + a short value preview."""
     if not isinstance(field, dict):
         return {}
     compact = {
@@ -150,14 +197,18 @@ def _compact_field(field: dict[str, Any]) -> dict[str, Any]:
         compact["value_preview"] = bounded_text(value, limit=160)
     return compact
 
-
 async def _upsert_section(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Create or update a top-level grouping node under the student.
+
+    Sections are how we cluster related entities (e.g. "academic",
+    "career"). The ingestion prompt tells the model to reuse existing
+    section keys by meaning — this handler doesn't enforce that, it just
+    merges on (student_id, key). Duplicates happen only when the prompt
+    is ignored.
+    """
     graph_db = await _graph_db(context)
     section = await graph_db.upsert_section(
-        student_id=_student_id(context),
-        key=str(arguments.get("key", "") or "").strip(),
-        description=str(arguments.get("description", "") or "").strip(),
-        parent_key=str(arguments.get("parent_key", "") or "").strip(),
+        student_id=_student_id(context), key=str(arguments.get("key", "") or "").strip(), description=str(arguments.get("description", "") or "").strip(), parent_key=str(arguments.get("parent_key", "") or "").strip()
     )
     return {"section": section}
 
@@ -166,18 +217,22 @@ def _compact_write_section(_: dict[str, Any], result: dict[str, Any], __: ToolCo
     return {"section": _compact_section(dict(result.get("section") or {}))}
 
 
-
 def _compact_section(section: dict[str, Any]) -> dict[str, Any]:
+    """Trim a section row down to the three fields that matter in the transcript."""
     if not isinstance(section, dict):
         return {}
-    return {
+    compact = {
         "key": str(section.get("key") or "").strip(),
         "description": str(section.get("description") or "").strip(),
         "parent_key": str(section.get("parent_key") or "").strip(),
     }
-
+    return compact
 
 async def _update_student(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Patch scalar properties on the root Student node (name, major, etc.).
+
+    Also where `long_context` gets written when `context_persister` runs.
+    """
     graph_db = await _graph_db(context)
     student = await graph_db.update_student(
         student_id=_student_id(context),
@@ -193,8 +248,14 @@ def _compact_write_student(arguments: dict[str, Any], result: dict[str, Any], __
         "student": pick_scalar_fields(student, limit=8),
     }
 
-
 async def _upsert_graph_node(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Create or update one entity node under a section.
+
+    Merged on `(student_id, entity_type, identity)` so repeated calls with
+    the same identity converge on one node instead of duplicating. The
+    ingestion prompt is responsible for picking consistent `entity_type`
+    labels across calls — see `prompts.py` for the guidance it follows.
+    """
     graph_db = await _graph_db(context)
     node = await graph_db.upsert_graph_node(
         student_id=_student_id(context),
@@ -214,8 +275,14 @@ def _compact_write_node(arguments: dict[str, Any], result: dict[str, Any], __: T
         "node": _summarize_entity(dict(result.get("node") or {})),
     }
 
-
 async def _upsert_graph_relation(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Create or update an edge between two entities in the same student graph.
+
+    Deduplicates on `(source, target, relationship_type)` — emitting the
+    same relation twice produces one edge with merged properties. As with
+    node types, `relationship_type` naming consistency is enforced via
+    the ingestion system prompt, not in code.
+    """
     graph_db = await _graph_db(context)
     relation = await graph_db.upsert_graph_relation(
         student_id=_student_id(context),
@@ -227,7 +294,6 @@ async def _upsert_graph_relation(arguments: dict[str, Any], context: ToolContext
         properties=dict(arguments.get("properties") or {}),
     )
     return {"relation": relation}
-
 
 def _compact_write_relation(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
     relation = dict(result.get("relation") or {})
@@ -245,8 +311,8 @@ def _compact_write_relation(arguments: dict[str, Any], result: dict[str, Any], _
         "properties": pick_scalar_fields(relation_properties, limit=6),
     }
 
-
 def _compact_entity_list(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    """Turn any "list of entities" tool result into a capped summary list (<=20)."""
     entities = list(result.get("entities", []) or result.get("results", []) or [])
     summary = {
         "count": len(entities),
@@ -260,8 +326,8 @@ def _compact_entity_list(arguments: dict[str, Any], result: dict[str, Any], __: 
         summary["entity_type"] = entity_type
     return summary
 
-
 async def _get_section_entities(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """List every entity attached to one section of the student's graph."""
     graph_db = await _graph_db(context)
     entities = await graph_db.get_section_entities(
         student_id=_student_id(context),
@@ -271,6 +337,7 @@ async def _get_section_entities(arguments: dict[str, Any], context: ToolContext)
 
 
 async def _get_entity_by_identity(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Look up one entity by `(entity_type, identity)`; returns `found: False` when missing."""
     graph_db = await _graph_db(context)
     entity = await graph_db.get_entity_by_identity(
         student_id=_student_id(context),
@@ -278,6 +345,7 @@ async def _get_entity_by_identity(arguments: dict[str, Any], context: ToolContex
         identity=dict(arguments.get("identity") or {}),
     )
     return {"found": entity is not None, "entity": entity}
+
 
 def _compact_entity_lookup(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
     if not result.get("found"):
@@ -295,9 +363,13 @@ def _compact_entity_lookup(arguments: dict[str, Any], result: dict[str, Any], __
     entity = dict(result.get("entity") or {})
     return {"found": True, "entity": _summarize_entity(dict(entity or {}))}
 
-
-
 async def _upsert_entity_field(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Attach one typed field (key/value) to an entity.
+
+    Fields live as their own nodes (not as node properties) so the graph
+    can express rich relationships between them — for example, a
+    `grade` field pointing at the `course` it came from.
+    """
     graph_db = await _graph_db(context)
     field = await graph_db.upsert_entity_field(
         student_id=_student_id(context),
@@ -314,6 +386,7 @@ def _compact_write_field(_: dict[str, Any], result: dict[str, Any], __: ToolCont
 
 
 async def _list_entity_fields(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Return every field stored on one entity."""
     graph_db = await _graph_db(context)
     fields = await graph_db.list_entity_fields(
         student_id=_student_id(context),
@@ -332,6 +405,12 @@ def _compact_field_list(_: dict[str, Any], result: dict[str, Any], __: ToolConte
 
 
 async def _upsert_nested_field(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Add a child field under an existing field (for structured / nested data).
+
+    Used when one "field" is really a small tree — e.g. a transcript term
+    with courses inside. Keeps the structure queryable without creating
+    a bunch of near-duplicate entity types.
+    """
     graph_db = await _graph_db(context)
     field = await graph_db.upsert_nested_field(
         student_id=_student_id(context),
@@ -343,6 +422,12 @@ async def _upsert_nested_field(arguments: dict[str, Any], context: ToolContext) 
 
 
 async def _link_entity_to_chunk(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Ground an entity in a specific chunk — "this fact came from that paragraph".
+
+    Chunk grounding is what makes citations possible: when the specialist
+    surfaces an entity, it can follow this link back to the source chunk
+    (and from there to the document it lives in).
+    """
     graph_db = await _graph_db(context)
     entity = await graph_db.link_entity_to_chunk(
         student_id=_student_id(context),
@@ -361,8 +446,12 @@ def _compact_link_chunk(arguments: dict[str, Any], result: dict[str, Any], __: T
         "entity": _summarize_entity(dict(result.get("entity") or {})),
     }
 
-
 async def _link_entity_to_document(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Attach an entity to a whole document (coarser than chunk grounding).
+
+    Used when a fact is document-wide rather than localized to one chunk —
+    for example, "this transcript is from University X".
+    """
     graph_db = await _graph_db(context)
     entity = await graph_db.link_entity_to_document(
         student_id=_student_id(context),
@@ -381,8 +470,8 @@ def _compact_link_document(arguments: dict[str, Any], result: dict[str, Any], __
         "entity": _summarize_entity(dict(result.get("entity") or {})),
     }
 
-
 async def _get_chunk_entities(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Reverse of `link_entity_to_chunk` — what entities were grounded here?"""
     graph_db = await _graph_db(context)
     entities = await graph_db.get_chunk_entities(
         student_id=_student_id(context),
@@ -392,6 +481,11 @@ async def _get_chunk_entities(arguments: dict[str, Any], context: ToolContext) -
 
 
 async def _bfs_neighbors(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Walk outward from one node up to `max_depth` to see connected entities.
+
+    This is the "show me everything related to X" exploration primitive
+    the specialist leans on when the question spans multiple entities.
+    """
     graph_db = await _graph_db(context)
     try:
         traversal = await graph_db.bfs_neighbors(
@@ -405,8 +499,8 @@ async def _bfs_neighbors(arguments: dict[str, Any], context: ToolContext) -> dic
         raise
     return {"found": True, "traversal": traversal}
 
-
 def _compact_bfs(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    """Summarize the BFS result — cap levels at 5, nodes per level at 10."""
     if not result.get("found"):
         return {
             "found": False,
@@ -427,8 +521,8 @@ def _compact_bfs(arguments: dict[str, Any], result: dict[str, Any], __: ToolCont
         ],
     }
 
-
 async def _get_graph_data(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Dump the entire student graph (nodes + edges) — for visualization / debug."""
     graph_db = await _graph_db(context)
     try:
         graph_data = await graph_db.get_graph_data(student_id=_student_id(context))
@@ -440,6 +534,7 @@ async def _get_graph_data(arguments: dict[str, Any], context: ToolContext) -> di
 
 
 def _compact_graph_data(_: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    """Summary view of a full graph dump: counts and the list of labels/types used."""
     graph_data = dict(result.get("graph_data") or {})
     nodes = list(graph_data.get("nodes", []) or [])
     relationships = list(graph_data.get("relationships", []) or [])
@@ -465,8 +560,13 @@ def _compact_graph_data(_: dict[str, Any], result: dict[str, Any], __: ToolConte
         ),
     }
 
-
 async def _get_student_schema(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Return the student's "schema manifest" — the list of known sections,
+    entity types, field names, and relationship types.
+
+    This is what the ingestion prompt reads so the model can reuse labels
+    instead of inventing near-duplicates ("enrollment" vs "enrolled_in").
+    """
     graph_db = await _graph_db(context)
     schema = await graph_db.get_student_schema(student_id=_student_id(context))
     return {"student_schema": schema}
@@ -477,6 +577,7 @@ def _compact_schema(_: dict[str, Any], result: dict[str, Any], __: ToolContext) 
 
 
 async def _list_entity_types(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """All distinct entity types present in this student's graph, with counts."""
     graph_db = await _graph_db(context)
     entity_types = await graph_db.list_entity_types(student_id=_student_id(context))
     return entity_types
@@ -490,6 +591,7 @@ def _compact_entity_types(_: dict[str, Any], result: dict[str, Any], __: ToolCon
 
 
 async def _list_relationship_types(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """All distinct relationship types, with counts and (source -> target) patterns."""
     graph_db = await _graph_db(context)
     relationship_types = await graph_db.list_relationship_types(student_id=_student_id(context))
     return relationship_types
@@ -504,6 +606,7 @@ def _compact_relationship_types(_: dict[str, Any], result: dict[str, Any], __: T
 
 
 async def _typed_node_lookup(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Filter entities of one type by a dict of exact-match property filters."""
     graph_db = await _graph_db(context)
     results = await graph_db.typed_node_lookup(
         student_id=_student_id(context),
@@ -515,6 +618,7 @@ async def _typed_node_lookup(arguments: dict[str, Any], context: ToolContext) ->
 
 
 async def _typed_relation_lookup(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Find relations by type + target-side filters (e.g. "who teaches what")."""
     graph_db = await _graph_db(context)
     results = await graph_db.typed_relation_lookup(
         student_id=_student_id(context),
@@ -535,8 +639,8 @@ def _compact_relation_list(arguments: dict[str, Any], result: dict[str, Any], __
         "items": [_summarize_relation_record(row) for row in rows[:20]],
     }
 
-
 async def _fetch_node_by_id(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Get a single entity by its Neo4j internal id (used by debug/inspect views)."""
     graph_db = await _graph_db(context)
     try:
         entity = await graph_db.fetch_node_by_id(
@@ -550,8 +654,8 @@ async def _fetch_node_by_id(arguments: dict[str, Any], context: ToolContext) -> 
         raise
     return {"found": True, "entity": entity}
 
-
 async def _fetch_relation_detail(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Pinpoint one specific relation by the target-side key/value pair."""
     graph_db = await _graph_db(context)
     try:
         relation = await graph_db.fetch_relation_detail(
@@ -567,7 +671,6 @@ async def _fetch_relation_detail(arguments: dict[str, Any], context: ToolContext
         raise
     return {"found": True, "relation": relation}
 
-
 def _compact_relation_detail(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
     if not result.get("found"):
         return {
@@ -580,8 +683,14 @@ def _compact_relation_detail(arguments: dict[str, Any], result: dict[str, Any], 
     relation = dict(result.get("relation") or {})
     return {"found": True, "relation": _summarize_relation_record(dict(relation or {}))}
 
-
 async def _hybrid_search(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
+    """Combine vector similarity (on chunks) with graph traversal in one call.
+
+    This is the specialist's go-to retrieval tool: it embeds the query,
+    finds relevant chunks, then walks out to the entities grounded in
+    those chunks so the model gets both the raw evidence and its
+    structured context.
+    """
     graph_db = await _graph_db(context)
     results = await graph_db.hybrid_search(
         student_id=_student_id(context),
@@ -590,8 +699,8 @@ async def _hybrid_search(arguments: dict[str, Any], context: ToolContext) -> dic
     )
     return {"results": results}
 
-
 def _compact_hybrid_search(arguments: dict[str, Any], result: dict[str, Any], __: ToolContext) -> dict[str, Any]:
+    """Trim hybrid-search output: up to 10 items, each with up to 5 related entities."""
     rows = list(result.get("results", []) or [])
     return {
         "query": str(arguments.get("query") or "").strip(),
@@ -616,9 +725,15 @@ def _compact_hybrid_search(arguments: dict[str, Any], result: dict[str, Any], __
         ],
     }
 
-
 def get_graph_tool_specs() -> list[ToolSpec]:
-    """Graph tool definitions exposed to the ingestion/runtime LLM."""
+    """All graph-backed ToolSpecs exposed to ingestion + specialist agents.
+
+    This is the single source of truth for which graph operations the LLM
+    can see. The registry in `tools.py` pulls from this list, then applies
+    per-agent exclusions (writes hidden from the specialist, etc.).
+    Adding a new graph capability means adding a ToolSpec here — the
+    description text is part of the LLM contract.
+    """
     return [
         ToolSpec(
             name="update_student",

@@ -1,6 +1,11 @@
-"""Node 1: Input Guard.
+"""First stop in the chat flow — sanity-checks the user's question.
 
-Validates user input and blocks obvious SQL injection patterns.
+We refuse to spend LLM tokens on obviously-bad input: empty messages, huge
+pastes, and patterns that look like SQL injection. Anything blocked here
+jumps straight to the responder with a short explanation. Everything else
+flows on to the orchestrator.
+
+This is intentionally a cheap, deterministic step (regex only — no LLM).
 """
 
 from __future__ import annotations
@@ -13,6 +18,9 @@ from app.utils.progress import add_progress
 
 log = logging.getLogger("pathfinder.agents.input_guard")
 
+# Classic SQL-injection signatures. We never execute user text as SQL, but
+# these patterns are still a reliable signal of abusive/malformed intent and
+# cheap to block at the edge before any LLM work happens.
 _SQLI_PATTERNS = [
     r"(?i)\bunion\b\s+\bselect\b",
     r"(?i)\bdrop\b\s+\btable\b",
@@ -25,11 +33,19 @@ _SQLI_PATTERNS = [
     r"(?i)/\*.*\*/",
 ]
 
+# Hard upper bound on query size. Anything much larger is almost certainly a
+# paste-bomb and would waste the model's context window.
 MAX_QUERY_LENGTH = 4000
 
 
 async def input_guard(state: PathfinderState) -> PathfinderState:
-    """Validate the user input and update state accordingly."""
+    """Decide whether this turn should proceed or be stopped immediately.
+
+    Sets `is_blocked=True` with a `block_reason` when the query is unsafe,
+    empty, or too long. The workflow's conditional edge (see
+    `app/core/workflow.py`) routes blocked turns straight to the responder
+    so the user sees a clean refusal instead of a long silence.
+    """
     query = str(state.get("query", "") or "").strip()
     input_guard_enabled = bool(state.get("topic_guard_enabled", True))
 
@@ -40,7 +56,7 @@ async def input_guard(state: PathfinderState) -> PathfinderState:
         message="Making sure everything looks good before I begin.",
     )
 
-    # 1. Empty query check
+    # Reject empty submissions — nothing to answer.
     if not query:
         log.info("Blocked: empty query")
         return {
@@ -50,7 +66,7 @@ async def input_guard(state: PathfinderState) -> PathfinderState:
             "step_progress": step_progress,
         }
 
-    # 2. Length check
+    # Reject oversize submissions before they hit the LLM.
     if len(query) > MAX_QUERY_LENGTH:
         log.info("Blocked: query too long (%d chars)", len(query))
         return {
@@ -60,7 +76,8 @@ async def input_guard(state: PathfinderState) -> PathfinderState:
             "step_progress": step_progress,
         }
 
-    # 3. SQL injection detection
+    # Probe for SQL-injection-shaped inputs; this flag can be disabled per
+    # turn (e.g., for admin testing) via `topic_guard_enabled`.
     query_lower = query.lower()
     if input_guard_enabled:
         for pattern in _SQLI_PATTERNS:

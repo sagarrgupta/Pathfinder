@@ -1,10 +1,22 @@
-"""Helpers for opportunistically ingesting one chat message into the student graph.
+"""Ingest facts the user casually drops into a chat message.
 
-Mirrors `app.utils.document_ingest` in shape and loop budget. The agent only
-writes graph structure (sections, entities, fields, relations) — never
-chunks, never document/chunk grounding edges — because chat turns have no
-document to attach to. Embedding for chat messages is intentionally out of
-scope: the value lives in the graph nodes, not in raw text similarity.
+Complements `app.utils.document_ingest`: whenever the user says
+something like "btw I got promoted to senior engineer last month",
+we want that on the profile even though no document was uploaded.
+
+This module runs in parallel with the specialist on every chat turn
+(from the `query_ingestor` node, before the specialist runs) and
+writes whatever new structured facts it can extract.
+
+Key differences from document ingestion:
+- The agent sees the `query_ingestor` tool profile — graph writes
+  only, no chunk/document grounding edges (there's no doc to link to)
+  and no vector/embedding tools.
+- The prompt is the chat message itself, not extracted file text.
+- There is no per-chunk iteration — a single user turn is small.
+
+Loop budget mirrors `document_ingest` for consistency, but in practice
+most messages finish in one or two rounds.
 """
 
 from __future__ import annotations
@@ -34,14 +46,24 @@ from app.utils.progress import add_progress
 
 log = logging.getLogger("pathfinder.utils.query_ingest")
 
+# Tool profile — hides writes to chunks / documents the query ingester
+# has no business touching on a chat-only turn.
 _AGENT_PROFILE = "query_ingestor"
+# Cap on chat message size we feed the agent. Generous — a normal
+# message is well under this; the limit is just a safety belt.
 _QUERY_PROMPT_LIMIT = 8000
+# Loop caps mirror `document_ingest` so both pipelines feel the same.
 _INGESTION_TOOL_LIMIT = 30
 _INGESTION_ROUNDS = 100
 
 
 def _normalize_query_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the chat-ingestion final JSON into the minimal shape used by replays."""
+    """Tidy the agent's final JSON into the minimal `{summary, saved_items, stop_reason}` shape.
+
+    Chat ingestion doesn't produce `key_takeaways` (there isn't a
+    document to summarize) so the shape is smaller than
+    `document_ingest._normalize_model_summary`.
+    """
     saved_items = payload.get("saved_items") if isinstance(payload, dict) else []
     return {
         "summary": str(payload.get("summary", "") or "") if isinstance(payload, dict) else "",
@@ -61,7 +83,14 @@ async def ingest_query(
     query: str,
     step_progress: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Use the chat-ingestion tool surface to opportunistically ingest one chat message."""
+    """Run the chat-ingestion agent over one user message.
+
+    The `query_ingestor` node calls this on every turn (before the
+    specialist). Returns the same shape as `ingest_document` so both
+    pipelines share the `build_graph_updates` summary in the replay
+    artifact. Any exception here is caught by the caller so a bad
+    ingestion never prevents the user's question from being answered.
+    """
     progress_sink: list[dict[str, str]] = step_progress if step_progress is not None else []
     graph_db = GraphDB(await get_graph_driver())
     llm = get_text_llm().bind_tools(get_agent_tool_schemas(_AGENT_PROFILE))

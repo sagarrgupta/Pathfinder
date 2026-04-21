@@ -1,4 +1,19 @@
-"""saves session and long context into the graph."""
+"""Saves rolling context so future turns remember this one.
+
+Pathfinder has two running summaries:
+- `session_context`: short summary of the current chat; lives in the
+  LangGraph checkpointer state and resets when the session ends.
+- `long_context`: durable student-scoped notes that survive across
+  sessions; stored as a property on the Student node in Neo4j.
+
+The specialist proposes updates via its `respond` tool output. This node
+commits those proposals: session context always goes to state, long
+context goes to the graph only when the specialist actually supplied a
+new value (so we don't overwrite past notes with nothing).
+
+Runs right after `response_validator` and right before `responder`, so the
+user sees the final answer quickly even if the graph write is slow.
+"""
 
 from __future__ import annotations
 
@@ -13,12 +28,11 @@ log = logging.getLogger("pathfinder.agents.context_persister")
 
 
 async def context_persister(state: PathfinderState) -> PathfinderState:
-    """saves next session context and optional next long context before response rendering."""
+    """Persist the specialist's proposed context updates before rendering."""
     output = state.get("specialist_output", {}) if isinstance(state.get("specialist_output", {}), dict) else {}
-    # `specialist_runner._normalize_specialist_payload` already guarantees a
-    # non-empty `next_session_context` (it falls back to the previous one and
-    # logs there). This second fallback is purely defensive in case the
-    # specialist normalization is ever bypassed.
+    # Specialist normalization already guarantees a non-empty
+    # `next_session_context`; the `or state.get(...)` path is defensive for
+    # unit tests that construct state manually.
     next_session_context = str(
         output.get("next_session_context", "") or state.get("session_context", "") or ""
     ).strip()
@@ -31,6 +45,8 @@ async def context_persister(state: PathfinderState) -> PathfinderState:
         "long_context": str(state.get("long_context", "") or ""),
     }
 
+    # Only touch Neo4j when the specialist actually produced new durable
+    # notes — otherwise we leave the stored long_context alone.
     if next_long_context not in (None, "", [], {}):
         try:
             long_context_text = str(next_long_context).strip()
@@ -41,6 +57,8 @@ async def context_persister(state: PathfinderState) -> PathfinderState:
             )
             updated_state["long_context"] = long_context_text
         except Exception as exc:
+            # A failed write must not block the answer; we just log it and
+            # continue with the previous stored value.
             log.warning("Failed to persist long context for student=%s: %s", state.get("student_id", ""), exc)
 
     add_progress(

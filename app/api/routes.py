@@ -1,6 +1,25 @@
-"""API endpoints for Pathfinder.
+"""HTTP endpoints the frontend and MCP clients talk to.
 
-All routes prefixed with /api/v1 (set in main.py).
+All routes are mounted under `/api/v1` (see `main.py`). The endpoints
+fall into five rough groups:
+
+- `/chat`              : the big one — accepts a user message + optional
+                         uploaded files and streams the whole LangGraph
+                         response back as Server-Sent Events (SSE). Live
+                         progress, streamed answer tokens, and the final
+                         metadata payload all flow over one connection.
+- `/students`          : CRUD for local student profiles.
+- `/documents`         : upload + duplicate-check before ingestion.
+- `/student`, `/student/graph`, `/student/reset`:
+                         read/write the knowledge graph for one student.
+- `/replays`           : list and fetch saved conversation replays
+                         (from `app.services.replay_store`) — used by
+                         the debug / evaluation views.
+- `/settings`, `/health`:
+                         app-level toggles and dependency status.
+
+This module deliberately does not own any LLM or graph logic — it only
+glues HTTP input to the LangGraph workflow and the graph adapters.
 """
 
 from __future__ import annotations
@@ -52,12 +71,20 @@ from app.utils.runtime_utils import infer_method
 log = logging.getLogger("pathfinder.api")
 
 router = APIRouter()
+
 _TOKEN_CHUNK_SIZE = 120
 _DEPENDENCY_STATUS_TTL_SECONDS = 15.0
 _dependency_status_cache: dict[str, Any] = {"timestamp": 0.0, "payload": None}
 
+
 def _student_info(student: dict[str, Any]) -> StudentInfo:
-    """Normalize a raw student record into the API response shape."""
+    """Convert a raw Neo4j student record into the `StudentInfo` wire shape.
+
+    Splits out the well-known fields and lets any leftover scalar
+    properties ride through as extras — `StudentInfo` is configured to
+    accept them so new student attributes can appear in the list view
+    without touching this code.
+    """
     extra = {
         k: v for k, v in student.items()
         if k not in {"id", "name", "created_at", "updated_at",
@@ -74,15 +101,26 @@ def _student_info(student: dict[str, Any]) -> StudentInfo:
 
 
 async def _graph_db() -> GraphDB:
+    """Build a `GraphDB` bound to the shared Neo4j driver for this process."""
     return GraphDB(await get_graph_driver())
 
 
 async def _ensure_student(student_id: str) -> dict[str, Any]:
+    """Make sure a `Student` node exists for this id — cheap upsert.
+
+    Called at the top of every route that needs a student so that a
+    fresh `student_id` from the client auto-creates a profile on first
+    use instead of 404'ing.
+    """
     return await (await _graph_db()).update_student(student_id=student_id, updates={})
 
 
 async def _read_upload_file(file: UploadFile) -> dict[str, Any]:
-    """Read and validate one FastAPI uploaded file."""
+    """Read the upload into memory and enforce size + extension limits.
+
+    Returns a plain dict so downstream code (ingestion pipeline) doesn't
+    hold onto the FastAPI `UploadFile` object beyond the request scope.
+    """
     filename = str(file.filename or "").strip()
     if not filename:
         raise HTTPException(400, "Filename is required")
@@ -101,18 +139,26 @@ async def _read_upload_file(file: UploadFile) -> dict[str, Any]:
     }
 
 
-# ── Runtime state ────────────────────────────────────────────────
+# Process-level toggles — mutated by the /settings endpoint and read by
+# /chat on every turn. They start from `settings` but can be changed at
+# runtime without a restart.
 _topic_guard_enabled: bool = settings.TOPIC_GUARD_ENABLED
 _reasoning: str = "medium"
 
 
 def _normalize_reasoning(reasoning: str) -> str:
-    """Normalize the requested reasoning label."""
+    """Coerce a user-provided reasoning label to lowercase, default "medium"."""
     return str(reasoning or "medium").strip().lower() or "medium"
 
 
 async def _get_dependency_status(*, force_refresh: bool = False) -> dict[str, str]:
-    """Check live dependency health for the current turn."""
+    """Probe Neo4j, LM Studio, Ollama, and web search and return a status map.
+
+    Result is cached for `_DEPENDENCY_STATUS_TTL_SECONDS` so the chat
+    endpoint doesn't re-ping every backing service on each message. The
+    `/health` endpoint passes `force_refresh=True` to always see live
+    state.
+    """
     cached_payload = _dependency_status_cache.get("payload")
     cached_at = float(_dependency_status_cache.get("timestamp", 0.0) or 0.0)
     cache_age = time.monotonic() - cached_at
@@ -190,17 +236,25 @@ async def chat(
     replace_filenames: str = Form(""),
     reasoning: str = Form("medium"),
 ):
-    """Main chat endpoint with SSE streaming."""
+    """Primary chat endpoint — runs the full LangGraph and streams SSE events.
+
+    Returns a `text/event-stream` that carries three event types:
+    `progress` (live status per node), `token` (chunks of the final
+    answer), and `done` (the final metadata payload). On the server
+    side, a background task drives LangGraph while the response
+    generator drains a queue of events — that lets progress messages
+    reach the browser while the graph is still executing.
+    """
     resolved_student_id = await _resolve_student_id(student_id)
     if not session_id:
         session_id = generate_session_id()
     files = list(files) if isinstance(files, list) else []
     graph_db = await _graph_db()
 
-    # Parse replace filenames (comma-separated list of filenames to replace)
     replace_set = {name.strip() for name in replace_filenames.split(",") if name.strip()}
 
-    # Delete existing documents that are being replaced
+    # Replaces on re-upload — deletes the old document (and its chunks)
+    # so ingestion doesn't pile up duplicates for the same filename.
     for fname in replace_set:
         existing = await graph_db.find_document_by_filename(
             student_id=resolved_student_id,
@@ -210,14 +264,13 @@ async def chat(
             await graph_db.delete_document_cascade(document_id=existing["id"])
             log.info("Chat: replaced existing document before re-upload: %s", fname)
 
-    # Read uploaded files
     file_data = [await _read_upload_file(upload) for upload in files]
 
     async def event_stream():
-        # Outbound queue: (event_name, payload) tuples consumed by the SSE
-        # generator. Sentinel `None` signals graph completion. Using one queue
-        # lets us interleave live progress (pushed mid-node) with graph
-        # state-update events (pushed when a node returns).
+        # One queue carries every outbound SSE event. Using a single queue
+        # lets us interleave live progress (pushed from inside nodes via
+        # the progress emitter) with the final token/done events (pushed
+        # after the graph finishes). `None` is the close-stream sentinel.
         outbound: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
 
         def push_progress(entry: dict[str, str]) -> None:
@@ -331,7 +384,7 @@ async def chat(
 
 @router.get("/students", response_model=list[StudentInfo])
 async def get_students():
-    """List local students."""
+    """Return all local students, most-recently-updated first."""
     driver = await get_graph_driver()
     async with driver.session() as session:
         result = await session.run(
@@ -347,7 +400,7 @@ async def get_students():
 
 @router.post("/students", response_model=StudentInfo)
 async def create_student(body: StudentCreate):
-    """Create a new local student."""
+    """Create a new local student and return its summary."""
     extra = body.model_extra or {}
     student_id = generate_student_id()
     await _ensure_student(student_id)
@@ -360,7 +413,11 @@ async def create_student(body: StudentCreate):
 
 @router.get("/documents/check")
 async def check_document_exists(filename: str, student_id: Optional[str] = Query(default=None)):
-    """Check if a document with this filename already exists for the student."""
+    """Tell the UI whether a filename would be a duplicate before upload.
+
+    Lets the client show a "Replace existing?" prompt instead of silently
+    creating a second copy of the same document.
+    """
     resolved_student_id = await _resolve_student_id(student_id)
     existing = await (await _graph_db()).find_document_by_filename(student_id=resolved_student_id, filename=filename)
     return {"exists": existing is not None, "document": existing}
@@ -372,12 +429,16 @@ async def upload_document(
     student_id: Optional[str] = Form(None),
     replace: str = Form("false"),
 ):
-    """Upload a document for the student graph."""
+    """Ingest a single file into the student's graph + vector store.
+
+    This runs the same ingestion pipeline (`doc_analyst`) the chat
+    endpoint uses when files are attached to a message — just without
+    the surrounding chat turn.
+    """
     resolved_student_id = await _resolve_student_id(student_id)
     upload = await _read_upload_file(file)
     graph_db = await _graph_db()
 
-    # If replacing, delete the existing document first
     if replace.lower() == "true":
         existing = await graph_db.find_document_by_filename(
             student_id=resolved_student_id,
@@ -387,7 +448,6 @@ async def upload_document(
             await graph_db.delete_document_cascade(document_id=existing["id"])
             log.info("Replaced existing document: %s", upload["filename"])
 
-    # Process through the registered document ingestion pipeline
     from app.nodes.doc_analyst import doc_analyst as process_doc
 
     state: dict[str, Any] = {
@@ -417,7 +477,12 @@ async def upload_document(
 
 @router.get("/student", response_model=StudentResponse)
 async def get_student(student_id: Optional[str] = Query(default=None)):
-    """Get the student's profile view plus canonical graph schema."""
+    """Return everything the profile page needs in one round trip.
+
+    Combines: root student properties, the schema of all known sections,
+    the entities grouped by section, and any long-form context the AI
+    has accumulated about the student.
+    """
     resolved_student_id = await _resolve_student_id(student_id)
     graph_db = await _graph_db()
     student_graph = await graph_db.get_full_student(student_id=resolved_student_id)
@@ -443,7 +508,7 @@ async def get_student(student_id: Optional[str] = Query(default=None)):
 
 @router.put("/student")
 async def update_student(update: StudentUpdate):
-    """Update a specific student field."""
+    """Patch a single scalar field on the student (save-on-blur in the UI)."""
     resolved_student_id = await _resolve_student_id(update.student_id)
     value = update.value
     if update.field == "long_context":
@@ -457,7 +522,7 @@ async def update_student(update: StudentUpdate):
 
 @router.delete("/student/reset")
 async def reset_all_student_data(student_id: Optional[str] = Query(default=None)):
-    """Delete all student data from the knowledge graph."""
+    """Wipe a single student's graph + replay artifacts. Destructive."""
     resolved_student_id = await _resolve_student_id(student_id)
     deleted = await (await _graph_db()).reset_student_data(student_id=resolved_student_id)
     deleted_replays = delete_replay_artifacts_for_student(resolved_student_id)
@@ -470,7 +535,10 @@ async def reset_all_student_data(student_id: Optional[str] = Query(default=None)
 
 @router.delete("/settings/delete-all-data")
 async def delete_all_data_everywhere():
-    """Delete all students, graph data, and persisted chat sessions."""
+    """Nuke everything: Neo4j data, chat checkpoints, and replay artifacts.
+
+    Intended for the "reset the whole app" button. Unrecoverable.
+    """
     deleted_nodes = await (await _graph_db()).reset_all_data()
     await reset_checkpointer_storage()
     deleted_replays = delete_all_replay_artifacts()
@@ -483,7 +551,7 @@ async def delete_all_data_everywhere():
 
 @router.get("/student/graph", response_model=GraphDataResponse)
 async def get_student_graph(student_id: Optional[str] = Query(default=None)):
-    """Get knowledge graph data for visualization."""
+    """Return the nodes + edges the graph visualization view renders."""
     resolved_student_id = await _resolve_student_id(student_id)
     data = await (await _graph_db()).get_graph_data(student_id=resolved_student_id)
     return GraphDataResponse(nodes=data["nodes"], relationships=data["relationships"])
@@ -493,7 +561,7 @@ async def get_student_graph(student_id: Optional[str] = Query(default=None)):
 async def get_replays(
     limit: int = Query(default=25, ge=1, le=100),
 ):
-    """List recent replay artifacts for debugging and evaluation."""
+    """Most recent replays — the debug view's index page uses this."""
     return [
         ReplayArtifactInfo(**item)
         for item in list_replay_artifacts(limit=limit)
@@ -502,7 +570,7 @@ async def get_replays(
 
 @router.get("/replays/{replay_id}")
 async def get_replay(replay_id: str):
-    """Fetch a full replay artifact by ID."""
+    """Return the entire replay JSON so the debug view can reconstruct a turn."""
     artifact = get_replay_artifact(replay_id)
     if artifact is None:
         raise HTTPException(404, "Replay artifact not found")
@@ -513,7 +581,7 @@ async def get_replay(replay_id: str):
 
 @router.get("/settings", response_model=SettingsResponse)
 async def get_settings():
-    """Get current application settings."""
+    """Return the current runtime toggles + which models are configured."""
     return SettingsResponse(
         topic_guard_enabled=_topic_guard_enabled,
         reasoning=_reasoning,
@@ -527,7 +595,7 @@ async def get_settings():
 
 @router.put("/settings")
 async def update_settings(update: SettingsUpdate):
-    """Update application settings."""
+    """Patch runtime toggles (topic guard, reasoning) without a restart."""
     global _topic_guard_enabled, _reasoning
     if update.topic_guard_enabled is not None:
         _topic_guard_enabled = update.topic_guard_enabled
@@ -541,7 +609,11 @@ async def update_settings(update: SettingsUpdate):
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Check system health for all registered dependencies."""
+    """Live probe of Neo4j / LLM / embeddings / web search.
+
+    Skips the status cache so the UI banner and any deploy-time probes
+    always get a fresh picture.
+    """
     statuses = await _get_dependency_status(force_refresh=True)
     services = {name: str(status) for name, status in statuses.items()}
     healthy_statuses = {"connected", "configured", "fallback_only"}
@@ -552,7 +624,12 @@ async def health_check():
 
 
 async def _resolve_student_id(student_id: str | None) -> str:
-    """Resolve the active student id, creating a runtime id if needed."""
+    """Pick an effective student id for this request.
+
+    If the client sent one, use it (and make sure the node exists).
+    Otherwise mint a fresh id so anonymous / first-time users still get
+    a well-formed profile to write into.
+    """
     if student_id:
         await _ensure_student(student_id)
         return student_id
