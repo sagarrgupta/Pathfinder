@@ -26,12 +26,6 @@ from app.adapters.web_search._common import build_search_result, normalize_url
 
 log = logging.getLogger("pathfinder.search.url_fetcher")
 
-# Regex to extract URLs from user text
-_URL_PATTERN = re.compile(
-    r"https?://[^\s<>\"'\]\)]+",
-    re.IGNORECASE,
-)
-
 # Maximum content length to return (characters) — prevents huge pages
 # from overwhelming the LLM context window
 _MAX_CONTENT_LENGTH = 22_000
@@ -52,18 +46,6 @@ _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
-
-
-def extract_urls(text: str) -> list[str]:
-    """Pull unique, normalized URLs out of a message so we can fetch them."""
-    urls = [normalize_url(url) for url in _URL_PATTERN.findall(text or "")]
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for url in urls:
-        if url and url not in seen:
-            seen.add(url)
-            deduped.append(url)
-    return deduped
 
 
 async def fetch_url_content(url: str, timeout: float = 15.0) -> dict[str, Any] | None:
