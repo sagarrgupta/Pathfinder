@@ -262,8 +262,8 @@ Conceptually, build the graph that matches the implementation you actually run.
 
 For Pathfinder's current live flow, that means a compact 5-node graph:
 
-- **Nodes**: `input_guard`, `orchestrator`, `specialist_runner`, `light_validator`, `responder`
-- **State**: Shared TypedDict such as `messages`, `query`, `files`, `selected_specialist`, `profile_data`, `semantic_memory`, `retrieved_documents`, `tool_call_log`, `draft_answer`, and `final_answer`
+- **Nodes**: `input_guard`, `orchestrator`, `specialist_runner`, `response_validator`, `responder`
+- **State**: Shared TypedDict such as `messages`, `query`, `files`, `selected_specialist`, `profile_data`, `retrieved_documents`, `tool_call_log`, `draft_answer`, and `final_answer`
 - **Specialist model**: One selected specialist prompt family plus a shared tool surface, instead of many graph branches
 
 Each node:
@@ -276,8 +276,8 @@ In Pathfinder's current implementation:
 
 1. `input_guard` blocks unsafe or off-scope requests.
 2. `orchestrator` picks one specialist family such as `academic`, `career`, or `general`.
-3. `specialist_runner` loads profile context, optionally pre-ingests uploaded files, and lets the specialist call the canonical tool registry.
-4. `light_validator` derives citations and a lightweight confidence score.
+3. `specialist_runner` reuses or rebuilds profile context, optionally pre-ingests uploaded files, and lets the specialist call the shared tool surface.
+4. `response_validator` derives citations and a lightweight confidence score.
 5. `responder` returns the final answer with minimal rewriting.
 
 ### 5.1 Keep Side Flows Out Of Your Chat Graph Unless They Are Actually Wired In

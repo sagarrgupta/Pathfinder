@@ -5,7 +5,7 @@ import {
   MessageSquare, User, Settings, Plus, Trash2,
   PanelLeftClose, PanelLeftOpen, GraduationCap,
   Pin, PinOff, Pencil, Check, X, Search,
-  History,
+  History, ChevronDown,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/components/shared/Toast';
@@ -18,12 +18,11 @@ const COLLAPSED_WIDTH = 48;
 export default function Sidebar({ open, onToggle }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { state, dispatch, createSession, switchStudent, createProfile } = useApp();
+  const { state, dispatch, createSession, switchStudent, createStudent } = useApp();
   const toast = useToast();
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [isCreatingProfile, setIsCreatingProfile] = useState(false);
   const editRef = useRef(null);
 
   // ── Resizable width ──
@@ -34,7 +33,6 @@ export default function Sidebar({ open, onToggle }) {
     } catch { return DEFAULT_WIDTH; }
   });
   const [isResizing, setIsResizing] = useState(false);
-  const sidebarRef = useRef(null);
 
   // Persist width
   useEffect(() => {
@@ -73,9 +71,9 @@ export default function Sidebar({ open, onToggle }) {
   }, [isResizing]);
 
   const navItems = [
-    { path: '/chat', label: 'Chat', icon: MessageSquare },
-    { path: '/profile', label: 'My Profile', icon: User },
-    { path: '/replays', label: 'Replays', icon: History },
+    { path: '/chat', label: 'Ask Pathfinder', icon: MessageSquare },
+    { path: '/student', label: 'Profile', icon: User },
+    { path: '/replays', label: 'Saved Runs', icon: History },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
 
@@ -95,22 +93,19 @@ export default function Sidebar({ open, onToggle }) {
       await switchStudent(nextStudentId);
       navigate('/chat');
     } catch (err) {
-      toast.error(`Failed to switch profile: ${err.message}`);
+      toast.error(`Failed to switch student: ${err.message}`);
     }
   };
 
-  const handleCreateProfile = async () => {
-    const name = window.prompt('Enter a name for the new profile');
+  const handleCreateStudent = async () => {
+    const name = window.prompt('Enter a name for the new student');
     if (!name?.trim()) return;
-    setIsCreatingProfile(true);
     try {
-      await createProfile({ name: name.trim() });
-      toast.success(`Created profile for ${name.trim()}`);
-      navigate('/profile');
+      await createStudent({ name: name.trim() });
+      toast.success(`Created student ${name.trim()}`);
+      navigate('/student');
     } catch (err) {
-      toast.error(`Failed to create profile: ${err.message}`);
-    } finally {
-      setIsCreatingProfile(false);
+      toast.error(`Failed to create student: ${err.message}`);
     }
   };
 
@@ -172,21 +167,17 @@ export default function Sidebar({ open, onToggle }) {
   const pinnedSessions = filteredSessions.filter((s) => s.pinned);
   const unpinnedSessions = filteredSessions.filter((s) => !s.pinned);
 
-  // ── Format relative time ──
-  const formatRelativeTime = (dateStr) => {
-    if (!dateStr) return '';
-    const now = new Date();
-    const date = new Date(dateStr);
-    const diffMs = now - date;
-    const diffMin = Math.floor(diffMs / 60000);
-    if (diffMin < 1) return 'just now';
-    if (diffMin < 60) return `${diffMin}m ago`;
-    const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr}h ago`;
-    const diffDay = Math.floor(diffHr / 24);
-    if (diffDay < 7) return `${diffDay}d ago`;
-    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  };
+  const getStudentLabel = useCallback((studentId) => {
+    const listStudent = state.students.find((student) => student.student_id === studentId);
+    if (listStudent?.name?.trim()) return listStudent.name.trim();
+
+    if (state.activeStudentId === studentId) {
+      const activeName = state.student?.root_properties?.name || state.student?.name || '';
+      if (String(activeName).trim()) return String(activeName).trim();
+    }
+
+    return studentId;
+  }, [state.activeStudentId, state.student, state.students]);
 
   const renderSession = (session) => {
     const isEditing = editingId === session.session_id;
@@ -197,10 +188,10 @@ export default function Sidebar({ open, onToggle }) {
         key={session.session_id}
         onClick={() => handleSelectSession(session.session_id)}
         className={cn(
-          'w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-sm group/session transition-all cursor-pointer',
+          'group/session flex w-full cursor-pointer items-center justify-between rounded-2xl border px-3 py-2.5 text-sm transition-all',
           isActive
-            ? 'bg-accent text-accent-foreground shadow-sm'
-            : 'text-muted-foreground hover:bg-accent/50'
+            ? 'border-primary/25 bg-gradient-to-r from-primary/12 to-warning/10 text-foreground shadow-sm'
+            : 'border-transparent text-muted-foreground hover:border-border/60 hover:bg-accent/35'
         )}
       >
         {isEditing ? (
@@ -211,7 +202,7 @@ export default function Sidebar({ open, onToggle }) {
               onChange={(e) => setEditValue(e.target.value)}
               onKeyDown={handleRenameKeyDown}
               onBlur={confirmRename}
-              className="flex-1 min-w-0 bg-background text-foreground text-sm px-2 py-1 rounded-md border border-border focus:outline-none focus:ring-1 focus:ring-primary"
+              className="min-w-0 flex-1 rounded-xl border border-border bg-background px-2 py-1 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
             />
             <button
               onClick={confirmRename}
@@ -231,9 +222,9 @@ export default function Sidebar({ open, onToggle }) {
         ) : (
           <>
             <div className="flex items-center gap-2 flex-1 min-w-0">
-              {session.pinned && <Pin className="h-3 w-3 text-primary flex-shrink-0" />}
+              {session.pinned && <Pin className="h-3 w-3 flex-shrink-0 text-primary" />}
               <div className="flex-1 min-w-0">
-                <span className="truncate text-left block" title={session.title}>{session.title}</span>
+                <span className="block truncate text-left font-medium" title={session.title}>{session.title}</span>
               </div>
             </div>
 
@@ -274,32 +265,32 @@ export default function Sidebar({ open, onToggle }) {
   const currentWidth = open ? sidebarWidth : COLLAPSED_WIDTH;
 
   return (
-    <div
-      ref={sidebarRef}
-      className="relative border-r bg-card/50 backdrop-blur-sm flex flex-col flex-shrink-0 overflow-hidden"
+    <aside
+      className="relative flex flex-shrink-0 flex-col overflow-hidden rounded-[28px] border border-border/70 bg-card/80 shadow-[0_18px_60px_rgba(15,23,42,0.10)] backdrop-blur-xl"
       style={{
         width: currentWidth,
         minWidth: currentWidth,
         transition: isResizing ? 'none' : 'width 200ms ease-in-out, min-width 200ms ease-in-out',
       }}
     >
+      <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_top,hsl(var(--primary)/0.10),transparent_34%),linear-gradient(180deg,hsl(var(--card)/0.96),hsl(var(--card)/0.82))]" />
       {/* Header */}
       {open && (
-        <div className="p-3 border-b flex items-center justify-between min-h-[57px]">
+        <div className="relative flex min-h-[84px] items-start justify-between border-b border-border/60 px-4 py-4">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center ring-1 ring-primary/10">
-              <GraduationCap className="h-4.5 w-4.5 text-primary" />
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/20 via-primary/10 to-warning/15 ring-1 ring-primary/15">
+              <GraduationCap className="h-5 w-5 text-primary" />
             </div>
             <div className="min-w-0">
-              <h1 className="font-semibold text-base whitespace-nowrap tracking-tight leading-tight">Pathfinder</h1>
-              {(state.profile?.personal?.name || state.activeStudentId) && (
-                <p className="text-[10px] text-muted-foreground truncate leading-tight">
-                  {(state.profile?.personal?.name || state.activeStudentId).split(' ')[0]}'s Guide
+              <h1 className="whitespace-nowrap text-base font-semibold tracking-tight leading-tight">Pathfinder</h1>
+              {(state.student?.root_properties?.name || state.activeStudentId) && (
+                <p className="mt-1 truncate text-[11px] text-muted-foreground leading-tight">
+                  Working with {(state.student?.root_properties?.name || state.activeStudentId).split(' ')[0]}
                 </p>
               )}
             </div>
           </div>
-          <button onClick={onToggle} className="p-1.5 rounded-lg hover:bg-accent flex-shrink-0 transition-colors" title="Collapse sidebar">
+          <button onClick={onToggle} className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border border-border/60 bg-background/60 transition-colors hover:bg-accent" title="Collapse sidebar">
             <PanelLeftClose className="h-4.5 w-4.5 text-muted-foreground" />
           </button>
         </div>
@@ -307,68 +298,73 @@ export default function Sidebar({ open, onToggle }) {
 
       {/* New Chat Button (expanded) */}
       {open && (
-        <div className="p-3 pb-1 space-y-2">
-          <div className="rounded-lg border bg-background/80 p-2.5">
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">
-                Active Profile
+        <div className="relative space-y-3 px-4 pb-2 pt-4 pr-5">
+          <div className="hero-panel p-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.24em]">
+                Current Profile
               </p>
               <button
-                onClick={handleCreateProfile}
-                disabled={isCreatingProfile}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-primary hover:bg-accent disabled:opacity-50"
-                title="Create profile"
+                onClick={handleCreateStudent}
+                className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background/80 px-2.5 py-1 text-[11px] font-medium text-primary hover:bg-accent"
+                title="Create student"
               >
                 <Plus className="h-3 w-3" />
                 New
               </button>
             </div>
-            <select
-              value={state.activeStudentId}
-              onChange={handleStudentChange}
-              className="w-full rounded-md border bg-background px-2.5 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring/50"
-            >
-              {state.profiles.length === 0 ? (
-                <option value={state.activeStudentId}>{state.activeStudentId}</option>
-              ) : (
-                state.profiles.map((profile) => (
-                  <option key={profile.student_id} value={profile.student_id}>
-                    {profile.name || profile.student_id}
-                  </option>
-                ))
-              )}
-            </select>
+            <div className="relative">
+              <select
+                value={state.activeStudentId}
+                onChange={handleStudentChange}
+                className="w-full appearance-none rounded-2xl border border-border/70 bg-card/92 px-4 py-3 pr-11 text-sm text-foreground shadow-sm outline-none [color-scheme:light] focus:ring-1 focus:ring-ring/50 dark:[color-scheme:dark]"
+              >
+                {state.students.length === 0 ? (
+                  <option value={state.activeStudentId}>{getStudentLabel(state.activeStudentId)}</option>
+                ) : (
+                  state.students.map((student) => (
+                    <option key={student.student_id} value={student.student_id}>
+                      {getStudentLabel(student.student_id)}
+                    </option>
+                  ))
+                )}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            </div>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              This profile powers chat answers, document memory, and saved context.
+            </p>
           </div>
           <button
             onClick={handleNewChat}
-            className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border border-dashed border-border hover:bg-accent hover:border-primary/20 text-sm transition-all active:scale-[0.98]"
+            className="flex w-full items-center justify-center gap-2 rounded-2xl border border-primary/20 bg-gradient-to-r from-primary/14 to-warning/10 px-4 py-3.5 text-sm font-semibold text-foreground shadow-sm transition-all hover:border-primary/35 hover:shadow-[0_12px_30px_rgba(59,130,246,0.12)] active:scale-[0.98]"
           >
             <Plus className="h-4 w-4 flex-shrink-0" />
-            <span className="whitespace-nowrap font-medium">New Chat</span>
+            <span className="whitespace-nowrap">New Chat</span>
           </button>
         </div>
       )}
 
       {/* Navigation */}
-      <nav className={cn('space-y-0.5', open ? 'px-3 pt-2' : 'px-1.5 pt-2')}>
+      <nav className={cn('relative space-y-1.5', open ? 'px-4 pt-3 pr-5' : 'px-1.5 pt-3')}>
         {/* Collapsed-only: Expand button */}
         {!open && (
           <button
             onClick={onToggle}
-            className="w-full flex items-center justify-center p-2 rounded-lg hover:bg-accent text-muted-foreground hover:text-accent-foreground transition-colors"
+            className="flex h-11 w-full items-center justify-center rounded-2xl border border-border/60 bg-background/60 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
             title="Expand sidebar"
           >
-            <PanelLeftOpen className="h-4 w-4" />
+            <PanelLeftOpen className="h-[1.15rem] w-[1.15rem]" />
           </button>
         )}
         {/* Collapsed-only: New Chat */}
         {!open && (
           <button
             onClick={handleNewChat}
-            className="w-full flex items-center justify-center p-2 rounded-lg hover:bg-accent text-muted-foreground hover:text-accent-foreground transition-colors"
+            className="mt-1 flex h-11 w-full items-center justify-center rounded-2xl bg-primary/12 text-primary transition-colors hover:bg-primary/18"
             title="New chat"
           >
-            <Plus className="h-4 w-4" />
+            <Plus className="h-5 w-5" />
           </button>
         )}
         {navItems.map(({ path, label, icon: Icon }) => (
@@ -376,15 +372,15 @@ export default function Sidebar({ open, onToggle }) {
             key={path}
             onClick={() => navigate(path)}
             className={cn(
-              'w-full flex items-center gap-2 rounded-lg text-sm transition-all',
-              open ? 'px-3 py-2' : 'justify-center p-2',
+              'w-full flex items-center gap-2 rounded-2xl text-sm transition-all',
+              open ? 'px-3.5 py-2.5' : 'justify-center h-11',
               location.pathname === path
-                ? 'bg-accent text-accent-foreground font-medium shadow-sm'
+                ? 'bg-gradient-to-r from-primary/14 to-warning/10 text-foreground font-medium shadow-sm'
                 : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
             )}
             title={!open ? label : undefined}
           >
-            <Icon className="h-4 w-4 flex-shrink-0" />
+            <Icon className={cn('flex-shrink-0', open ? 'h-4 w-4' : 'h-[1.3rem] w-[1.3rem]')} />
             {open && <span className="whitespace-nowrap">{label}</span>}
           </button>
         ))}
@@ -392,39 +388,41 @@ export default function Sidebar({ open, onToggle }) {
 
       {/* Sessions List — only when expanded */}
       {open && (
-        <div className="flex-1 overflow-y-auto scrollbar-fade mt-3 px-3">
+        <div className="relative mt-4 flex-1 overflow-y-auto scrollbar-fade px-4 pb-4 pr-5">
           {/* Search bar */}
           {currentStudentSessions.length > 3 && (
-            <div className="relative mb-2">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <div className="relative mb-3">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search chats…"
-                className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border bg-background focus:outline-none focus:ring-1 focus:ring-ring/50"
+                className="w-full rounded-2xl border border-border/70 bg-background/80 py-2 pl-9 pr-3 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring/50"
               />
             </div>
           )}
 
           {pinnedSessions.length > 0 && (
             <>
-              <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest px-2.5 mb-1.5 flex items-center gap-1.5">
-                <Pin className="h-3 w-3" /> Pinned
+              <p className="mb-2 flex items-center gap-1.5 px-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+                <Pin className="h-3 w-3" /> Pinned Chats
               </p>
-              <div className="space-y-0.5 mb-3">
+              <div className="mb-4 space-y-1">
                 {pinnedSessions.map(renderSession)}
               </div>
             </>
           )}
 
-          <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest px-2.5 mb-1.5">
-            Recent Chats
+          <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+            Recent Conversations
           </p>
           {unpinnedSessions.length === 0 && pinnedSessions.length === 0 ? (
-            <p className="text-xs text-muted-foreground/60 px-2.5 py-2">No chats yet. Start a new conversation!</p>
+            <div className="rounded-2xl border border-dashed border-border/70 bg-background/55 px-4 py-5 text-center text-xs text-muted-foreground/70">
+              No conversations yet. Start a chat to build your Pathfinder history.
+            </div>
           ) : unpinnedSessions.length === 0 ? null : (
-            <div className="space-y-0.5">
+            <div className="space-y-1">
               {unpinnedSessions.map(renderSession)}
             </div>
           )}
@@ -436,11 +434,11 @@ export default function Sidebar({ open, onToggle }) {
         <div
           onMouseDown={handleMouseDown}
           className={cn(
-            'absolute top-0 right-0 w-1.5 h-full cursor-col-resize z-10 transition-colors',
+            'absolute top-0 right-0 z-10 h-full w-1.5 cursor-col-resize transition-colors',
             isResizing ? 'bg-primary/30' : 'hover:bg-primary/20'
           )}
         />
       )}
-    </div>
+    </aside>
   );
 }

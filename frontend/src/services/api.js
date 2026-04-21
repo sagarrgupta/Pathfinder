@@ -21,6 +21,68 @@ function withStudentId(path, studentId) {
  */
 export function chatSSE({ query, sessionId, studentId, files = [], replaceFilenames = [], reasoning = 'medium' }, callbacks) {
   const controller = new AbortController();
+  let sawTerminalEvent = false;
+  // `currentEventType` and `dataLines` must persist across calls to
+  // processSSEBuffer because large events (e.g. the final `done` payload
+  // with a full tool_call_log) are commonly split across TCP chunks.
+  // Spec: an event ends at a blank line; accumulate `data:` lines until
+  // then, and never drop `eventType` just because this chunk ended early.
+  let currentEventType = '';
+  let dataLines = [];
+
+  const dispatchEvent = () => {
+    if (!currentEventType || dataLines.length === 0) {
+      currentEventType = '';
+      dataLines = [];
+      return;
+    }
+    const raw = dataLines.join('\n');
+    currentEventType = ((type) => {
+      try {
+        const data = JSON.parse(raw);
+        if (type === 'progress') callbacks.onProgress?.(data);
+        else if (type === 'token') callbacks.onToken?.(data);
+        else if (type === 'done') {
+          sawTerminalEvent = true;
+          callbacks.onDone?.(data);
+        } else if (type === 'error') {
+          sawTerminalEvent = true;
+          callbacks.onError?.(data.error);
+        }
+      } catch {
+        // skip malformed JSON
+      }
+      return '';
+    })(currentEventType);
+    dataLines = [];
+  };
+
+  const processSSEBuffer = (chunk, { flush = false } = {}) => {
+    const delimiter = '\n';
+    const lines = chunk.split(delimiter);
+    const remainder = flush ? '' : (lines.pop() || '');
+
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r$/, '');
+      if (!line) {
+        // Blank line terminates an event per SSE spec.
+        dispatchEvent();
+        continue;
+      }
+      if (line.startsWith('event: ')) {
+        currentEventType = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        dataLines.push(line.slice(6));
+      }
+    }
+
+    if (flush) {
+      // Final flush: dispatch whatever we have, even without a trailing blank line.
+      dispatchEvent();
+    }
+
+    return remainder;
+  };
 
   const formData = new FormData();
   formData.append('query', query);
@@ -41,6 +103,10 @@ export function chatSSE({ query, sessionId, studentId, files = [], replaceFilena
       callbacks.onError?.(`Server error: ${response.status}`);
       return;
     }
+    if (!response.body) {
+      callbacks.onError?.('Streaming response body was unavailable.');
+      return;
+    }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -48,28 +114,19 @@ export function chatSSE({ query, sessionId, studentId, files = [], replaceFilena
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        buffer = processSSEBuffer(buffer, { flush: true });
+        // Some environments can close the stream after the final tokens even if
+        // the explicit terminal event is lost. Treat end-of-stream as completion
+        // so the UI does not remain stuck in the streaming state.
+        if (!sawTerminalEvent) {
+          callbacks.onDone?.({});
+        }
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      let eventType = '';
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          eventType = line.slice(7).trim();
-        } else if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6));
-            if (eventType === 'progress') callbacks.onProgress?.(data);
-            else if (eventType === 'token') callbacks.onToken?.(data);
-            else if (eventType === 'done') callbacks.onDone?.(data);
-            else if (eventType === 'error') callbacks.onError?.(data.error);
-          } catch {
-            // skip malformed JSON
-          }
-        }
-      }
+      buffer = processSSEBuffer(buffer);
     }
   }).catch((err) => {
     if (err.name !== 'AbortError') {
@@ -102,76 +159,42 @@ export async function uploadDocument(file, replace = false, studentId = null) {
   return response.json();
 }
 
-// ── Profile ─────────────────────────────────────────────────────
+// ── Student ─────────────────────────────────────────────────────
 
-export async function getProfiles() {
-  const response = await fetch(`${API_BASE}/profiles`);
-  if (!response.ok) throw new Error(`Failed to load profiles: ${response.status}`);
+export async function getStudents() {
+  const response = await fetch(`${API_BASE}/students`);
+  if (!response.ok) throw new Error(`Failed to load students: ${response.status}`);
   return response.json();
 }
 
-export async function createProfile(profile) {
-  const response = await fetch(`${API_BASE}/profiles`, {
+export async function createStudent(student) {
+  const response = await fetch(`${API_BASE}/students`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(profile),
+    body: JSON.stringify(student),
   });
-  if (!response.ok) throw new Error(`Failed to create profile: ${response.status}`);
+  if (!response.ok) throw new Error(`Failed to create student: ${response.status}`);
   return response.json();
 }
 
-export async function getProfile(studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile`, studentId));
-  if (!response.ok) throw new Error(`Failed to load profile: ${response.status}`);
+export async function getStudent(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/student`, studentId));
+  if (!response.ok) throw new Error(`Failed to load student: ${response.status}`);
   return response.json();
 }
 
-export async function updateProfile(field, value, studentId) {
-  const response = await fetch(`${API_BASE}/profile`, {
+export async function updateStudent(field, value, studentId) {
+  const response = await fetch(`${API_BASE}/student`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ field, value, student_id: studentId }),
   });
-  if (!response.ok) throw new Error(`Failed to update profile: ${response.status}`);
+  if (!response.ok) throw new Error(`Failed to update student: ${response.status}`);
   return response.json();
 }
 
-export async function deleteProfileEntity(label, name, studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile/entity/${label}/${name}`, studentId), {
-    method: 'DELETE',
-  });
-  if (!response.ok) throw new Error(`Failed to delete entity: ${response.status}`);
-  return response.json();
-}
-
-export async function updateProfileEntity(label, name, properties, studentId) {
-  const response = await fetch(`${API_BASE}/profile/entity`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label, name, properties, student_id: studentId }),
-  });
-  if (!response.ok) throw new Error(`Failed to update entity: ${response.status}`);
-  return response.json();
-}
-
-export async function addProfileText(text, studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile/text`, studentId), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  });
-  if (!response.ok) throw new Error(`Failed to add profile text: ${response.status}`);
-  return response.json();
-}
-
-export async function getProfileGraph(studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile/graph`, studentId));
-  if (!response.ok) throw new Error(`Failed to load graph: ${response.status}`);
-  return response.json();
-}
-
-export async function resetAllData(studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/profile/reset`, studentId), { method: 'DELETE' });
+export async function resetStudentData(studentId) {
+  const response = await fetch(withStudentId(`${API_BASE}/student/reset`, studentId), { method: 'DELETE' });
   if (!response.ok) throw new Error(`Failed to reset data: ${response.status}`);
   return response.json();
 }
@@ -179,20 +202,6 @@ export async function resetAllData(studentId) {
 export async function deleteAllDataEverywhere() {
   const response = await fetch(`${API_BASE}/settings/delete-all-data`, { method: 'DELETE' });
   if (!response.ok) throw new Error(`Failed to delete all data: ${response.status}`);
-  return response.json();
-}
-
-// ── Sessions ────────────────────────────────────────────────────
-
-export async function getSessions(studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/sessions`, studentId));
-  if (!response.ok) throw new Error(`Failed to load sessions: ${response.status}`);
-  return response.json();
-}
-
-export async function deleteSession(sessionId, studentId) {
-  const response = await fetch(withStudentId(`${API_BASE}/sessions/${sessionId}`, studentId), { method: 'DELETE' });
-  if (!response.ok) throw new Error(`Failed to delete session: ${response.status}`);
   return response.json();
 }
 
@@ -233,59 +242,5 @@ export async function getReplays(limit = 25) {
 export async function getReplay(replayId) {
   const response = await fetch(`${API_BASE}/replays/${encodeURIComponent(replayId)}`);
   if (!response.ok) throw new Error(`Failed to load replay: ${response.status}`);
-  return response.json();
-}
-
-export async function evaluateReplay(replayId) {
-  const response = await fetch(`${API_BASE}/replays/${encodeURIComponent(replayId)}/evaluate`);
-  if (!response.ok) throw new Error(`Failed to evaluate replay: ${response.status}`);
-  return response.json();
-}
-
-export async function evaluateRecentReplays(limit = 25, studentId = null) {
-  const base = `${API_BASE}/replays/evaluate/recent?limit=${encodeURIComponent(limit)}`;
-  const response = await fetch(withStudentId(base, studentId));
-  if (!response.ok) throw new Error(`Failed to evaluate recent replays: ${response.status}`);
-  return response.json();
-}
-
-export async function getEvalBenchmarks() {
-  const response = await fetch(`${API_BASE}/eval/benchmarks`);
-  if (!response.ok) throw new Error(`Failed to load benchmark sets: ${response.status}`);
-  return response.json();
-}
-
-export async function getEvalAnalytics(limit = 50, studentId = null) {
-  const base = `${API_BASE}/eval/analytics?limit=${encodeURIComponent(limit)}`;
-  const response = await fetch(withStudentId(base, studentId));
-  if (!response.ok) throw new Error(`Failed to load eval analytics: ${response.status}`);
-  return response.json();
-}
-
-// ── Saved Recommendations ──────────────────────────────────────
-
-export async function getRecommendations(studentId = null) {
-  const response = await fetch(withStudentId(`${API_BASE}/recommendations`, studentId));
-  if (!response.ok) throw new Error(`Failed to load recommendations: ${response.status}`);
-  return response.json();
-}
-
-export async function saveRecommendation(payload) {
-  const response = await fetch(`${API_BASE}/recommendations`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) throw new Error(`Failed to save recommendation: ${response.status}`);
-  return response.json();
-}
-
-export async function updateRecommendationOutcome(recommendationId, payload) {
-  const response = await fetch(`${API_BASE}/recommendations/${encodeURIComponent(recommendationId)}/outcome`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) throw new Error(`Failed to update recommendation outcome: ${response.status}`);
   return response.json();
 }

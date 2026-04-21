@@ -1,8 +1,9 @@
-"""DuckDuckGo search adapter (free, no API key needed).
+"""DuckDuckGo search provider — the no-API-key safety net.
 
-Uses the `ddgs` package (formerly `duckduckgo-search`).
-The sync DDGS client is wrapped with asyncio.to_thread so it
-doesn't block the event loop.
+Used last in the fallback chain so Pathfinder still has some web
+search capability even when no paid providers are configured. Uses
+the synchronous `ddgs` package; we run it in a worker thread to keep
+the event loop clear.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ log = logging.getLogger("pathfinder.search.duckduckgo")
 
 
 def _sync_search(query: str, max_results: int) -> list[dict[str, Any]]:
-    """Run the synchronous DDGS text search."""
+    """Blocking DDGS call — meant to run inside `asyncio.to_thread`."""
     from ddgs import DDGS
 
     with DDGS() as ddgs:
@@ -38,7 +39,7 @@ def _sync_search(query: str, max_results: int) -> list[dict[str, Any]]:
 
 
 async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
-    """Search using DuckDuckGo (last resort, always available)."""
+    """Async wrapper that shuttles the blocking DDGS call off the event loop."""
     query = normalize_query(query)
     max_results = clamp_max_results(max_results)
     if not query:

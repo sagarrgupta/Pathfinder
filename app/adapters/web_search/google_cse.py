@@ -1,4 +1,13 @@
-"""Google Custom Search Engine adapter."""
+"""Google Custom Search Engine (CSE) provider.
+
+Backed by the official CSE REST API. Needs two settings:
+- `GOOGLE_CSE_API_KEY`  — API key for the Google Custom Search project.
+- `GOOGLE_CSE_ID`       — the CSE identifier (which collection of sites
+                          to search over).
+
+The CSE doesn't emit relevance scores, so every hit comes back with
+`score=0.0` — ranking is implicit in the result order.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +25,7 @@ _GOOGLE_CSE_URL = "https://www.googleapis.com/customsearch/v1"
 
 
 async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
-    """Search using Google Custom Search Engine API."""
+    """Call the Google CSE REST API and normalize each hit."""
     query = normalize_query(query)
     max_results = clamp_max_results(max_results)
     if not query:

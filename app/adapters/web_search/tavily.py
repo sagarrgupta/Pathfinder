@@ -1,4 +1,10 @@
-"""Tavily AI search adapter."""
+"""Tavily web-search provider.
+
+Tavily's API is tuned for research-style queries (returns short
+extracts + relevance scores alongside each hit). Requires
+`TAVILY_API_KEY` in settings; raises `RuntimeError` if the key is
+missing so the fallback chain knows to skip to the next provider.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +18,11 @@ log = logging.getLogger("pathfinder.search.tavily")
 
     
 async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
-    """Search using Tavily AI Search API."""
+    """Call Tavily and return results in our normalized shape.
+
+    Each Tavily hit already carries a relevance `score` which we keep —
+    it helps the specialist rank citations inside the transcript.
+    """
     query = normalize_query(query)
     max_results = clamp_max_results(max_results)
     if not query:

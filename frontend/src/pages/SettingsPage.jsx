@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
-import { getSettings, updateSettings, getHealth, resetAllData, deleteAllDataEverywhere } from '@/services/api';
+import { getSettings, updateSettings, getHealth, resetStudentData, deleteAllDataEverywhere } from '@/services/api';
 import {
   Settings, Shield, Monitor, Server, Loader2,
-  CheckCircle2, XCircle, Trash2, AlertTriangle, X,
+  Trash2, AlertTriangle, X,
   Sun, Moon, SunMoon, Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils';
 const MODEL_KEY_LABELS = {
   text_llm: 'Text LLM',
   vision_llm: 'Vision LLM',
-  embedding: 'Embedding',
+  embeddings: 'Embeddings',
 };
 
 function formatModelKey(key) {
@@ -21,7 +21,7 @@ function formatModelKey(key) {
 
 /** Matches backend health: e.g. web_search is "configured" when keys are set, not "connected". */
 function isDependencyHealthy(status) {
-  return status === 'connected' || status === 'configured';
+  return status === 'connected' || status === 'configured' || status === 'fallback_only';
 }
 
 const THEME_OPTIONS = [
@@ -38,7 +38,7 @@ const REASONING_OPTIONS = [
 ];
 
 export default function SettingsPage() {
-  const { state, dispatch, refreshProfile, refreshProfiles } = useApp();
+  const { state, dispatch, refreshStudent, refreshStudents } = useApp();
   const toast = useToast();
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -51,8 +51,6 @@ export default function SettingsPage() {
         status,
       ])
     : [];
-  const connectedCount = dependencyPairs.filter(([, status]) => isDependencyHealthy(status)).length;
-  const runtimeReadiness = health ? Math.round((connectedCount / Math.max(dependencyPairs.length, 1)) * 100) : 0;
 
   useEffect(() => {
     loadData();
@@ -108,21 +106,34 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto scrollbar-fade">
-      <div className="max-w-2xl mx-auto p-6 space-y-6 animate-fade-in">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-fade">
+      <div className="mx-auto max-w-4xl space-y-6 p-6 animate-fade-in">
         {/* Header */}
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 ring-1 ring-primary/10 flex items-center justify-center">
-            <Settings className="h-7 w-7 text-primary" />
+        <div className="hero-panel px-6 py-7 sm:px-8">
+          <div className="mb-3 eyebrow">Product settings</div>
+          <div className="flex items-center gap-4">
+            <div className="flex h-14 w-14 items-center justify-center rounded-[22px] bg-gradient-to-br from-primary/20 via-primary/10 to-warning/15 ring-1 ring-primary/15">
+              <Settings className="h-7 w-7 text-primary" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
+              <p className="mt-0.5 text-sm text-muted-foreground">Control how Pathfinder looks, reasons, and connects to its local services.</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-            <p className="text-muted-foreground text-sm mt-0.5">Configure Pathfinder behavior and appearance</p>
+          <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="metric-tile">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Text Model</p>
+              <p className="mt-3 line-clamp-2 text-sm font-medium">{state.settings.models?.text_llm || 'Unknown'}</p>
+            </div>
+            <div className="metric-tile">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">Retrieval</p>
+              <p className="mt-3 text-sm font-medium">{state.settings.models?.retrieval || 'Unknown'}</p>
+            </div>
           </div>
         </div>
 
         {/* Appearance */}
-        <div className="rounded-xl border bg-card p-5">
+        <div className="section-card">
           <h2 className="font-semibold flex items-center gap-2 mb-4">
             <SunMoon className="h-4 w-4 text-primary" /> Appearance
           </h2>
@@ -153,7 +164,7 @@ export default function SettingsPage() {
         </div>
 
         {/* Guardrails */}
-        <div className="rounded-xl border bg-card p-5">
+        <div className="section-card">
           <h2 className="font-semibold flex items-center gap-2 mb-4">
             <Shield className="h-4 w-4 text-primary" /> Guardrails
           </h2>
@@ -199,7 +210,7 @@ export default function SettingsPage() {
         </div>
 
         {/* Models */}
-        <div className="rounded-xl border bg-card p-5">
+        <div className="section-card">
           <h2 className="font-semibold flex items-center gap-2 mb-4">
             <Monitor className="h-4 w-4 text-primary" /> Models
           </h2>
@@ -214,20 +225,16 @@ export default function SettingsPage() {
         </div>
 
         {(health || modelEntries.length > 0) && (
-          <div className="rounded-xl border bg-card p-5">
+          <div className="section-card">
             <h2 className="font-semibold flex items-center gap-2 mb-4">
-              <Zap className="h-4 w-4 text-primary" /> Runtime Readiness
+              <Zap className="h-4 w-4 text-primary" /> Runtime
             </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
-              <div className="rounded-lg border bg-muted/20 p-3">
-                <p className="text-xs text-muted-foreground mb-1">Readiness</p>
-                <p className="text-xl font-bold">{runtimeReadiness}%</p>
-              </div>
-              <div className="rounded-lg border bg-muted/20 p-3">
+            <div className="grid grid-cols-1 gap-3 mb-4 sm:grid-cols-2">
+              <div className="metric-tile">
                 <p className="text-xs text-muted-foreground mb-1">Retrieval Mode</p>
                 <p className="text-sm font-medium">{state.settings.models?.retrieval || 'Unknown'}</p>
               </div>
-              <div className="rounded-lg border bg-muted/20 p-3">
+              <div className="metric-tile">
                 <p className="text-xs text-muted-foreground mb-1">Active Text Model</p>
                 <p className="text-sm font-medium break-words">{state.settings.models?.text_llm || 'Unknown'}</p>
               </div>
@@ -235,10 +242,13 @@ export default function SettingsPage() {
             {dependencyPairs.length > 0 && (
               <div className="space-y-2">
                 {dependencyPairs.map(([name, status]) => (
-                  <div key={name} className="flex items-center justify-between text-sm rounded-lg border bg-muted/20 px-3 py-2">
-                    <span className="font-medium">{name}</span>
+                  <div key={name} className="flex items-center justify-between rounded-2xl border border-border/60 bg-background/70 px-3.5 py-3 text-sm shadow-sm">
+                    <div>
+                      <p className="font-medium">{name}</p>
+                      <p className="text-xs text-muted-foreground">Runtime dependency</p>
+                    </div>
                     <span className={cn(
-                      'px-2 py-0.5 rounded-full text-xs font-medium',
+                      'rounded-full px-2.5 py-1 text-xs font-semibold',
                       isDependencyHealthy(status)
                         ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
                         : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
@@ -254,13 +264,13 @@ export default function SettingsPage() {
 
         {/* System Health */}
         {health && (
-          <div className="rounded-xl border bg-card p-5">
+          <div className="section-card">
             <h2 className="font-semibold flex items-center gap-2 mb-4">
               <Server className="h-4 w-4 text-primary" /> System Health
             </h2>
             <div className="space-y-0">
               {dependencyPairs.map(([name, status]) => (
-                <div key={name} className="flex items-center justify-between py-3 border-b last:border-0 border-border/50">
+                <div key={name} className="flex items-center justify-between border-b border-border/50 py-3 last:border-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">{name}</span>
                     {name === 'Neo4j' && (
@@ -306,7 +316,7 @@ export default function SettingsPage() {
         )}
 
         {/* Version Info */}
-        <div className="rounded-xl border bg-card p-5">
+        <div className="section-card">
           <h2 className="font-semibold flex items-center gap-2 mb-4">
             <Zap className="h-4 w-4 text-primary" /> About
           </h2>
@@ -327,7 +337,7 @@ export default function SettingsPage() {
         </div>
 
         {/* Danger Zone */}
-        <div className="rounded-xl border-2 border-destructive/20 bg-card p-5">
+        <div className="rounded-[24px] border-2 border-destructive/20 bg-card/90 p-5 shadow-sm">
           <h2 className="font-semibold flex items-center gap-2 mb-4 text-destructive">
             <AlertTriangle className="h-4 w-4" /> Danger Zone
           </h2>
@@ -335,7 +345,7 @@ export default function SettingsPage() {
             <div>
               <p className="text-sm font-medium">Reset All Data</p>
               <p className="text-xs text-muted-foreground">
-                Permanently delete your profile, all documents, courses, skills, and knowledge graph data.
+                Permanently delete this student's documents, entities, and graph data.
               </p>
             </div>
             <button
@@ -348,9 +358,9 @@ export default function SettingsPage() {
           </div>
           <div className="flex items-center justify-between pt-4 border-t border-destructive/20">
             <div>
-              <p className="text-sm font-medium">Delete All Data (All Profiles)</p>
+              <p className="text-sm font-medium">Delete All Data (All Students)</p>
               <p className="text-xs text-muted-foreground">
-                Permanently delete every profile, all Neo4j graph data, and all chat history across profiles.
+                Permanently delete every student, all Neo4j graph data, and all chat history.
               </p>
             </div>
             <button
@@ -371,8 +381,8 @@ export default function SettingsPage() {
           onClose={() => setShowResetModal(false)}
           onSuccess={async (msg) => {
             dispatch({ type: 'CLEAR_STUDENT_DATA', payload: state.activeStudentId });
-            await refreshProfiles().catch(() => {});
-            await refreshProfile(state.activeStudentId).catch(() => {});
+            await refreshStudents().catch(() => {});
+            await refreshStudent(state.activeStudentId).catch(() => {});
             toast.success(msg);
           }}
         />
@@ -383,7 +393,7 @@ export default function SettingsPage() {
           onClose={() => setShowDeleteAllModal(false)}
           onSuccess={async (msg) => {
             dispatch({ type: 'CLEAR_ALL_LOCAL_DATA' });
-            await refreshProfiles().catch(() => {});
+            await refreshStudents().catch(() => {});
             toast.success(msg);
           }}
         />
@@ -397,14 +407,13 @@ export default function SettingsPage() {
 function ResetModal({ studentId, onClose, onSuccess }) {
   const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState('');
-  const backdropRef = useRef(null);
 
   const handleReset = async () => {
     setIsResetting(true);
     setError('');
     try {
-      await resetAllData(studentId);
-      onSuccess('All profile data has been reset successfully.');
+      await resetStudentData(studentId);
+      onSuccess('All student data has been reset successfully.');
       onClose();
     } catch (err) {
       setError(`Reset failed: ${err.message}`);
@@ -413,101 +422,40 @@ function ResetModal({ studentId, onClose, onSuccess }) {
     }
   };
 
-  const handleBackdropClick = (e) => {
-    if (e.target === backdropRef.current) onClose();
-  };
-
-  useEffect(() => {
-    const handleKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
-
   return (
-    <div
-      ref={backdropRef}
-      onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
-    >
-      <div className="bg-card border rounded-2xl shadow-2xl max-w-md w-full mx-4 animate-fade-in-up">
-        {/* Header */}
-        <div className="flex items-center justify-between p-5 pb-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
-              <AlertTriangle className="h-5 w-5 text-destructive" />
-            </div>
-            <h3 className="text-lg font-bold">Reset All Data</h3>
-          </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="p-5 space-y-4">
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            This action will <strong className="text-destructive">permanently delete</strong> all of the following:
-          </p>
-
-          <ul className="text-sm space-y-2 pl-1">
-            {[
-              'Your student profile and personal information',
-              'All uploaded documents and extracted text',
-              'Courses, skills, goals, experience, and other entities',
-              'Entire knowledge graph data',
-            ].map((text, i) => (
-              <li key={i} className="flex items-center gap-2.5 text-muted-foreground">
-                <span className="w-1.5 h-1.5 rounded-full bg-destructive flex-shrink-0" />
-                {text}
-              </li>
-            ))}
-          </ul>
-
-          <div className="p-3 rounded-lg bg-destructive/5 border border-destructive/20">
-            <p className="text-xs text-destructive font-medium flex items-center gap-1.5">
-              <AlertTriangle className="h-3 w-3 flex-shrink-0" />
-              This action cannot be undone.
-            </p>
-          </div>
-
-          {error && (
-            <p className="text-sm text-destructive">{error}</p>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="flex justify-end gap-2 p-5 pt-0">
-          <button
-            onClick={onClose}
-            className="px-4 py-2.5 text-sm rounded-lg border hover:bg-accent transition-colors font-medium"
-          >
-            No
-          </button>
-          <button
-            onClick={handleReset}
-            disabled={isResetting}
-            className="px-4 py-2.5 text-sm rounded-lg bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-40 transition-all flex items-center gap-1.5 font-medium active:scale-95"
-          >
-            {isResetting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-            {isResetting ? 'Deleting...' : 'Yes'}
-          </button>
-        </div>
-      </div>
-    </div>
+    <DangerModal
+      title="Reset All Data"
+      intro={(
+        <>
+          This action will <strong className="text-destructive">permanently delete</strong> all of the following:
+        </>
+      )}
+      items={[
+        'This student node and its stored properties',
+        'All uploaded documents and extracted text',
+        'All sections, entities, fields, and relationships',
+        'The complete student graph for this student id',
+      ]}
+      error={error}
+      isSubmitting={isResetting}
+      confirmLabel="Yes"
+      pendingLabel="Deleting..."
+      onClose={onClose}
+      onConfirm={handleReset}
+    />
   );
 }
 
 function DeleteAllModal({ onClose, onSuccess }) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState('');
-  const backdropRef = useRef(null);
 
   const handleDeleteAll = async () => {
     setIsDeleting(true);
     setError('');
     try {
       await deleteAllDataEverywhere();
-      onSuccess('All profiles, graph data, and chats have been deleted.');
+      onSuccess('All students, graph data, and chats have been deleted.');
       onClose();
     } catch (err) {
       setError(`Delete all failed: ${err.message}`);
@@ -516,6 +464,43 @@ function DeleteAllModal({ onClose, onSuccess }) {
     }
   };
 
+  return (
+    <DangerModal
+      title="Delete All Data"
+      intro={(
+        <>
+          This will permanently delete <strong className="text-destructive">everything for all students</strong>:
+        </>
+      )}
+      items={[
+        'All student records',
+        'All Neo4j nodes and relationships',
+        'All persisted chat history',
+        'All uploaded documents and extracted entities',
+      ]}
+      error={error}
+      isSubmitting={isDeleting}
+      confirmLabel="Yes, Delete All"
+      pendingLabel="Deleting..."
+      onClose={onClose}
+      onConfirm={handleDeleteAll}
+    />
+  );
+}
+
+function DangerModal({
+  title,
+  intro,
+  items,
+  error,
+  isSubmitting,
+  confirmLabel,
+  pendingLabel,
+  onClose,
+  onConfirm,
+}) {
+  const backdropRef = useRef(null);
+
   const handleBackdropClick = (e) => {
     if (e.target === backdropRef.current) onClose();
   };
@@ -532,13 +517,16 @@ function DeleteAllModal({ onClose, onSuccess }) {
       onClick={handleBackdropClick}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
     >
-      <div className="bg-card border rounded-2xl shadow-2xl max-w-md w-full mx-4 animate-fade-in-up">
+      <div className="hero-panel mx-4 w-full max-w-md animate-fade-in-up border-destructive/20">
         <div className="flex items-center justify-between p-5 pb-0">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-destructive/15 to-destructive/5 ring-1 ring-destructive/20">
               <AlertTriangle className="h-5 w-5 text-destructive" />
             </div>
-            <h3 className="text-lg font-bold">Delete All Data</h3>
+            <div>
+              <p className="eyebrow mb-1 text-destructive/80">Danger zone</p>
+              <h3 className="text-lg font-bold">{title}</h3>
+            </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
             <X className="h-5 w-5" />
@@ -546,23 +534,16 @@ function DeleteAllModal({ onClose, onSuccess }) {
         </div>
 
         <div className="p-5 space-y-4">
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            This will permanently delete <strong className="text-destructive">everything for all profiles</strong>:
-          </p>
-          <ul className="text-sm space-y-2 pl-1">
-            {[
-              'All student profiles',
-              'All Neo4j nodes and relationships',
-              'All persisted chat history',
-              'All uploaded documents and extracted entities',
-            ].map((text, i) => (
+          <p className="text-sm text-muted-foreground leading-relaxed">{intro}</p>
+          <ul className="space-y-2 rounded-2xl border border-destructive/15 bg-background/75 p-3 text-sm">
+            {items.map((text, i) => (
               <li key={i} className="flex items-center gap-2.5 text-muted-foreground">
-                <span className="w-1.5 h-1.5 rounded-full bg-destructive flex-shrink-0" />
+                <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-destructive" />
                 {text}
               </li>
             ))}
           </ul>
-          <div className="p-3 rounded-lg bg-destructive/5 border border-destructive/20">
+          <div className="rounded-2xl border border-destructive/20 bg-destructive/5 p-3">
             <p className="text-xs text-destructive font-medium flex items-center gap-1.5">
               <AlertTriangle className="h-3 w-3 flex-shrink-0" />
               This action cannot be undone.
@@ -579,12 +560,12 @@ function DeleteAllModal({ onClose, onSuccess }) {
             No
           </button>
           <button
-            onClick={handleDeleteAll}
-            disabled={isDeleting}
+            onClick={onConfirm}
+            disabled={isSubmitting}
             className="px-4 py-2.5 text-sm rounded-lg bg-destructive text-destructive-foreground hover:opacity-90 disabled:opacity-40 transition-all flex items-center gap-1.5 font-medium active:scale-95"
           >
-            {isDeleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-            {isDeleting ? 'Deleting...' : 'Yes, Delete All'}
+            {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+            {isSubmitting ? pendingLabel : confirmLabel}
           </button>
         </div>
       </div>

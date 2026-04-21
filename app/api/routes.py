@@ -1,48 +1,44 @@
-"""API endpoints for Pathfinder.
+"""HTTP endpoints the frontend and MCP clients talk to.
 
-All routes prefixed with /api/v1 (set in main.py).
+All routes are mounted under `/api/v1` (see `main.py`). The endpoints
+fall into five rough groups:
+
+- `/chat`              : the big one — accepts a user message + optional
+                         uploaded files and streams the whole LangGraph
+                         response back as Server-Sent Events (SSE). Live
+                         progress, streamed answer tokens, and the final
+                         metadata payload all flow over one connection.
+- `/students`          : CRUD for local student profiles.
+- `/documents`         : upload + duplicate-check before ingestion.
+- `/student`, `/student/graph`, `/student/reset`:
+                         read/write the knowledge graph for one student.
+- `/replays`           : list and fetch saved conversation replays
+                         (from `app.services.replay_store`) — used by
+                         the debug / evaluation views.
+- `/settings`, `/health`:
+                         app-level toggles and dependency status.
+
+This module deliberately does not own any LLM or graph logic — it only
+glues HTTP input to the LangGraph workflow and the graph adapters.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi import Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.adapters.neo4j.graph_store import (
-    create_student,
-    delete_document_cascade,
-    delete_entity_for_student,
-    delete_entity,
-    ensure_student,
-    get_student,
-    find_document_by_filename,
-    get_full_profile,
-    get_graph_data,
-    list_students,
-    list_saved_recommendations,
-    reset_student_data,
-    reset_all_data,
-    run_cypher,
-    store_memory_item,
-    update_saved_recommendation_outcome,
-    update_entity,
-    update_student,
-)
+from app.adapters.neo4j._sanitize import sanitize_neo4j_value
+from app.adapters.neo4j.graphDB import GraphDB
 from app.config.settings import settings
-from app.core.graph import get_compiled_graph
-from app.core.memory import reset_checkpointer_storage
-from app.services.runtime_session import build_chat_runtime_session, get_dependency_status
-from app.services.long_context import build_long_context_payload, normalize_long_context_summary
-from app.services.profile_text import process_free_text
-from app.services.consolidation import maybe_consolidate_memory
-from app.services.background_jobs import get_background_status
-from app.services.execution_registry import get_active_retrieval_strategy, get_active_text_model
+from app.core.checkpointer import reset_checkpointer_storage
+from app.core.workflow import get_compiled_workflow
 from app.services.replay_store import (
     build_replay_artifact,
     delete_all_replay_artifacts,
@@ -51,130 +47,90 @@ from app.services.replay_store import (
     list_replay_artifacts,
     save_replay_artifact,
 )
-from app.services.replay_eval import evaluate_recent_replays, evaluate_replay_by_id
-from app.services.decision_memory import persist_decision_record
-from app.services.eval_analytics import build_eval_analytics, list_benchmark_sets
 from app.schemas.models import (
-    ChatResponse,
     DocumentUploadResponse,
-    EntityUpdate,
     GraphDataResponse,
     HealthResponse,
-    ProfileCreate,
-    ProfileInfo,
-    ProfileResponse,
-    ProfileTextInput,
-    ProfileUpdate,
+    StudentCreate,
+    StudentInfo,
+    StudentResponse,
+    StudentUpdate,
     ReplayArtifactInfo,
-    EvalAnalyticsResponse,
-    EvalBenchmarkInfo,
-    ReplayEvaluationBatch,
-    ReplayEvaluationInfo,
-    SessionInfo,
-    SavedRecommendationCreate,
-    SavedRecommendationInfo,
-    SavedRecommendationOutcomeUpdate,
     SettingsResponse,
     SettingsUpdate,
 )
+from app.tools.graph_tools import get_driver as get_graph_driver
 from app.utils.ids import generate_session_id, generate_student_id
+from app.utils.progress import (
+    normalize_progress_entry,
+    reset_live_emitter,
+    set_live_emitter,
+)
+from app.utils.runtime_utils import infer_method
 
 log = logging.getLogger("pathfinder.api")
 
 router = APIRouter()
 
-
-def _metadata_dict(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    if isinstance(value, str) and value.strip():
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            return {}
-    return {}
+_TOKEN_CHUNK_SIZE = 120
+_DEPENDENCY_STATUS_TTL_SECONDS = 15.0
+_dependency_status_cache: dict[str, Any] = {"timestamp": 0.0, "payload": None}
 
 
-def _profile_info_from_student(student: dict[str, Any]) -> ProfileInfo:
-    """Normalize a raw student record into the API response shape."""
+def _student_info(student: dict[str, Any]) -> StudentInfo:
+    """Convert a raw Neo4j student record into the `StudentInfo` wire shape.
+
+    Splits out the well-known fields and lets any leftover scalar
+    properties ride through as extras — `StudentInfo` is configured to
+    accept them so new student attributes can appear in the list view
+    without touching this code.
+    """
     extra = {
         k: v for k, v in student.items()
-        if k not in {"id", "name", "created_at", "updated_at", "completeness",
-                      "long_context_summary", "long_context_notes"}
+        if k not in {"id", "name", "created_at", "updated_at",
+                      "long_context"}
         and v is not None and str(v).strip()
     }
-    return ProfileInfo(
+    return StudentInfo(
         student_id=student.get("id", ""),
-        name=student.get("name", "Profile"),
+        name=student.get("name", "Student"),
         created_at=student.get("created_at"),
         updated_at=student.get("updated_at"),
-        completeness=float(student.get("completeness", 0.0) or 0.0),
         **extra,
     )
 
 
-def _saved_recommendation_info_from_record(
-    record: dict[str, Any],
-    *,
-    fallback_student_id: str,
-    default_title: str | None = None,
-    default_recommendation_type: str | None = None,
-    default_actions: list[str] | None = None,
-    default_source_session_id: str | None = None,
-    default_source_query: str | None = None,
-) -> SavedRecommendationInfo:
-    """Normalize a stored memory record into a saved recommendation response."""
-    metadata = _metadata_dict(record.get("metadata"))
-    status = metadata.get("status", "active")
-    return SavedRecommendationInfo(
-        id=record.get("id", ""),
-        student_id=record.get("student_id", fallback_student_id),
-        title=metadata.get("title") or default_title or record.get("summary", "Saved recommendation"),
-        summary=record.get("summary", ""),
-        recommendation_type=default_recommendation_type or str(record.get("memory_type", "saved_plan")).replace("saved_", ""),
-        actions=metadata.get("actions", default_actions or []),
-        source_session_id=metadata.get("source_session_id", default_source_session_id),
-        source_query=metadata.get("source_query", default_source_query),
-        created_at=record.get("created_at"),
-        status=status,
-        next_review_at=metadata.get("next_review_at"),
-        follow_up_prompt=metadata.get("follow_up_prompt"),
-        outcome_status=metadata.get("outcome_status", status),
-        outcome_notes=metadata.get("outcome_notes"),
-        outcome_updated_at=metadata.get("outcome_updated_at"),
-        metadata=metadata,
-    )
+async def _graph_db() -> GraphDB:
+    """Build a `GraphDB` bound to the shared Neo4j driver for this process."""
+    return GraphDB(await get_graph_driver())
 
 
-def _parse_replace_filenames(value: str) -> set[str]:
-    """Parse a comma-separated replacement list into unique filenames."""
-    return {name.strip() for name in value.split(",") if name.strip()}
+async def _ensure_student(student_id: str) -> dict[str, Any]:
+    """Make sure a `Student` node exists for this id — cheap upsert.
+
+    Called at the top of every route that needs a student so that a
+    fresh `student_id` from the client auto-creates a profile on first
+    use instead of 404'ing.
+    """
+    return await (await _graph_db()).update_student(student_id=student_id, updates={})
 
 
-def _validate_upload_filename(filename: str | None) -> str:
-    """Validate that an uploaded filename exists and matches allowed types."""
+async def _read_upload_file(file: UploadFile) -> dict[str, Any]:
+    """Read the upload into memory and enforce size + extension limits.
+
+    Returns a plain dict so downstream code (ingestion pipeline) doesn't
+    hold onto the FastAPI `UploadFile` object beyond the request scope.
+    """
+    filename = str(file.filename or "").strip()
     if not filename:
         raise HTTPException(400, "Filename is required")
     ext = os.path.splitext(filename)[1].lower()
     if ext not in settings.ALLOWED_FILE_TYPES:
         allowed = ", ".join(settings.ALLOWED_FILE_TYPES)
         raise HTTPException(400, f"Unsupported file type '{ext}'. Allowed: {allowed}")
-    return filename
-
-
-def _enforce_upload_size(content: bytes, *, filename: str) -> None:
-    """Reject uploads larger than the configured file-size limit."""
+    content = await file.read()
     if len(content) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
         raise HTTPException(413, f"File {filename} exceeds {settings.MAX_FILE_SIZE_MB}MB limit")
-
-
-async def _read_upload_file(file: UploadFile) -> dict[str, Any]:
-    """Read and validate one FastAPI uploaded file."""
-    filename = _validate_upload_filename(file.filename)
-    content = await file.read()
-    _enforce_upload_size(content, filename=filename)
     return {
         "filename": filename,
         "content": content,
@@ -183,38 +139,89 @@ async def _read_upload_file(file: UploadFile) -> dict[str, Any]:
     }
 
 
-def _profile_confidence(profile: dict[str, Any]) -> float:
-    """Estimate profile confidence from resolved candidate facts first."""
-    candidate_facts = profile.get("candidate_fact_ledger", [])
-    resolved_candidates = [item for item in candidate_facts if item.get("status") == "resolved"]
-    confidence_values = [float(item.get("confidence", 0.0) or 0.0) for item in resolved_candidates] or [
-        float(item.get("confidence", 0.0) or 0.0) for item in candidate_facts
-    ]
-    return round(sum(confidence_values) / len(confidence_values), 2) if confidence_values else 0.0
-
-
-def _profile_memory_overview(profile: dict[str, Any]) -> dict[str, Any]:
-    """Build the profile memory summary returned to the frontend."""
-    candidate_facts = profile.get("candidate_fact_ledger", [])
-    memory_items = profile.get("memory_items", [])
-    evidence_items = profile.get("evidence", [])
-    fact_summary = profile.get("fact_summary", {})
-    return {
-        "support_records": len(candidate_facts) + len(memory_items),
-        "evidence_records": len(evidence_items),
-        "breakdown": {
-            "candidate_facts": len(candidate_facts),
-            "memory_items": len(memory_items),
-            "evidence": len(evidence_items),
-        },
-        "confirmed": int(fact_summary.get("confirmed_candidate_facts", 0) or 0),
-        "reinforced": int(fact_summary.get("reinforced_candidate_facts", 0) or 0),
-        "inferred": int(fact_summary.get("inferred_candidate_facts", 0) or 0),
-    }
-
-# ── Runtime state ────────────────────────────────────────────────
+# Process-level toggles — mutated by the /settings endpoint and read by
+# /chat on every turn. They start from `settings` but can be changed at
+# runtime without a restart.
 _topic_guard_enabled: bool = settings.TOPIC_GUARD_ENABLED
 _reasoning: str = "medium"
+
+
+def _normalize_reasoning(reasoning: str) -> str:
+    """Coerce a user-provided reasoning label to lowercase, default "medium"."""
+    return str(reasoning or "medium").strip().lower() or "medium"
+
+
+async def _get_dependency_status(*, force_refresh: bool = False) -> dict[str, str]:
+    """Probe Neo4j, LM Studio, Ollama, and web search and return a status map.
+
+    Result is cached for `_DEPENDENCY_STATUS_TTL_SECONDS` so the chat
+    endpoint doesn't re-ping every backing service on each message. The
+    `/health` endpoint passes `force_refresh=True` to always see live
+    state.
+    """
+    cached_payload = _dependency_status_cache.get("payload")
+    cached_at = float(_dependency_status_cache.get("timestamp", 0.0) or 0.0)
+    cache_age = time.monotonic() - cached_at
+    if (
+        not force_refresh
+        and isinstance(cached_payload, dict)
+        and cache_age < _DEPENDENCY_STATUS_TTL_SECONDS
+    ):
+        return dict(cached_payload)
+
+    neo4j_status = "unknown"
+    llm_status = "unknown"
+    embeddings_status = "unknown"
+
+    try:
+        driver = await get_graph_driver()
+        async with driver.session() as session:
+            await session.run("RETURN 1")
+        neo4j_status = "connected"
+    except Exception:
+        neo4j_status = "disconnected"
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            try:
+                resp = await client.get(f"{settings.LLM_BASE_URL.replace('/v1', '')}/v1/models")
+                if resp.status_code == 200:
+                    payload = resp.json() if resp.content else {}
+                    models = payload.get("data", []) if isinstance(payload, dict) else []
+                    llm_status = "connected" if models else "no_model_loaded"
+                else:
+                    llm_status = "error"
+            except Exception:
+                llm_status = "disconnected"
+
+            try:
+                resp = await client.get(f"{settings.OLLAMA_URL}/api/tags")
+                embeddings_status = "connected" if resp.status_code == 200 else "error"
+            except Exception:
+                embeddings_status = "disconnected"
+    except Exception:
+        llm_status = "disconnected"
+        embeddings_status = "disconnected"
+
+    web_search_status = "configured" if any(
+        [
+            settings.TAVILY_API_KEY,
+            settings.GOOGLE_CSE_API_KEY,
+            settings.BRAVE_API_KEY,
+        ]
+    ) else "fallback_only"
+
+    payload = {
+        "neo4j": neo4j_status,
+        "llm": llm_status,
+        "embeddings": embeddings_status,
+        "web_search": web_search_status,
+    }
+    _dependency_status_cache["timestamp"] = time.monotonic()
+    _dependency_status_cache["payload"] = dict(payload)
+    return payload
 
 
 # ── Chat (SSE Streaming) ────────────────────────────────────────
@@ -229,109 +236,176 @@ async def chat(
     replace_filenames: str = Form(""),
     reasoning: str = Form("medium"),
 ):
-    """Main chat endpoint with SSE streaming."""
+    """Primary chat endpoint — runs the full LangGraph and streams SSE events.
+
+    Returns a `text/event-stream` that carries three event types:
+    `progress` (live status per node), `token` (chunks of the final
+    answer), and `done` (the final metadata payload). On the server
+    side, a background task drives LangGraph while the response
+    generator drains a queue of events — that lets progress messages
+    reach the browser while the graph is still executing.
+    """
     resolved_student_id = await _resolve_student_id(student_id)
     if not session_id:
         session_id = generate_session_id()
     files = list(files) if isinstance(files, list) else []
+    graph_db = await _graph_db()
 
-    # Parse replace filenames (comma-separated list of filenames to replace)
-    replace_set = _parse_replace_filenames(replace_filenames)
+    replace_set = {name.strip() for name in replace_filenames.split(",") if name.strip()}
 
-    # Delete existing documents that are being replaced
+    # Replaces on re-upload — deletes the old document (and its chunks)
+    # so ingestion doesn't pile up duplicates for the same filename.
     for fname in replace_set:
-        existing = await find_document_by_filename(fname, resolved_student_id)
+        existing = await graph_db.find_document_by_filename(
+            student_id=resolved_student_id,
+            filename=fname,
+        )
         if existing and existing.get("id"):
-            await delete_document_cascade(existing["id"], resolved_student_id)
+            await graph_db.delete_document_cascade(document_id=existing["id"])
             log.info("Chat: replaced existing document before re-upload: %s", fname)
 
-    # Read uploaded files
     file_data = [await _read_upload_file(upload) for upload in files]
 
     async def event_stream():
+        # One queue carries every outbound SSE event. Using a single queue
+        # lets us interleave live progress (pushed from inside nodes via
+        # the progress emitter) with the final token/done events (pushed
+        # after the graph finishes). `None` is the close-stream sentinel.
+        outbound: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
+
+        def push_progress(entry: dict[str, str]) -> None:
+            payload = normalize_progress_entry(entry, fallback_stage="Working")
+            try:
+                outbound.put_nowait(("progress", payload))
+            except Exception:
+                pass
+
+        live_token = set_live_emitter(push_progress)
+
+        async def run_graph() -> None:
+            try:
+                graph = await get_compiled_workflow()
+                turn_reasoning = _normalize_reasoning(reasoning if str(reasoning or "").strip() else _reasoning)
+                dependency_status = await _get_dependency_status()
+                runtime_snapshot = {
+                    "session_id": session_id,
+                    "student_id": resolved_student_id,
+                    "selected_text_model": settings.LLM_MODEL,
+                    "reasoning": turn_reasoning,
+                    "dependency_status": dependency_status,
+                }
+                initial_state = {
+                    "messages": [("human", query)],
+                    "query": query,
+                    "files": file_data,
+                    "session_id": session_id,
+                    "student_id": resolved_student_id,
+                    "topic_guard_enabled": _topic_guard_enabled,
+                    "reasoning": turn_reasoning,
+                    "step_progress": [],
+                }
+                config = {
+                    "configurable": {"thread_id": f"{resolved_student_id}:{session_id}"},
+                    "recursion_limit": 15,
+                }
+
+                final_state: dict[str, Any] = {}
+
+                async for event in graph.astream(initial_state, config=config):
+                    for _node_name, state_update in event.items():
+                        final_state.update(state_update)
+
+                final_answer = str(final_state.get("final_answer", "") or "I couldn't generate a response.")
+
+                for start in range(0, len(final_answer), _TOKEN_CHUNK_SIZE):
+                    chunk = final_answer[start : start + _TOKEN_CHUNK_SIZE]
+                    outbound.put_nowait(("token", {"content": chunk}))
+
+                latest_ingestion = dict(final_state.get("latest_ingestion_result", {}) or {})
+                latest_query_ingestion = dict(final_state.get("latest_query_ingestion_result", {}) or {})
+                done_payload = {
+                    "session_id": session_id,
+                    "student_id": resolved_student_id,
+                    "citations": final_state.get("citations", []),
+                    "method": infer_method(final_state),
+                    "dependency_status": dependency_status,
+                    "processing_issues": final_state.get("processing_issues", []),
+                    "stop_reason": final_state.get("stop_reason", ""),
+                    "selected_specialist": final_state.get("selected_specialist", ""),
+                    "routing_scores": final_state.get("routing_scores", {}),
+                    "routing_reason": final_state.get("routing_reason", ""),
+                    "tool_call_log": final_state.get("tool_call_log", []),
+                    "specialist_output": final_state.get("specialist_output", {}),
+                    "session_context": str(final_state.get("session_context", "") or ""),
+                    "long_context": str(final_state.get("long_context", "") or ""),
+                    "document_ingestion": latest_ingestion,
+                    "query_ingestion": latest_query_ingestion,
+                    "runtime_snapshot": runtime_snapshot,
+                }
+                try:
+                    artifact = build_replay_artifact(
+                        query=query,
+                        done_payload=done_payload,
+                        final_state=final_state,
+                        student_id=resolved_student_id,
+                        session_id=session_id,
+                    )
+                    saved_artifact = await asyncio.to_thread(save_replay_artifact, artifact)
+                    done_payload["replay_id"] = saved_artifact.get("id", "")
+                except Exception as exc:
+                    log.warning("Failed to persist replay artifact for session %s: %s", session_id, exc)
+                outbound.put_nowait(("done", done_payload))
+
+            except Exception as exc:
+                log.error("Chat error: %s", exc, exc_info=True)
+                outbound.put_nowait(("error", {"error": str(exc)}))
+            finally:
+                outbound.put_nowait(None)
+
+        graph_task = asyncio.create_task(run_graph())
         try:
-            graph = await get_compiled_graph()
-            runtime_session = await build_chat_runtime_session(
-                query=query,
-                session_id=session_id,
-                student_id=resolved_student_id,
-                files=file_data,
-                topic_guard_enabled=_topic_guard_enabled,
-                reasoning=(reasoning if str(reasoning or "").strip() else _reasoning),
-            )
-            initial_state = runtime_session.build_initial_state()
-            config = runtime_session.build_graph_config()
-
-            # Stream graph execution
-            last_progress_count = 0
-            final_state = {}
-
-            async for event in graph.astream(initial_state, config=config):
-                # event is a dict {node_name: state_update}
-                for node_name, state_update in event.items():
-                    final_state.update(state_update)
-
-                    # Emit new progress messages
-                    progress = state_update.get("step_progress", [])
-                    if len(progress) > last_progress_count:
-                        for msg in progress[last_progress_count:]:
-                            yield f"event: progress\ndata: {json.dumps({'node': node_name, 'message': msg})}\n\n"
-                        last_progress_count = len(progress)
-
-            # Emit final answer
-            final_answer = final_state.get("final_answer", "I couldn't generate a response.")
-
-            # Stream tokens (simulate word-by-word for UX)
-            words = final_answer.split(" ")
-            for word in words:
-                yield f"event: token\ndata: {json.dumps({'content': word + ' '})}\n\n"
-
-            # Done event
-            done_payload = runtime_session.build_done_payload(final_state)
-            try:
-                await persist_decision_record(
-                    query=query,
-                    final_state=final_state,
-                    done_payload=done_payload,
-                    student_id=resolved_student_id,
-                    session_id=session_id,
-                )
-            except Exception as exc:
-                log.warning("Failed to persist decision record for session %s: %s", session_id, exc)
-            try:
-                artifact = build_replay_artifact(
-                    query=query,
-                    done_payload=done_payload,
-                    final_state=final_state,
-                    student_id=resolved_student_id,
-                    session_id=session_id,
-                )
-                saved_artifact = save_replay_artifact(artifact)
-                done_payload["replay_id"] = saved_artifact.get("id", "")
-            except Exception as exc:
-                log.warning("Failed to persist replay artifact for session %s: %s", session_id, exc)
-            yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
-
-        except Exception as exc:
-            log.error("Chat error: %s", exc, exc_info=True)
-            yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+            while True:
+                item = await outbound.get()
+                if item is None:
+                    break
+                event_name, payload = item
+                yield f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
+        finally:
+            reset_live_emitter(live_token)
+            if not graph_task.done():
+                graph_task.cancel()
+                try:
+                    await graph_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@router.get("/profiles", response_model=list[ProfileInfo])
-async def get_profiles():
-    """List local student profiles."""
-    students = await list_students()
-    return [_profile_info_from_student(student) for student in students]
+@router.get("/students", response_model=list[StudentInfo])
+async def get_students():
+    """Return all local students, most-recently-updated first."""
+    driver = await get_graph_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (s:Student)
+            RETURN s {.*} AS student
+            ORDER BY coalesce(s.updated_at, s.created_at) DESC
+            """
+        )
+        students = [sanitize_neo4j_value(dict(record["student"])) async for record in result]
+    return [_student_info(student) for student in students]
 
 
-@router.post("/profiles", response_model=ProfileInfo)
-async def create_profile(body: ProfileCreate):
-    """Create a new local student profile."""
+@router.post("/students", response_model=StudentInfo)
+async def create_student(body: StudentCreate):
+    """Create a new local student and return its summary."""
     extra = body.model_extra or {}
-    student = await create_student(name=body.name, **extra)
-    return _profile_info_from_student(student)
+    student_id = generate_student_id()
+    await _ensure_student(student_id)
+    student = await (await _graph_db()).update_student(student_id=student_id, updates={"name": body.name, **extra})
+    return _student_info(student)
 
 
 # ── Document Upload ──────────────────────────────────────────────
@@ -339,9 +413,13 @@ async def create_profile(body: ProfileCreate):
 
 @router.get("/documents/check")
 async def check_document_exists(filename: str, student_id: Optional[str] = Query(default=None)):
-    """Check if a document with this filename already exists in the profile."""
+    """Tell the UI whether a filename would be a duplicate before upload.
+
+    Lets the client show a "Replace existing?" prompt instead of silently
+    creating a second copy of the same document.
+    """
     resolved_student_id = await _resolve_student_id(student_id)
-    existing = await find_document_by_filename(filename, resolved_student_id)
+    existing = await (await _graph_db()).find_document_by_filename(student_id=resolved_student_id, filename=filename)
     return {"exists": existing is not None, "document": existing}
 
 
@@ -351,19 +429,26 @@ async def upload_document(
     student_id: Optional[str] = Form(None),
     replace: str = Form("false"),
 ):
-    """Upload a document to the student profile (stored on the profile graph)."""
+    """Ingest a single file into the student's graph + vector store.
+
+    This runs the same ingestion pipeline (`doc_analyst`) the chat
+    endpoint uses when files are attached to a message — just without
+    the surrounding chat turn.
+    """
     resolved_student_id = await _resolve_student_id(student_id)
     upload = await _read_upload_file(file)
+    graph_db = await _graph_db()
 
-    # If replacing, delete the existing document first
     if replace.lower() == "true":
-        existing = await find_document_by_filename(upload["filename"], resolved_student_id)
+        existing = await graph_db.find_document_by_filename(
+            student_id=resolved_student_id,
+            filename=upload["filename"],
+        )
         if existing and existing.get("id"):
-            await delete_document_cascade(existing["id"], resolved_student_id)
+            await graph_db.delete_document_cascade(document_id=existing["id"])
             log.info("Replaced existing document: %s", upload["filename"])
 
-    # Process through the registered document ingestion pipeline
-    from app.agents.doc_analyst import doc_analyst as process_doc
+    from app.nodes.doc_analyst import doc_analyst as process_doc
 
     state: dict[str, Any] = {
         "files": [upload],
@@ -373,308 +458,149 @@ async def upload_document(
     }
 
     result = await process_doc(state)
-    document_roles = result.get("document_roles", []) if isinstance(result.get("document_roles", []), list) else []
-    first_role = document_roles[0] if document_roles and isinstance(document_roles[0], dict) else {}
-    await maybe_consolidate_memory(resolved_student_id, "document_upload")
-
+    ingestion = result.get("latest_ingestion_result", {}) if isinstance(result.get("latest_ingestion_result", {}), dict) else {}
+    documents = list(ingestion.get("documents", []) or [])
+    first_document = documents[0] if documents else {}
+    if not first_document or not str(first_document.get("document_id", "") or "").strip():
+        raise HTTPException(422, f"Document {upload['filename']} could not be processed.")
+    graph_updates = dict((first_document.get("ingestion_result") or {}).get("graph_updates") or {})
+    counts = dict(graph_updates.get("counts") or {})
     return DocumentUploadResponse(
-        document_id=f"doc_uploaded",
+        document_id=str(first_document.get("document_id", "") or ""),
         filename=upload["filename"],
-        document_role=first_role.get("role", "general_document"),
-        role_confidence=float(first_role.get("confidence", 0.0) or 0.0),
-        entities_extracted=len(result.get("extracted_entities", [])),
-        chunks_stored=int(result.get("latest_ingestion_result", {}).get("chunk_count", 0) or 0),
+        entities_extracted=int(counts.get("entities_written", 0) or 0),
+        chunks_stored=int(first_document.get("chunks_stored", 0) or 0),
     )
 
 
-# ── Profile ──────────────────────────────────────────────────────
+# ── Student ──────────────────────────────────────────────────────
 
+@router.get("/student", response_model=StudentResponse)
+async def get_student(student_id: Optional[str] = Query(default=None)):
+    """Return everything the profile page needs in one round trip.
 
-@router.get("/profile", response_model=ProfileResponse)
-async def get_profile(student_id: Optional[str] = Query(default=None)):
-    """Get the student's full profile from the knowledge graph."""
+    Combines: root student properties, the schema of all known sections,
+    the entities grouped by section, and any long-form context the AI
+    has accumulated about the student.
+    """
     resolved_student_id = await _resolve_student_id(student_id)
-    profile = await get_full_profile(resolved_student_id)
-    long_context_preview = build_long_context_payload(profile, {})
-    return ProfileResponse(
-        root_properties=profile.get("root_properties", {}),
-        sections=profile.get("sections", []),
-        section_items=profile.get("section_items", {}),
-        unsectioned_items=profile.get("unsectioned_items", []),
-        support_records=profile.get("support_records", {}),
-        profile_facts=profile.get("profile_facts", []),
-        candidate_fact_ledger=profile.get("candidate_fact_ledger", []),
-        completeness_breakdown=profile.get("completeness_breakdown", {}),
-        fact_summary=profile.get("fact_summary", {}),
-        temporal_profile=profile.get("temporal_profile", {}),
-        long_context_preview=long_context_preview,
-        profile_schema=profile.get("profile_schema", {}),
-        all_entities=profile.get("all_entities", {}),
-        completeness=float(profile.get("completeness", 0.0) or 0.0),
-        confidence=_profile_confidence(profile),
-        memory_overview=_profile_memory_overview(profile),
+    graph_db = await _graph_db()
+    student_graph = await graph_db.get_full_student(student_id=resolved_student_id)
+    student_schema = await graph_db.get_student_schema(student_id=resolved_student_id)
+    student = dict(student_graph.get("student") or {})
+    sections = list(student_schema.get("sections") or [])
+    entities = list(student_graph.get("entities") or [])
+    section_items: dict[str, list[dict[str, Any]]] = {}
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        section_key = str(entity.get("section_key") or "")
+        if section_key:
+            section_items.setdefault(section_key, []).append(entity)
+    return StudentResponse(
+        root_properties=student,
+        sections=sections,
+        section_items=section_items,
+        long_context=str(student.get("long_context", "") or ""),
+        student_schema=student_schema,
     )
 
 
-@router.put("/profile")
-async def update_profile(update: ProfileUpdate):
-    """Update a specific profile field."""
+@router.put("/student")
+async def update_student(update: StudentUpdate):
+    """Patch a single scalar field on the student (save-on-blur in the UI)."""
     resolved_student_id = await _resolve_student_id(update.student_id)
     value = update.value
-    if update.field == "long_context_summary":
-        try:
-            value = normalize_long_context_summary(str(update.value or ""))
-        except ValueError as exc:
-            raise HTTPException(400, str(exc))
-    result = await update_student(resolved_student_id, **{update.field: value})
-    return {"updated": True, "data": result}
-
-
-@router.delete("/profile/entity/{entity_label}/{entity_name}")
-async def delete_profile_entity(entity_label: str, entity_name: str, student_id: Optional[str] = Query(default=None)):
-    """Delete a specific entity from the profile."""
-    resolved_student_id = await _resolve_student_id(student_id)
-    if entity_label == "Document":
-        # Documents use 'filename', not 'name' — also cascade-delete chunks
-        records = await run_cypher(
-            "MATCH (s:Profile {id: $sid})-[:UPLOADED]->(d:Document {filename: $fname}) RETURN d.id AS doc_id",
-            {"fname": entity_name, "sid": resolved_student_id},
-        )
-        if records and records[0].get("doc_id"):
-            deleted = await delete_document_cascade(records[0]["doc_id"], resolved_student_id)
-        else:
-            deleted = await delete_entity_for_student("Document", {"filename": entity_name}, resolved_student_id)
-    else:
-        deleted = await delete_entity_for_student(entity_label, {"name": entity_name}, resolved_student_id)
-    return {"deleted": deleted}
-
-
-@router.put("/profile/entity")
-async def update_profile_entity(body: EntityUpdate):
-    """Update properties on a profile entity by any identity key(s)."""
-    resolved_student_id = await _resolve_student_id(body.student_id)
-    resolved_match = dict(body.match_props) if body.match_props else {}
-    if body.name and "name" not in resolved_match:
-        resolved_match["name"] = body.name
-    if not resolved_match:
-        raise HTTPException(400, "Provide match_props or name to identify the entity")
-    result = await update_entity(
-        label=body.label,
-        match_props=resolved_match,
-        new_props=body.properties,
+    if update.field == "long_context":
+        value = str(update.value or "")
+    result = await (await _graph_db()).update_student(
         student_id=resolved_student_id,
+        updates={update.field: value},
     )
-    if not result:
-        raise HTTPException(404, f"{body.label} matching {resolved_match} not found")
     return {"updated": True, "data": result}
 
 
-@router.delete("/profile/reset")
-async def reset_all_profile_data(student_id: Optional[str] = Query(default=None)):
-    """Delete ALL student data from the knowledge graph."""
+@router.delete("/student/reset")
+async def reset_all_student_data(student_id: Optional[str] = Query(default=None)):
+    """Wipe a single student's graph + replay artifacts. Destructive."""
     resolved_student_id = await _resolve_student_id(student_id)
-    deleted = await reset_student_data(resolved_student_id)
+    deleted = await (await _graph_db()).reset_student_data(student_id=resolved_student_id)
     deleted_replays = delete_replay_artifacts_for_student(resolved_student_id)
     return {
         "deleted": deleted,
         "deleted_replays": deleted_replays,
-        "message": "All profile data and replay artifacts for this profile have been reset.",
+        "message": "All student data and replay artifacts for this student have been reset.",
     }
 
 
 @router.delete("/settings/delete-all-data")
 async def delete_all_data_everywhere():
-    """Delete all profiles, graph data, and persisted chat sessions for all profiles."""
-    deleted_nodes = await reset_all_data()
+    """Nuke everything: Neo4j data, chat checkpoints, and replay artifacts.
+
+    Intended for the "reset the whole app" button. Unrecoverable.
+    """
+    deleted_nodes = await (await _graph_db()).reset_all_data()
     await reset_checkpointer_storage()
     deleted_replays = delete_all_replay_artifacts()
     return {
         "deleted_nodes": deleted_nodes,
         "deleted_replays": deleted_replays,
-        "message": "All profiles, Neo4j data, chat sessions, and replay artifacts have been deleted.",
+        "message": "All students, Neo4j data, chat sessions, and replay artifacts have been deleted.",
     }
 
 
-@router.post("/profile/text")
-async def add_profile_text(input_data: ProfileTextInput, student_id: Optional[str] = Query(default=None)):
-    """Process free-text input and add extracted entities to profile."""
+@router.get("/student/graph", response_model=GraphDataResponse)
+async def get_student_graph(student_id: Optional[str] = Query(default=None)):
+    """Return the nodes + edges the graph visualization view renders."""
     resolved_student_id = await _resolve_student_id(student_id)
-    result = await process_free_text(input_data.text, resolved_student_id)
-    await maybe_consolidate_memory(resolved_student_id, "profile_text")
-    return result
-
-
-@router.get("/profile/graph", response_model=GraphDataResponse)
-async def get_profile_graph(student_id: Optional[str] = Query(default=None)):
-    """Get knowledge graph data for visualization."""
-    resolved_student_id = await _resolve_student_id(student_id)
-    data = await get_graph_data(resolved_student_id)
+    data = await (await _graph_db()).get_graph_data(student_id=resolved_student_id)
     return GraphDataResponse(nodes=data["nodes"], relationships=data["relationships"])
 
 
-# ── Sessions ─────────────────────────────────────────────────────
-
-
-@router.get("/sessions")
-async def list_sessions(student_id: Optional[str] = Query(default=None)):
-    """List all chat sessions. Returns from SQLite checkpoint metadata."""
-    # Note: In a full implementation, we'd query the SQLite checkpointer
-    # For now, return an empty list — sessions are created on first chat
-    resolved_student_id = await _resolve_student_id(student_id)
-    return {"student_id": resolved_student_id, "sessions": []}
-
-
 @router.get("/replays", response_model=list[ReplayArtifactInfo])
-async def get_replays(limit: int = Query(default=25, ge=1, le=100)):
-    """List recent replay artifacts for debugging and evaluation."""
-    return [ReplayArtifactInfo(**item) for item in list_replay_artifacts(limit=limit)]
+async def get_replays(
+    limit: int = Query(default=25, ge=1, le=100),
+):
+    """Most recent replays — the debug view's index page uses this."""
+    return [
+        ReplayArtifactInfo(**item)
+        for item in list_replay_artifacts(limit=limit)
+    ]
 
 
 @router.get("/replays/{replay_id}")
 async def get_replay(replay_id: str):
-    """Fetch a full replay artifact by ID."""
+    """Return the entire replay JSON so the debug view can reconstruct a turn."""
     artifact = get_replay_artifact(replay_id)
     if artifact is None:
         raise HTTPException(404, "Replay artifact not found")
     return artifact
-
-
-@router.get("/replays/{replay_id}/evaluate", response_model=ReplayEvaluationInfo)
-async def evaluate_replay(replay_id: str):
-    """Evaluate one replay artifact with lightweight regression checks."""
-    evaluation = evaluate_replay_by_id(replay_id)
-    if evaluation is None:
-        raise HTTPException(404, "Replay artifact not found")
-    return ReplayEvaluationInfo(**evaluation)
-
-
-@router.get("/replays/evaluate/recent", response_model=ReplayEvaluationBatch)
-async def evaluate_recent_replay_batch(
-    limit: int = Query(default=25, ge=1, le=100),
-    student_id: Optional[str] = Query(default=None),
-):
-    """Evaluate a batch of recent replay artifacts."""
-    resolved_student_id = None
-    if student_id:
-        resolved_student_id = await _resolve_student_id(student_id)
-    evaluation = evaluate_recent_replays(limit=limit, student_id=resolved_student_id)
-    return ReplayEvaluationBatch(**evaluation)
-
-
-@router.get("/eval/benchmarks", response_model=list[EvalBenchmarkInfo])
-async def get_eval_benchmarks():
-    """List benchmark datasets available for continuous evaluation."""
-    return [EvalBenchmarkInfo(**item) for item in list_benchmark_sets()]
-
-
-@router.get("/eval/analytics", response_model=EvalAnalyticsResponse)
-async def get_eval_analytics(
-    limit: int = Query(default=50, ge=1, le=200),
-    student_id: Optional[str] = Query(default=None),
-):
-    """Return grouped replay analytics, benchmark coverage, and trend summary."""
-    resolved_student_id = None
-    if student_id:
-        resolved_student_id = await _resolve_student_id(student_id)
-    analytics = build_eval_analytics(limit=limit, student_id=resolved_student_id)
-    return EvalAnalyticsResponse(**analytics)
-
-
-@router.get("/recommendations", response_model=list[SavedRecommendationInfo])
-async def get_saved_recommendations(student_id: Optional[str] = Query(default=None)):
-    """List saved plans and recommendations for the active profile."""
-    resolved_student_id = await _resolve_student_id(student_id)
-    items = await list_saved_recommendations(resolved_student_id)
-    return [
-        _saved_recommendation_info_from_record(item, fallback_student_id=resolved_student_id)
-        for item in items
-    ]
-
-
-@router.post("/recommendations", response_model=SavedRecommendationInfo)
-async def save_recommendation(body: SavedRecommendationCreate):
-    """Save a recommendation or plan explicitly."""
-    resolved_student_id = await _resolve_student_id(body.student_id)
-    stored = await store_memory_item(
-        resolved_student_id,
-        f"saved_{body.recommendation_type}",
-        body.summary,
-        source_ref=body.source_session_id or "manual",
-        confidence=0.8,
-        salience=0.85,
-        status="resolved",
-        time_scope="long_term",
-        tags=[body.recommendation_type, "saved"],
-        metadata={
-            **body.metadata,
-            "title": body.title,
-            "actions": body.actions,
-            "source_session_id": body.source_session_id,
-            "source_query": body.source_query,
-        },
-    )
-    return _saved_recommendation_info_from_record(
-        stored,
-        fallback_student_id=resolved_student_id,
-        default_title=body.title,
-        default_recommendation_type=body.recommendation_type,
-        default_actions=body.actions,
-        default_source_session_id=body.source_session_id,
-        default_source_query=body.source_query,
-    )
-
-
-@router.put("/recommendations/{recommendation_id}/outcome", response_model=SavedRecommendationInfo)
-async def update_recommendation_outcome(recommendation_id: str, body: SavedRecommendationOutcomeUpdate):
-    """Update outcome/feedback for a saved recommendation."""
-    resolved_student_id = await _resolve_student_id(body.student_id)
-    stored = await update_saved_recommendation_outcome(
-        resolved_student_id,
-        recommendation_id,
-        outcome_status=body.outcome_status,
-        outcome_notes=body.outcome_notes,
-        next_review_at=body.next_review_at,
-        follow_up_prompt=body.follow_up_prompt,
-        metadata_patch=body.metadata,
-    )
-    if not stored:
-        raise HTTPException(404, "Saved recommendation not found")
-    return _saved_recommendation_info_from_record(stored, fallback_student_id=resolved_student_id)
-
-
-@router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str, student_id: Optional[str] = Query(default=None)):
-    """Acknowledge discarding a chat session id; profile documents are not removed."""
-    resolved_student_id = await _resolve_student_id(student_id)
-    return {"deleted": True, "session_id": session_id, "student_id": resolved_student_id}
-
 
 # ── Settings ─────────────────────────────────────────────────────
 
 
 @router.get("/settings", response_model=SettingsResponse)
 async def get_settings():
-    """Get current application settings."""
+    """Return the current runtime toggles + which models are configured."""
     return SettingsResponse(
         topic_guard_enabled=_topic_guard_enabled,
         reasoning=_reasoning,
         models={
-            "text_llm": get_active_text_model(),
+            "text_llm": settings.LLM_MODEL,
             "vision_llm": settings.VISION_MODEL,
             "embeddings": settings.EMBEDDING_MODEL,
-            "retrieval": get_active_retrieval_strategy(),
         },
     )
 
 
 @router.put("/settings")
 async def update_settings(update: SettingsUpdate):
-    """Update application settings."""
+    """Patch runtime toggles (topic guard, reasoning) without a restart."""
     global _topic_guard_enabled, _reasoning
     if update.topic_guard_enabled is not None:
         _topic_guard_enabled = update.topic_guard_enabled
     if update.reasoning is not None:
-        _reasoning = str(update.reasoning or "medium").strip().lower() or "medium"
+        _reasoning = _normalize_reasoning(update.reasoning)
     return {"updated": True, "topic_guard_enabled": _topic_guard_enabled, "reasoning": _reasoning}
 
 
@@ -683,30 +609,30 @@ async def update_settings(update: SettingsUpdate):
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Check system health for all registered dependencies."""
-    statuses = await get_dependency_status()
+    """Live probe of Neo4j / LLM / embeddings / web search.
+
+    Skips the status cache so the UI banner and any deploy-time probes
+    always get a fresh picture.
+    """
+    statuses = await _get_dependency_status(force_refresh=True)
     services = {name: str(status) for name, status in statuses.items()}
-    overall = "ok" if all(s == "connected" for s in services.values()) else "degraded"
+    healthy_statuses = {"connected", "configured", "fallback_only"}
+    overall = "ok" if all(status in healthy_statuses for status in services.values()) else "degraded"
     return HealthResponse(status=overall, services=services)
-
-
-@router.get("/background/status")
-async def background_status():
-    """Get lightweight background-job status for observability."""
-    return get_background_status()
-
 
 # ── Helpers ──────────────────────────────────────────────────────
 
 
-async def _resolve_student_id(student_id: str | None, create_if_missing: bool = True) -> str:
-    """Resolve the active student profile, creating a runtime ID if needed."""
+async def _resolve_student_id(student_id: str | None) -> str:
+    """Pick an effective student id for this request.
+
+    If the client sent one, use it (and make sure the node exists).
+    Otherwise mint a fresh id so anonymous / first-time users still get
+    a well-formed profile to write into.
+    """
     if student_id:
-        if create_if_missing:
-            await ensure_student(student_id)
+        await _ensure_student(student_id)
         return student_id
-    if not create_if_missing:
-        return ""
     runtime_student_id = generate_student_id()
-    await ensure_student(runtime_student_id)
+    await _ensure_student(runtime_student_id)
     return runtime_student_id

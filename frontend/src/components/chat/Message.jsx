@@ -3,22 +3,29 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   User, Sparkles, ChevronDown, ChevronUp, ExternalLink,
-  Shield, Copy, Check, Loader2, CheckCircle2, Paperclip, Wrench,
+  Copy, Check, Loader2, CheckCircle2, Paperclip, Wrench,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const STEP_LABELS = {
-  input_guard: 'Input Guard',
-  orchestrator: 'Routing',
-  specialist_runner: 'Specialist',
-  light_validator: 'Validation',
-  responder: 'Response',
-  doc_analyst: 'Documents',
-};
-
 function formatStep(step) {
-  const label = STEP_LABELS[step.node] || step.node;
+  const label = step.stage || 'Working';
   return { label, message: step.message || '' };
+}
+
+function groupProgressByStage(progress) {
+  const groups = [];
+  for (const step of progress) {
+    const { label, message } = formatStep(step);
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) {
+      if (message && last.messages[last.messages.length - 1] !== message) {
+        last.messages.push(message);
+      }
+    } else {
+      groups.push({ label, messages: message ? [message] : [] });
+    }
+  }
+  return groups;
 }
 
 function formatPriority(value) {
@@ -34,14 +41,30 @@ function normalizeCitation(citation, index) {
   return { url, title, tool };
 }
 
-function confidenceTone(value) {
-  const score = Number(value) || 0;
-  if (score >= 0.8) return 'High confidence';
-  if (score >= 0.5) return 'Moderate confidence';
-  return 'Low confidence';
+function summarizeToolCalls(toolCalls) {
+  const counts = new Map();
+  toolCalls.forEach((item) => {
+    const name = String(item?.tool || '').trim();
+    if (!name) return;
+    counts.set(name, (counts.get(name) || 0) + 1);
+  });
+  return Array.from(counts.entries())
+    .map(([tool, count]) => ({ tool, count }))
+    .sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool));
 }
 
-export default function Message({ message, isLast, isStreaming }) {
+function DiagnosticSection({ title, children }) {
+  return (
+    <div className="rounded-2xl border border-border/60 bg-background/75 p-3 shadow-sm">
+      <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+        {title}
+      </p>
+      {children}
+    </div>
+  );
+}
+
+function Message({ message, isLast, isStreaming }) {
   const [showCitations, setShowCitations] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
   const [showSystemContext, setShowSystemContext] = useState(false);
@@ -51,6 +74,7 @@ export default function Message({ message, isLast, isStreaming }) {
   const citations = (metadata.citations || []).map(normalizeCitation);
   const progress = message.progress || [];
   const attachments = message.attachments || [];
+  const trimmedContent = String(message.content || '').trim();
   const isCurrentlyStreaming = isLast && isStreaming && !isUser;
   const hasContent = !!message.content;
   const runtimeSnapshot = metadata.runtimeSnapshot || {};
@@ -60,24 +84,32 @@ export default function Message({ message, isLast, isStreaming }) {
   const routingScores = metadata.routingScores || {};
   const routingReason = metadata.routingReason || '';
   const toolCallLog = Array.isArray(metadata.toolCallLog) ? metadata.toolCallLog : [];
+  const documentIngestion = metadata.documentIngestion || {};
+  const ingestionDocuments = Array.isArray(documentIngestion.documents)
+    ? documentIngestion.documents
+    : [];
+  const ingestionToolCalls = ingestionDocuments.flatMap((item) =>
+    Array.isArray(item?.ingestion_result?.tool_call_log) ? item.ingestion_result.tool_call_log : []
+  );
+  const combinedToolCallLog = [...toolCallLog, ...ingestionToolCalls];
   const specialistOutput = metadata.specialistOutput || {};
-  const documentRoles = Array.isArray(metadata.documentRoles) ? metadata.documentRoles : [];
-  const transcriptStates = Array.isArray(metadata.transcriptStates) ? metadata.transcriptStates : [];
-  const successfulToolCalls = toolCallLog.filter((item) => item?.status === 'ok');
-  const topTools = successfulToolCalls.slice(0, 4);
-  const topDocumentRoles = documentRoles.slice(0, 3);
+  const successfulToolCalls = combinedToolCallLog.filter((item) => item?.status === 'ok');
+  const toolUsage = summarizeToolCalls(successfulToolCalls);
   const methodLabel = metadata.method && metadata.method !== 'direct' ? metadata.method : '';
   const qualityPathLabel = metadata.qualityPath && metadata.qualityPath !== 'direct' ? metadata.qualityPath : '';
   const hasMeaningfulRouting = Object.values(routingScores).some((value) => Number(value) > 0);
   const hasRuntimeWarnings = Object.values(dependencyStatus).some(
     (status) => status !== 'connected' && status !== 'configured'
   );
+  const isShortUserPill = isUser
+    && attachments.length === 0
+    && trimmedContent.length > 0
+    && trimmedContent.length <= 24
+    && !trimmedContent.includes('\n');
   const systemContextAvailable = !isUser && (
     (selectedSpecialist && hasMeaningfulRouting) ||
     (routingReason && hasMeaningfulRouting) ||
     successfulToolCalls.length > 0 ||
-    documentRoles.length > 0 ||
-    transcriptStates.length > 0 ||
     hasRuntimeWarnings ||
     (runtimeSnapshot.selected_retrieval_mode && methodLabel) ||
     (runtimeSnapshot.selected_text_model && successfulToolCalls.length > 0) ||
@@ -116,37 +148,51 @@ export default function Message({ message, isLast, isStreaming }) {
     }
   };
 
+  const bubbleWrapperClass = isUser
+    ? 'flex max-w-[42rem] flex-col items-end'
+    : 'flex w-full max-w-[56rem] flex-col items-start';
+
+  const bubbleClass = isUser
+    ? cn(
+        'border border-primary/18 bg-gradient-to-br from-primary to-primary/90 text-primary-foreground shadow-sm transition-colors',
+        isShortUserPill
+          ? 'inline-flex min-w-[3.6rem] items-center justify-center self-end rounded-full px-4 py-2.5'
+          : 'rounded-[22px] px-4 py-3'
+      )
+    : 'w-full rounded-[22px] border border-border/70 bg-background/76 px-4 py-3 shadow-sm backdrop-blur-sm transition-colors';
+
   return (
-    <div className={cn('flex gap-3', isUser ? 'justify-end' : 'justify-start')}>
+    <div
+      className={cn(
+        'flex items-start gap-3',
+        isUser ? 'justify-end' : 'justify-start',
+        message.content && 'mb-12'
+      )}
+    >
       {!isUser && (
-        <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center flex-shrink-0 mt-1 ring-1 ring-primary/10">
-          <Sparkles className="h-4.5 w-4.5 text-primary" />
+        <div className="mt-1 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-2xl border border-border/60 bg-background/70 shadow-sm">
+          <Sparkles className="h-4 w-4 text-primary" />
         </div>
       )}
 
-      <div className={cn(
-        'group rounded-2xl px-4 py-3 transition-colors',
-        isUser ? 'max-w-[75%] bg-primary text-primary-foreground' : 'max-w-full bg-muted/70'
-      )}>
+      <div className={cn('group relative', bubbleWrapperClass)}>
+        <div className={bubbleClass}>
         {!isUser && progress.length > 0 && (
-          <div className="mb-3">
+          <div className={cn(hasContent && 'mb-3')}>
             {isCurrentlyStreaming && !hasContent ? (
-              <div className="space-y-1.5">
-                {progress.map((step, i) => {
-                  const { label, message: stepMessage } = formatStep(step);
-                  return (
-                    <div key={i} className={cn('flex items-center gap-2 text-xs', i === progress.length - 1 ? 'animate-fade-in' : '')}>
-                      {i === progress.length - 1 ? (
-                        <Loader2 className="h-3 w-3 animate-spin text-primary flex-shrink-0" />
-                      ) : (
-                        <CheckCircle2 className="h-3 w-3 text-green-500 dark:text-green-400 flex-shrink-0" />
-                      )}
-                      <span className="font-medium text-foreground/70">{label}</span>
-                      <span className="text-muted-foreground">{stepMessage}</span>
-                    </div>
-                  );
-                })}
-              </div>
+              (() => {
+                const latest = progress[progress.length - 1];
+                const { message: latestMessage, label: latestLabel } = formatStep(latest);
+                const display = latestMessage || latestLabel;
+                return (
+                  <div className="relative flex h-5 items-center gap-2 overflow-hidden text-xs leading-none">
+                    <Loader2 className="h-3 w-3 flex-shrink-0 animate-spin text-primary" />
+                    <span className="animate-shimmer-text truncate font-medium">
+                      {display}
+                    </span>
+                  </div>
+                );
+              })()
             ) : (
               <div>
                 <button
@@ -157,17 +203,27 @@ export default function Message({ message, isLast, isStreaming }) {
                   <span>See how I answered</span>
                 </button>
                 {showProgress && (
-                  <div className="mt-2 pl-2 space-y-1 border-l-2 border-border/50 ml-0.5 animate-fade-in">
-                    {progress.map((step, i) => {
-                      const { label, message: stepMessage } = formatStep(step);
-                      return (
-                        <div key={i} className="flex items-center gap-2 text-xs pl-2">
-                          <CheckCircle2 className="h-3 w-3 text-green-500 dark:text-green-400 flex-shrink-0" />
-                          <span className="font-medium text-foreground/70">{label}</span>
-                          <span className="text-muted-foreground">{stepMessage}</span>
+                  <div className="mt-2 ml-0.5 animate-fade-in space-y-2 border-l-2 border-border/50 pl-3">
+                    {groupProgressByStage(progress).map((group, gi) => (
+                      <div key={gi} className="space-y-1">
+                        <div className="flex items-center gap-2 text-xs">
+                          <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-green-500 dark:text-green-400" />
+                          <span className="font-medium text-foreground/80">{group.label}</span>
                         </div>
-                      );
-                    })}
+                        {group.messages.length > 0 && (
+                          <div className="space-y-0.5 text-xs text-muted-foreground">
+                            {group.messages.map((msg, mi) => (
+                              <div key={mi} className="flex gap-2">
+                                <span aria-hidden="true" className="w-3 flex-shrink-0 text-center text-border">
+                                  •
+                                </span>
+                                <span className="min-w-0">{msg}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -176,9 +232,9 @@ export default function Message({ message, isLast, isStreaming }) {
         )}
 
         {isUser && attachments.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-2">
+          <div className="mb-2 flex flex-wrap gap-1.5">
             {attachments.map((file, i) => (
-              <div key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/15 text-xs font-medium">
+              <div key={i} className="inline-flex items-center gap-1.5 rounded-full bg-white/14 px-2.5 py-1 text-xs font-medium">
                 <Paperclip className="h-3 w-3 flex-shrink-0 opacity-70" />
                 <span className="truncate max-w-[160px]">{file.name}</span>
               </div>
@@ -189,9 +245,14 @@ export default function Message({ message, isLast, isStreaming }) {
         {(hasContent || !isCurrentlyStreaming) && (
           <div className={cn('max-w-none', isCurrentlyStreaming ? 'animate-pulse' : '')}>
             {isUser ? (
-              <p className="whitespace-pre-wrap leading-relaxed m-0">{message.content}</p>
+              <p className={cn(
+                'm-0 whitespace-pre-wrap text-[15px]',
+                isShortUserPill ? 'text-center leading-6' : 'leading-7'
+              )}>
+                {message.content}
+              </p>
             ) : (
-              <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-3 prose-headings:mb-2 prose-headings:font-semibold prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-p:my-1.5 prose-p:leading-relaxed prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5 prose-table:my-2 prose-table:text-sm prose-th:px-3 prose-th:py-1.5 prose-th:bg-muted/50 prose-th:font-medium prose-th:text-left prose-td:px-3 prose-td:py-1.5 prose-td:border-t prose-strong:font-semibold prose-code:text-xs prose-code:bg-muted/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:font-mono prose-a:text-primary prose-a:no-underline hover:prose-a:underline prose-blockquote:border-primary/30 prose-blockquote:text-muted-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+              <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:mt-4 prose-headings:mb-2 prose-headings:font-semibold prose-h1:text-lg prose-h2:text-base prose-h3:text-sm prose-p:my-2 prose-p:leading-7 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 prose-table:my-3 prose-table:text-sm prose-th:px-3 prose-th:py-1.5 prose-th:bg-muted/50 prose-th:font-medium prose-th:text-left prose-td:px-3 prose-td:py-1.5 prose-td:border-t prose-strong:font-semibold prose-code:text-xs prose-code:bg-muted/50 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:font-mono prose-a:text-primary prose-a:no-underline hover:prose-a:underline prose-blockquote:border-primary/30 prose-blockquote:text-muted-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {message.content || ''}
                 </ReactMarkdown>
@@ -200,47 +261,35 @@ export default function Message({ message, isLast, isStreaming }) {
           </div>
         )}
 
-        {!isUser && metadata.confidence !== undefined && (
-          <div className="mt-3 pt-2.5 border-t border-border/40">
+        {!isUser && (selectedSpecialist || methodLabel || qualityPathLabel || routingReason) && (
+          <div className="mt-3 border-t border-border/40 pt-2.5">
             <div className="flex flex-wrap items-center gap-2">
               {selectedSpecialist && (
-                <span className="text-xs px-2.5 py-1 rounded-full bg-primary/10 text-primary font-semibold">
+                <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-semibold text-primary">
                   {formatPriority(selectedSpecialist)}
                 </span>
               )}
-              <span className={cn(
-                'inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full font-medium',
-                metadata.confidence >= 0.8
-                  ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                  : metadata.confidence >= 0.5
-                    ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300'
-                    : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-              )}>
-                <Shield className="h-3 w-3 flex-shrink-0" />
-                {confidenceTone(metadata.confidence)}
-              </span>
               {methodLabel && (
-                <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground font-medium">
+                <span className="rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">
                   {methodLabel}
                 </span>
               )}
               {qualityPathLabel && (
-                <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground font-medium">
+                <span className="rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">
                   {qualityPathLabel}
                 </span>
               )}
             </div>
 
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              <span>{Math.round(metadata.confidence * 100)}% confidence</span>
-              {topTools.length > 0 && (
-                <span>Used {topTools.length} tool{topTools.length === 1 ? '' : 's'}</span>
+              {successfulToolCalls.length > 0 && (
+                <span>
+                  Used {successfulToolCalls.length} call{successfulToolCalls.length === 1 ? '' : 's'}
+                  {toolUsage.length > 0 ? ` across ${toolUsage.length} tool${toolUsage.length === 1 ? '' : 's'}` : ''}
+                </span>
               )}
               {citations.length > 0 && (
                 <span>{citations.length} source{citations.length === 1 ? '' : 's'}</span>
-              )}
-              {topDocumentRoles.length > 0 && (
-                <span>{topDocumentRoles.length} document signal{topDocumentRoles.length === 1 ? '' : 's'}</span>
               )}
             </div>
 
@@ -262,21 +311,19 @@ export default function Message({ message, isLast, isStreaming }) {
               Why this answer
             </button>
             {showSystemContext && (
-              <div className="mt-2 rounded-xl border bg-card/60 p-3 space-y-3 animate-fade-in">
+              <div className="mt-2 space-y-3 rounded-[20px] border border-border/70 bg-card/75 p-3.5 shadow-sm animate-fade-in">
                 {selectedSpecialist && hasMeaningfulRouting && (
-                  <div>
-                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Handled By</p>
+                  <DiagnosticSection title="Handled By">
                     <div className="flex flex-wrap gap-1.5">
                       <span className="text-xs px-2.5 py-1 rounded-full bg-primary/10 text-primary font-semibold">
                         {formatPriority(selectedSpecialist)}
                       </span>
                     </div>
-                  </div>
+                  </DiagnosticSection>
                 )}
 
                 {hasMeaningfulRouting && (
-                  <div>
-                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Routing Signals</p>
+                  <DiagnosticSection title="Routing Signals">
                     <div className="flex flex-wrap gap-1.5">
                       {Object.entries(routingScores)
                         .sort((a, b) => Number(b[1]) - Number(a[1]))
@@ -286,17 +333,16 @@ export default function Message({ message, isLast, isStreaming }) {
                           </span>
                         ))}
                     </div>
-                  </div>
+                  </DiagnosticSection>
                 )}
 
                 {(specialistOutput?.stop_reason || successfulToolCalls.length > 0) && (
-                  <div>
-                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Tools Used</p>
+                  <DiagnosticSection title="Tools Used">
                     <div className="flex flex-wrap gap-1.5">
-                      {successfulToolCalls.slice(0, 8).map((item, index) => (
-                        <span key={`${item.tool}-${index}`} className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary">
+                      {toolUsage.map((item) => (
+                        <span key={item.tool} className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary">
                           <Wrench className="h-3 w-3" />
-                          {item.tool}
+                          {item.tool}: {item.count}
                         </span>
                       ))}
                       {specialistOutput?.stop_reason && (
@@ -305,30 +351,11 @@ export default function Message({ message, isLast, isStreaming }) {
                         </span>
                       )}
                     </div>
-                  </div>
-                )}
-
-                {(documentRoles.length > 0 || transcriptStates.length > 0) && (
-                  <div>
-                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Document Signals</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {topDocumentRoles.map((item, index) => (
-                        <span key={`${item.role}-${index}`} className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">
-                          {formatPriority(item.role)} {typeof item.confidence === 'number' ? `${Math.round(item.confidence * 100)}%` : ''}
-                        </span>
-                      ))}
-                      {transcriptStates.length > 0 && (
-                        <span className="text-xs px-2 py-1 rounded-full bg-muted text-muted-foreground">
-                          {transcriptStates.length} transcript state{transcriptStates.length === 1 ? '' : 's'}
-                        </span>
-                      )}
-                    </div>
-                  </div>
+                  </DiagnosticSection>
                 )}
 
                 {(hasRuntimeWarnings || (runtimeSnapshot.selected_retrieval_mode && methodLabel) || (runtimeSnapshot.selected_text_model && successfulToolCalls.length > 0)) && (
-                  <div>
-                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Runtime Details</p>
+                  <DiagnosticSection title="Runtime Details">
                     <div className="flex flex-wrap gap-1.5">
                       {runtimeSnapshot.reasoning && (
                         <span className="text-xs px-2 py-1 rounded-full bg-primary/10 text-primary font-medium">
@@ -359,20 +386,19 @@ export default function Message({ message, isLast, isStreaming }) {
                         </span>
                       ))}
                     </div>
-                  </div>
+                  </DiagnosticSection>
                 )}
 
                 {replayId && (successfulToolCalls.length > 0 || hasMeaningfulRouting) && (
-                  <div>
-                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Saved Replay</p>
+                  <DiagnosticSection title="Saved Replay">
                     <a
                       href={`/replays?replay=${encodeURIComponent(replayId)}`}
-                      className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary font-medium hover:bg-primary/15 transition-colors"
+                      className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
                     >
                       Open {replayId}
                       <ExternalLink className="h-3 w-3" />
                     </a>
-                  </div>
+                  </DiagnosticSection>
                 )}
               </div>
             )}
@@ -389,47 +415,55 @@ export default function Message({ message, isLast, isStreaming }) {
               {citations.length} source{citations.length > 1 ? 's' : ''}
             </button>
             {showCitations && (
-              <div className="mt-1.5 space-y-1 animate-fade-in">
+              <div className="mt-2 space-y-2 animate-fade-in">
                 {citations.map((citation, i) => (
                   <a
                     key={`${citation.url || citation.title}-${i}`}
                     href={citation.url || '#'}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 text-xs text-primary hover:underline truncate rounded-md px-1.5 py-1 hover:bg-primary/5 transition-colors"
+                    className="flex items-start gap-2 rounded-2xl border border-border/60 bg-card/70 px-3 py-2 text-xs transition-colors hover:border-primary/20 hover:bg-primary/5"
                   >
-                    <ExternalLink className="h-3 w-3 flex-shrink-0" />
-                    <span className="truncate">
-                      {citation.title}
-                      {citation.tool ? ` via ${citation.tool}` : ''}
-                    </span>
+                    <div className="mt-0.5 rounded-full bg-primary/10 p-1 text-primary">
+                      <ExternalLink className="h-3 w-3 flex-shrink-0" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-foreground">{citation.title}</p>
+                      <p className="truncate text-muted-foreground">
+                        {citation.tool ? `via ${citation.tool}` : citation.url}
+                      </p>
+                    </div>
                   </a>
                 ))}
               </div>
             )}
           </div>
         )}
+        </div>
 
-        {message.content && !isStreaming && (
+        {message.content && (
           <div className={cn(
-            'flex justify-end mt-2 pt-1.5 transition-all duration-200',
-            'opacity-0 group-hover:opacity-100',
-            (!isUser && metadata.confidence !== undefined) || citations.length > 0 ? '' : 'border-t border-border/20'
+            'pointer-events-none absolute z-10 transition-all duration-200',
+            isUser ? 'right-0 top-full' : 'left-0 top-full',
+            'opacity-0 translate-y-1 group-hover:opacity-100 group-hover:translate-y-0'
           )}>
             <button
               onClick={handleCopy}
               className={cn(
-                'flex items-center gap-1 text-xs px-2 py-1 rounded-md transition-colors',
+                'pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-all hover:scale-105',
                 copied
-                  ? 'text-green-600 dark:text-green-400'
+                  ? 'border-green-500/25 bg-green-500/10 text-green-600 dark:text-green-400'
                   : isUser
-                    ? 'text-primary-foreground/60 hover:text-primary-foreground hover:bg-white/10'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+                    ? 'border-white/20 bg-slate-950/45 text-white shadow-[0_10px_24px_rgba(2,8,23,0.28)] hover:bg-slate-900/60 hover:text-white'
+                    : 'border-border/60 bg-background/92 text-muted-foreground hover:bg-accent hover:text-foreground'
               )}
+              style={{
+                transform: 'translateY(0.5rem)',
+              }}
               title={copied ? 'Copied!' : 'Copy message'}
+              aria-label={copied ? 'Copied' : 'Copy message'}
             >
-              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-              <span>{copied ? 'Copied!' : 'Copy'}</span>
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
             </button>
           </div>
         )}
@@ -443,3 +477,5 @@ export default function Message({ message, isLast, isStreaming }) {
     </div>
   );
 }
+
+export default React.memo(Message);

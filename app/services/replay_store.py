@@ -1,4 +1,20 @@
-"""Replay artifact persistence for completed Pathfinder turns."""
+"""Writes a JSON "replay" to disk for every completed turn.
+
+A replay captures everything that happened during one chat turn: the
+query, routing decision, every tool call with its input and output, the
+final answer, citations, processing issues, and snapshots of session /
+long context. The API layer creates one at the end of each turn; the
+`/replays` endpoints read them back for debugging and audits.
+
+Files live under `settings.REPLAY_ARTIFACT_DIR` and are named
+`replay_<hex-id>.json`. They are append-only in practice: we never rewrite
+an existing file, only add new ones or delete on explicit cleanup.
+
+The only "business logic" here is picking the best graph schema snapshot
+to attach — preferring the most recent document ingestion's
+post-ingestion schema, then the chat-message ingestion's, then whatever
+was on the state at the end of the turn.
+"""
 
 from __future__ import annotations
 
@@ -11,17 +27,16 @@ from typing import Any
 from app.config.settings import settings
 from app.utils.ids import generate_replay_id
 
+# Replay ids are 12-hex-char-suffixed to keep filenames short and to make
+# validation from URLs trivial.
 _REPLAY_ID_RE = re.compile(r"^replay_[a-f0-9]{12}$")
 
 
 def _artifact_dir() -> Path:
+    """Return the on-disk replay folder, creating it if missing."""
     path = Path(settings.REPLAY_ARTIFACT_DIR)
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def build_replay_artifact(
@@ -32,25 +47,45 @@ def build_replay_artifact(
     student_id: str,
     session_id: str,
 ) -> dict[str, Any]:
-    """Build a compact replay artifact from a completed specialist turn."""
+    """Fold final state + SSE `done` payload into one replay-ready dict.
+
+    `done_payload` is the JSON the API streams to the client at turn end
+    (method, stop_reason, routing, citations, etc.); `final_state` is the
+    full LangGraph state after every node ran. We merge them so a single
+    saved file has both the user-visible summary and the raw evidence.
+    """
     artifact_id = generate_replay_id()
     tool_call_log = list(final_state.get("tool_call_log", []) or [])
     specialist_output = final_state.get("specialist_output", {}) or {}
-    document_roles = list(done_payload.get("document_roles", []) or [])
-    transcript_states = list(done_payload.get("transcript_states", []) or [])
     latest_ingestion_result = dict(final_state.get("latest_ingestion_result", {}) or {})
+    latest_query_ingestion_result = dict(final_state.get("latest_query_ingestion_result", {}) or {})
+    documents = list(latest_ingestion_result.get("documents", []) or [])
+
+    # Pick the freshest schema snapshot we have access to. Priority:
+    #   1. The schema after document ingestion (most recent, richest).
+    #   2. The schema after chat-message ingestion.
+    #   3. Whatever was on the state when the turn ended.
+    latest_schema = dict(final_state.get("student_schema") or {})
+    query_schema_after = dict(latest_query_ingestion_result.get("graph_schema_after") or {})
+    if query_schema_after:
+        latest_schema = query_schema_after
+    for item in reversed(documents):
+        if not isinstance(item, dict):
+            continue
+        candidate = dict((item.get("ingestion_result") or {}).get("graph_schema_after") or {})
+        if candidate:
+            latest_schema = candidate
+            break
     return {
         "id": artifact_id,
-        "created_at": _utc_now(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "student_id": student_id,
         "session_id": session_id,
         "query": query,
         "selected_specialist": final_state.get("selected_specialist", ""),
         "method": done_payload.get("method", ""),
-        "quality_path": done_payload.get("quality_path", ""),
-        "confidence": done_payload.get("confidence", 0.0),
         "stop_reason": done_payload.get("stop_reason", ""),
-        "recovery_events": list(done_payload.get("recovery_events", [])),
+        "processing_issues": list(done_payload.get("processing_issues", [])),
         "runtime_snapshot": done_payload.get("runtime_snapshot", {}),
         "dependency_status": done_payload.get("dependency_status", {}),
         "routing_scores": done_payload.get("routing_scores", {}),
@@ -59,30 +94,22 @@ def build_replay_artifact(
         "answer": final_state.get("final_answer", ""),
         "specialist_output": specialist_output,
         "tool_call_log": tool_call_log,
-        "long_context_payload": dict(final_state.get("long_context_payload", {}) or {}),
-        "profile_schema": dict((final_state.get("profile_data", {}) or {}).get("profile_schema", {}) or {}),
-        "document_extractions": list(latest_ingestion_result.get("documents", []) or []),
-        "document_ingestion": {
-            "chunk_count": int(latest_ingestion_result.get("chunk_count", 0) or 0),
-            "entity_count": int(latest_ingestion_result.get("entity_count", 0) or 0),
-            "relationship_count": int(latest_ingestion_result.get("relationship_count", 0) or 0),
-            "candidate_fact_count": int(latest_ingestion_result.get("candidate_fact_count", 0) or 0),
-            "memory_item_count": int(latest_ingestion_result.get("memory_item_count", 0) or 0),
-            "promoted_entity_count": int(latest_ingestion_result.get("promoted_entity_count", 0) or 0),
-            "patch_summaries": list(latest_ingestion_result.get("patch_summaries", []) or []),
-        },
-        "context_overview": {
-            "document_result_count": len(final_state.get("retrieved_documents", []) or []),
-            "web_result_count": len(final_state.get("web_results", []) or []),
-            "memory_bucket_count": len((final_state.get("semantic_memory", {}) or {}).keys()),
-            "document_role_count": len(document_roles),
-            "transcript_state_count": len(transcript_states),
-        },
+        "input_session_context": str(final_state.get("input_session_context", "") or ""),
+        "input_long_context": str(final_state.get("input_long_context", "") or ""),
+        "session_context": str(final_state.get("session_context", "") or ""),
+        "long_context": str(final_state.get("long_context", "") or ""),
+        "student_schema": latest_schema,
+        "document_ingestion": latest_ingestion_result,
+        "query_ingestion": latest_query_ingestion_result,
     }
 
 
 def save_replay_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
-    """Persist a replay artifact to disk as JSON."""
+    """Write one artifact to `<artifact_id>.json`, returning the payload.
+
+    We always re-stamp the id so callers can hand in a partial artifact
+    (without an id) and still get a valid on-disk record.
+    """
     artifact_id = str(artifact.get("id") or generate_replay_id())
     path = _artifact_dir() / f"{artifact_id}.json"
     payload = {**artifact, "id": artifact_id}
@@ -91,7 +118,12 @@ def save_replay_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_replay_artifacts(limit: int = 50) -> list[dict[str, Any]]:
-    """List replay artifacts in reverse chronological order."""
+    """Return a lightweight index of recent replays for the UI list view.
+
+    Only enough fields to render a row — full payloads are loaded on
+    demand via `get_replay_artifact`. Sorted by file mtime so the most
+    recent turn appears first.
+    """
     artifacts: list[dict[str, Any]] = []
     for path in sorted(_artifact_dir().glob("replay_*.json"), key=lambda item: item.stat().st_mtime, reverse=True)[:limit]:
         try:
@@ -107,15 +139,17 @@ def list_replay_artifacts(limit: int = 50) -> list[dict[str, Any]]:
                 "query": data.get("query", ""),
                 "selected_specialist": data.get("selected_specialist", ""),
                 "method": data.get("method", ""),
-                "quality_path": data.get("quality_path", ""),
-                "confidence": data.get("confidence", 0.0),
             }
         )
     return artifacts
 
 
 def get_replay_artifact(replay_id: str) -> dict[str, Any] | None:
-    """Load a single replay artifact by ID."""
+    """Load one replay by id. Returns None for unknown / malformed ids.
+
+    The id regex check is important: the id comes from URL path params, so
+    this stops directory-traversal attempts like `../../etc/passwd`.
+    """
     if not _REPLAY_ID_RE.match(replay_id):
         return None
     path = _artifact_dir() / f"{replay_id}.json"
@@ -128,7 +162,11 @@ def get_replay_artifact(replay_id: str) -> dict[str, Any] | None:
 
 
 def delete_replay_artifacts_for_student(student_id: str) -> int:
-    """Delete every replay artifact associated with one student profile."""
+    """Purge every replay file that belongs to one student.
+
+    Called when an admin deletes a student profile — we don't want stale
+    replays lingering on disk referencing a student that no longer exists.
+    """
     deleted = 0
     for path in _artifact_dir().glob("replay_*.json"):
         try:
@@ -146,7 +184,7 @@ def delete_replay_artifacts_for_student(student_id: str) -> int:
 
 
 def delete_all_replay_artifacts() -> int:
-    """Delete every persisted replay artifact."""
+    """Nuke the entire replay folder contents (admin reset path)."""
     deleted = 0
     for path in _artifact_dir().glob("replay_*.json"):
         try:

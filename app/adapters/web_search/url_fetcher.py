@@ -1,7 +1,16 @@
-"""Direct URL content fetcher.
+"""Download + clean up a single page so the LLM can read it.
 
-When the user provides a specific URL, this module fetches the page
-and extracts readable text content instead of relying on keyword search.
+Powers the `fetch_url` tool and is also used by the chat flow when the
+user drops a bare URL into a message. Differs from a search provider
+in two ways:
+- the caller already knows exactly which page they want, and
+- we return *readable text*, not a ranked list.
+
+The pipeline is: HTTP GET with browser-ish headers → BeautifulSoup
+parse → strip `<script>`/`<nav>`/... → find the best "main content"
+container (main / article / role=main / body fallback) → extract
+block-level text → deduplicate near-identical blocks → truncate to
+`_MAX_CONTENT_LENGTH` so the page can't blow up the LLM context.
 """
 
 from __future__ import annotations
@@ -16,12 +25,6 @@ from bs4 import BeautifulSoup
 from app.adapters.web_search._common import build_search_result, normalize_url
 
 log = logging.getLogger("pathfinder.search.url_fetcher")
-
-# Regex to extract URLs from user text
-_URL_PATTERN = re.compile(
-    r"https?://[^\s<>\"'\]\)]+",
-    re.IGNORECASE,
-)
 
 # Maximum content length to return (characters) — prevents huge pages
 # from overwhelming the LLM context window
@@ -45,23 +48,14 @@ _HEADERS = {
 }
 
 
-def extract_urls(text: str) -> list[str]:
-    """Extract all URLs from a text string."""
-    urls = [normalize_url(url) for url in _URL_PATTERN.findall(text or "")]
-    seen: set[str] = set()
-    deduped: list[str] = []
-    for url in urls:
-        if url and url not in seen:
-            seen.add(url)
-            deduped.append(url)
-    return deduped
-
-
 async def fetch_url_content(url: str, timeout: float = 15.0) -> dict[str, Any] | None:
-    """Fetch a URL and extract its text content.
+    """Fetch one URL and return readable content, or `None` on any failure.
 
-    Returns a dict with title, url, content, and source fields
-    (same shape as web search results), or None on failure.
+    Non-HTML responses, timeouts, HTTP errors, and pages with almost no
+    extractable text all return `None` — callers treat a miss as "just
+    skip this URL" rather than surfacing an error to the user. The
+    returned shape matches search results so the tool layer can mix
+    fetches and search hits in one list.
     """
     url = normalize_url(url)
     if not url:
@@ -139,9 +133,11 @@ async def fetch_url_content(url: str, timeout: float = 15.0) -> dict[str, Any] |
 
 
 def _extract_text(element) -> str:
-    """Extract readable text from a BeautifulSoup element.
+    """Pull block-level text out of a BS element, deduplicating near-copies.
 
-    Preserves paragraph structure with double newlines between blocks.
+    Nested HTML (a `<div>` wrapping a `<p>`) would otherwise produce the
+    same text twice. We keep paragraph structure by joining blocks with
+    blank lines so the result is readable in chat.
     """
     blocks: list[str] = []
     for child in element.find_all(

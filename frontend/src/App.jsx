@@ -13,7 +13,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className="flex h-screen bg-background">
+      <div className="app-shell flex h-screen overflow-hidden bg-background px-3 py-3 md:px-4 md:py-4">
         {/* Sidebar */}
         <Sidebar
           open={state.sidebarOpen}
@@ -21,14 +21,16 @@ export default function App() {
         />
 
         {/* Main Content */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          <Routes>
-            <Route path="/" element={<Navigate to="/chat" replace />} />
-            <Route path="/chat" element={<ChatPage />} />
-            <Route path="/profile" element={<ProfilePage />} />
-            <Route path="/replays" element={<ReplayPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Routes>
+        <main className="relative ml-3 flex min-w-0 min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="page-surface flex min-h-0 flex-1 flex-col overflow-hidden">
+            <Routes>
+              <Route path="/" element={<Navigate to="/chat" replace />} />
+              <Route path="/chat" element={<ChatPage />} />
+              <Route path="/student" element={<ProfilePage />} />
+              <Route path="/replays" element={<ReplayPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+            </Routes>
+          </div>
         </main>
         </div>
     </ErrorBoundary>

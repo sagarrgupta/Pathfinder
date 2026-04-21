@@ -1,8 +1,13 @@
-"""Web search fallback chain.
+"""Top-level search entry point that stitches providers together.
 
-Tries search providers in order: Tavily -> Google CSE -> Brave -> DuckDuckGo.
-Aggregates unique results across providers, stopping once enough
-results are collected.
+We try each provider in turn, aggregate unique URLs, and stop as soon
+as we have `max_results` good hits. Provider order roughly tracks
+quality vs cost: Tavily first (best for research Qs), then Google CSE,
+then Brave, then DuckDuckGo as the no-API-key safety net.
+
+If an earlier provider returns *some* results but not enough, later
+providers fill in — that's why this is an aggregator, not a pure
+fallback. `web_tools.search_web` calls this; no one else should.
 """
 
 from __future__ import annotations
@@ -25,11 +30,11 @@ _PROVIDERS: list[tuple[str, Callable[..., Coroutine]]] = [
 
 
 async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
-    """Search the web using the fallback chain.
+    """Run the query across providers until we have enough unique hits.
 
-    Tries each provider in order and aggregates unique results until
-    ``max_results`` have been collected. If all providers fail or
-    return nothing, returns an empty list.
+    Logs which provider contributed how many results — useful when
+    diagnosing why a specialist's web answer is thin (usually: all
+    providers failed or hit rate limits).
     """
     query = normalize_query(query)
     max_results = clamp_max_results(max_results)

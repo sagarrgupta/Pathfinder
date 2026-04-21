@@ -1,19 +1,29 @@
-"""Shared state schema for the LangGraph StateGraph.
+"""The shared "clipboard" that every node on the LangGraph flow reads and writes.
 
-All agent nodes read from and write to this typed dictionary.
-LangGraph manages message accumulation via the ``add_messages`` reducer.
+Pathfinder processes a chat turn as a sequence of small steps (input guard,
+orchestrator, ingestion, specialist, validator, responder). Each step is a
+plain async function that takes this dictionary in and returns an updated
+copy. Because the shape is typed here in one place, any node can see what
+fields exist, who fills them in, and who consumes them later.
+
+The `messages` field uses LangGraph's `add_messages` reducer so chat history
+accumulates across turns automatically instead of being overwritten.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Annotated, Any, Optional, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langgraph.graph.message import add_messages
 
 
 class UploadedFile(TypedDict, total=False):
-    """Metadata for a file uploaded in the current turn."""
+    """One file attached to the current chat turn.
+
+    Carried through the state until `doc_analyst` extracts text, chunks it,
+    and persists it to Neo4j; after that the list is cleared so later turns
+    do not reprocess the same upload.
+    """
     filename: str
     content: bytes
     size: int
@@ -21,7 +31,13 @@ class UploadedFile(TypedDict, total=False):
 
 
 class PathfinderState(TypedDict, total=False):
-    """Shared state flowing through the LangGraph StateGraph."""
+    """Everything one chat turn may produce, consume, or pass along.
+
+    Fields are grouped by who fills them in. `total=False` means individual
+    nodes only set the fields they care about; downstream nodes use
+    `state.get(..., default)` to stay robust when an upstream node didn't
+    run (for example, when the input guard blocked the turn early).
+    """
 
     # ── Input ───────────────────────────────────────────────────
     messages: Annotated[list, add_messages]  # Conversation history (LangGraph managed)
@@ -30,36 +46,26 @@ class PathfinderState(TypedDict, total=False):
     session_id: str                           # Chat session ID
     student_id: str                           # Student identifier
     reasoning: str                            # User-selected reasoning effort for local LLM calls
-    request_plan: dict[str, Any]              # Deterministic request-planning hints for this turn
 
     # ── Orchestrator output ─────────────────────────────────────
     selected_specialist: str                  # Single specialist selected for this turn
     routing_scores: dict[str, float]          # Raw specialist routing scores
     routing_reason: str                       # Human-readable routing explanation
-    next_node: str                            # Next node to route to
-    session_summary: dict[str, Any]           # Normalized summary of session/profile context
-    dependency_status: dict[str, Any]         # Health snapshot for external dependencies
-    recovery_events: list[dict[str, Any]]     # Structured recovery/degradation events for this turn
+    processing_issues: list[dict[str, Any]]   # Structured degraded-processing events for this turn
     stop_reason: str                          # Why a turn stopped early or partially
-    durable_profile_facts: dict[str, Any]     # Small durable fact snapshot exposed up front
 
     # ── Data gathered by nodes ──────────────────────────────────
-    profile_data: dict[str, Any]              # Student profile from Neo4j KG
-    retrieved_documents: list[dict[str, Any]] # Chunks from Neo4j vector search
-    web_results: list[dict[str, Any]]         # Results from web search
-    semantic_memory: dict[str, Any]           # Retrieved candidate facts/memory items/evidence
-    latest_ingestion_result: dict[str, Any]   # Last in-turn memory ingestion summary for debugging/tracing
-    extracted_entities: list[dict[str, Any]]  # Entities extracted from documents
-    document_roles: list[dict[str, Any]]      # Inferred semantic roles for uploaded documents
-    transcript_states: list[dict[str, Any]]   # Structured transcript state derived from uploaded transcripts
+    input_session_context: str                # Session context that was passed into this turn
+    input_long_context: str                   # Long context that was passed into this turn
+    session_context: str                      # Stored session-scoped summary carried across turns
+    long_context: str                         # Stored student-scoped summary carried across turns
+    student_schema: dict[str, Any]            # Canonical bounded student graph schema manifest
+    latest_ingestion_result: dict[str, Any]   # Last document-ingestion summary for debugging/replays
+    latest_query_ingestion_result: dict[str, Any]  # Last opportunistic chat-message ingestion summary
     tool_call_log: list[dict[str, Any]]       # Provenance log of tool calls/results used this turn
     specialist_output: dict[str, Any]         # Structured result from the selected specialist
-    long_context_payload: dict[str, Any]      # Durable long-context payload passed to the specialist
 
     # ── Evaluation ──────────────────────────────────────────────
-    draft_answer: str                         # Answer before evaluation
-    confidence_score: float                   # 0.0 to 1.0
-    is_grounded: bool                         # Whether answer is grounded in sources
     citations: list[dict[str, Any]]           # Sources for the answer
 
     # ── Output ──────────────────────────────────────────────────

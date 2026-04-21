@@ -12,10 +12,10 @@ const ICONS = {
 };
 
 const STYLES = {
-  success: 'border border-emerald-200/70 bg-card text-foreground dark:border-emerald-900/50',
-  error: 'border border-red-200/70 bg-card text-foreground dark:border-red-900/50',
-  warning: 'border border-amber-200/70 bg-card text-foreground dark:border-amber-900/50',
-  info: 'border border-border bg-card text-foreground',
+  success: 'border border-emerald-200/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.96),rgba(236,253,245,0.94))] text-foreground dark:border-emerald-900/50 dark:bg-[linear-gradient(135deg,rgba(12,18,16,0.96),rgba(5,46,22,0.72))]',
+  error: 'border border-red-200/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.96),rgba(254,242,242,0.94))] text-foreground dark:border-red-900/50 dark:bg-[linear-gradient(135deg,rgba(20,12,12,0.96),rgba(69,10,10,0.72))]',
+  warning: 'border border-amber-200/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.96),rgba(255,251,235,0.94))] text-foreground dark:border-amber-900/50 dark:bg-[linear-gradient(135deg,rgba(20,16,10,0.96),rgba(120,53,15,0.65))]',
+  info: 'border border-border/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.96),rgba(239,246,255,0.92))] text-foreground dark:bg-[linear-gradient(135deg,rgba(12,18,28,0.96),rgba(15,23,42,0.82))]',
 };
 
 const ICON_STYLES = {
@@ -59,24 +59,26 @@ export function ToastProvider({ children }) {
       {children}
 
       {/* Toast Container */}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-full max-w-sm flex-col gap-2">
+      <div className="pointer-events-none fixed bottom-5 right-5 z-[100] flex w-full max-w-sm flex-col gap-3">
         {toasts.map((t) => {
           const Icon = ICONS[t.type];
           return (
             <div
               key={t.id}
               className={cn(
-                'pointer-events-auto flex items-start gap-3 rounded-2xl px-4 py-3 shadow-[0_12px_32px_rgba(15,23,42,0.08)] animate-fade-in-up backdrop-blur-sm',
+                'pointer-events-auto flex items-center gap-3 rounded-[22px] px-4 py-3 shadow-[0_22px_55px_rgba(15,23,42,0.14)] animate-fade-in-up backdrop-blur-xl',
                 STYLES[t.type]
               )}
             >
-              <Icon className={cn('h-5 w-5 flex-shrink-0 mt-0.5', ICON_STYLES[t.type])} />
-              <p className="flex-1 text-sm leading-relaxed">{t.message}</p>
+              <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-2xl bg-background/65">
+                <Icon className={cn('h-4.5 w-4.5', ICON_STYLES[t.type])} />
+              </div>
+              <p className="flex-1 self-center text-sm leading-relaxed">{t.message}</p>
               <button
                 type="button"
                 aria-label="Dismiss notification"
                 onClick={() => removeToast(t.id)}
-                className="flex-shrink-0 rounded-md p-1 opacity-60 transition-opacity hover:bg-muted hover:opacity-100"
+                className="flex-shrink-0 self-center rounded-md p-1 opacity-60 transition-opacity hover:bg-muted hover:opacity-100"
               >
                 <X className="h-4 w-4" />
               </button>
