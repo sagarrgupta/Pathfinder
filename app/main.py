@@ -1,4 +1,21 @@
-"""Pathfinder FastAPI application entry point."""
+"""FastAPI application entry point for Pathfinder.
+
+This file is what `uvicorn app.main:app` actually runs. It stitches
+together three process-level concerns:
+
+1. Logging — a single root format so every subsystem's messages line up.
+2. Lifespan — on startup, make sure the SQLite data directory exists,
+   initialize the Neo4j schema, and create the vector index; on
+   shutdown, close the shared Neo4j drivers cleanly. If Neo4j is not
+   reachable at startup the app still boots — drivers are lazily
+   re-tried on first use so local dev doesn't hard-fail.
+3. App wiring — build the `FastAPI` instance, add permissive CORS (the
+   allowed origins are configurable in `settings`), and mount the API
+   router under `settings.API_V1_PREFIX`.
+
+Business logic lives in `app.nodes` / `app.tools`; this file just owns
+the HTTP surface and the process lifecycle around it.
+"""
 
 from __future__ import annotations
 
@@ -32,13 +49,16 @@ log = logging.getLogger("pathfinder")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown tasks."""
+    """Run once at process startup and once at shutdown.
+
+    Startup: make sure the SQLite checkpoint directory exists, then
+    bring Neo4j up to a usable state (constraints + vector index).
+    Shutdown: close shared Neo4j drivers so connections aren't leaked.
+    """
     log.info("Starting Pathfinder v%s", settings.API_VERSION)
 
-    # Ensure data directory exists
     os.makedirs(os.path.dirname(settings.SQLITE_DB_PATH) or ".", exist_ok=True)
 
-    # Initialize Neo4j schema and vector index
     try:
         graph_driver = await get_graph_driver()
         await GraphDB(graph_driver).init_schema()
@@ -56,7 +76,6 @@ async def lifespan(app: FastAPI):
     log.info("Pathfinder ready — http://%s:%d", settings.HOST, settings.PORT)
     yield
 
-    # Shutdown
     await close_graph_driver()
     await close_vector_driver()
     log.info("Pathfinder stopped")
@@ -70,7 +89,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -79,13 +97,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routes
 from app.api.routes import router  # noqa: E402
 
 app.include_router(router, prefix=settings.API_V1_PREFIX)
 
 
-# Root
 @app.get("/")
 async def root():
+    """Tiny liveness endpoint — doesn't touch Neo4j or the LLM."""
     return {"name": "Pathfinder", "version": settings.API_VERSION, "status": "running"}

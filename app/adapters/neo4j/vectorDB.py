@@ -1,3 +1,22 @@
+"""Vector / embedding operations against Neo4j's vector index.
+
+`Chunk` nodes carry both the raw text of an uploaded document slice and
+its embedding vector. Neo4j's vector index makes "find chunks most
+similar to this query" fast — that's what powers `vector_search` and
+the chunk half of `hybrid_search` in `app.tools`.
+
+This adapter is deliberately small and split from `graphDB.py` so the
+embedding concerns stay in one place:
+- `create_vector_index` at startup (idempotent),
+- `create_embeddings` to call into Ollama and validate the vector,
+- `upsert_chunk` / `batch_upsert_chunks` to write chunks + vectors,
+- `vector_search` / `get_chunk*` helpers for retrieval.
+
+All vectors are validated against `self.dimensions` before any write so
+a mismatched embedding model fails loudly instead of corrupting the
+index.
+"""
+
 import json
 import logging
 import re
@@ -6,11 +25,21 @@ from typing import Any
 from app.adapters.neo4j._sanitize import sanitize_neo4j_value
 from app.adapters.embeddings import ollama as ollama_embeddings
 
+# Index name is templated into Cypher directly (unavoidable), so it must
+# be a safe identifier. Validated once at construction time.
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 log = logging.getLogger("pathfinder.neo4j.vector")
 
+
 class VectorDB:
-    """Neo4j vector adapter for chunk embeddings and retrieval."""
+    """Vector-index + chunk CRUD bound to one Neo4j driver.
+
+    Pair one `VectorDB` with one `GraphDB` against the same driver; the
+    two classes share nodes (chunks are written here, grounded into the
+    graph there). `index_name` and `dimensions` must match what the
+    index was created with — changing either requires rebuilding the
+    index.
+    """
 
     def __init__(self, driver, *, index_name: str, dimensions: int):
         self.driver = driver
@@ -20,7 +49,11 @@ class VectorDB:
         self.dimensions = dimensions
 
     async def create_vector_index(self) -> None:
-        """Create the Chunk.embedding vector index if missing."""
+        """Ensure the vector index on `Chunk.embedding` exists.
+
+        Called from `app.main.lifespan` at startup. Cosine similarity
+        is hard-coded — the embedding model must be trained for cosine.
+        """
         safe_index_name = self.validate_identifier(self.index_name)
         async with self.driver.session() as session:
             await session.run(
@@ -38,7 +71,12 @@ class VectorDB:
         log.info("Vector index ensured: %s", safe_index_name)
 
     def validate_embedding(self, embedding: list[float]) -> list[float]:
-        """Validate one embedding vector and coerce to list[float]."""
+        """Guard that an embedding is well-formed and matches `self.dimensions`.
+
+        Neo4j will accept any list of floats into a vector field, but a
+        wrong dimension silently breaks similarity search — we'd rather
+        fail loudly at write time.
+        """
         if not isinstance(embedding, list) or not embedding:
             raise ValueError("embedding must be a non-empty list[float]")
         if len(embedding) != self.dimensions:
@@ -48,7 +86,7 @@ class VectorDB:
         return [float(value) for value in embedding]
 
     async def create_embeddings(self, text: str) -> list[float]:
-        """Create and validate one embedding vector for text."""
+        """Embed one string via Ollama and validate the resulting vector."""
         embedding = await ollama_embeddings.aembed_query(text)
         return self.validate_embedding(embedding)
 
@@ -60,7 +98,13 @@ class VectorDB:
         text: str,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Upsert chunk text + metadata without generating an embedding."""
+        """Write a chunk's text + metadata to Neo4j without touching its vector.
+
+        Useful for the two-step path where `upsert_chunk` first lands
+        the textual part so a failure mid-embedding still leaves the
+        chunk in a valid-but-unindexed state. Blank text is skipped
+        (not an error) so batch callers don't have to pre-filter.
+        """
         if not chunk_id or not document_id:
             raise ValueError("chunk_id and document_id are required")
         text = (text or "").strip()
@@ -112,7 +156,13 @@ class VectorDB:
         text: str,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Upsert chunk metadata, then attach the generated embedding."""
+        """Full single-chunk upsert: text, metadata, and embedding in one call.
+
+        This is the straightforward path used by the one-off `upsert_chunk`
+        tool. For ingesting a document's worth of chunks, prefer
+        `batch_upsert_chunks` — it embeds all chunks in a single Ollama
+        call which is dramatically faster.
+        """
         base = await self.upsert_chunk_metadata(
             chunk_id=chunk_id,
             document_id=document_id,
@@ -157,7 +207,20 @@ class VectorDB:
         document_id: str,
         chunks: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Upsert many chunks for one document, including embeddings."""
+        """Embed and write a whole document's worth of chunks in one shot.
+
+        This is the hot path for document ingestion. It:
+        1. normalizes each chunk (folding top-level `page_number`,
+           `chunk_index`, offsets, and `provenance` into `metadata` so
+           the stored shape is consistent),
+        2. sends every text to Ollama in a single `aembed_documents`
+           call — much cheaper than embedding one-by-one,
+        3. runs a single Cypher `UNWIND` that upserts every chunk and
+           wires it to its parent document.
+
+        Empty/invalid chunks are silently dropped so the ingester can
+        hand in whatever it has without pre-filtering.
+        """
         if not document_id:
             raise ValueError("document_id is required")
         if not chunks:
@@ -240,7 +303,13 @@ class VectorDB:
         student_id: str,
         k: int = 5,
     ) -> list[dict[str, Any]]:
-        """Vector search over Chunk nodes scoped to one student profile."""
+        """Run a cosine similarity search over this student's chunks.
+
+        Embeds `query`, uses Neo4j's vector index to find the top-`k`
+        matching chunks, and restricts the result to documents owned by
+        `student_id` — one student never sees another's data. Returns
+        each hit with its text, metadata, source document, and score.
+        """
         query = (query or "").strip()
         if not query:
             return []
@@ -287,7 +356,12 @@ class VectorDB:
         return sanitize_neo4j_value(rows)
 
     async def delete_document_chunks(self, *, document_id: str) -> dict[str, Any]:
-        """Delete chunks and related edges for one document."""
+        """Remove every chunk for a document (and all edges attached to them).
+
+        Called by `GraphDB.delete_document_cascade` when a user re-uploads
+        or explicitly deletes a document — we never want orphan chunks
+        hanging around in the vector index.
+        """
         if not document_id:
             raise ValueError("document_id is required")
         async with self.driver.session() as session:
@@ -305,7 +379,7 @@ class VectorDB:
         return sanitize_neo4j_value({"status": "success", "deleted_chunks": deleted, "document_id": document_id})
 
     async def health_check(self) -> dict[str, Any]:
-        """Basic Neo4j and vector-index connectivity check."""
+        """Quick `RETURN 1` + index metadata probe used by `/health`."""
         async with self.driver.session() as session:
             ping = await session.run("RETURN 1 AS ok")
             record = await ping.single()
@@ -318,13 +392,24 @@ class VectorDB:
 
     @staticmethod
     def validate_identifier(identifier: str) -> str:
-        """Allow only safe Cypher identifier characters."""
+        """Reject anything that isn't a safe Cypher identifier.
+
+        The vector index name ends up templated directly into Cypher
+        (the driver can't parameterize index names), so this is the one
+        spot user-controlled strings touch raw Cypher. Tight regex.
+        """
         if not identifier or not _IDENTIFIER.fullmatch(identifier):
             raise ValueError(f"Invalid identifier: {identifier}")
         return identifier
 
     @staticmethod
     def _metadata_dict(raw_metadata: Any) -> dict[str, Any]:
+        """Always return a dict for a chunk's metadata, even if stored as JSON string.
+
+        We persist metadata as `metadata_json` (a JSON string) to keep
+        the schema simple, but callers expect a real dict. Malformed
+        JSON degrades to an empty dict rather than blowing up a read.
+        """
         if isinstance(raw_metadata, dict):
             return raw_metadata
         if not raw_metadata:
@@ -336,15 +421,18 @@ class VectorDB:
         return parsed if isinstance(parsed, dict) else {}
 
     def _chunk_payload(self, chunk: dict[str, Any]) -> dict[str, Any]:
+        """Normalize a raw Neo4j `Chunk` record for return to callers.
+
+        Unpacks `metadata_json` into a real `metadata` dict and drops
+        the raw JSON string so callers never have to parse it themselves.
+        """
         payload = dict(chunk or {})
         payload["metadata"] = self._metadata_dict(payload.get("metadata_json"))
         payload.pop("metadata_json", None)
         return payload
 
-    # - get_chunk(...):
-    #   Fetch one chunk with its text, metadata, and document linkage.
     async def get_chunk(self, *, chunk_id: str) -> dict[str, Any]:
-        """Fetch one chunk with its text, metadata, and document linkage."""
+        """Fetch a single chunk by id — used by the `get_chunk` LLM tool."""
         async with self.driver.session() as session:
             result = await session.run("""
                 MATCH (c:Chunk {id: $chunk_id})
@@ -356,10 +444,13 @@ class VectorDB:
             return sanitize_neo4j_value(self._chunk_payload(record["chunk"]))
 
 
-    # - get_chunks_for_document(...):
-    #   Return all chunks for a document so ingestion/retrieval can inspect evidence.
     async def get_chunks_for_document(self, *, document_id: str) -> list[dict[str, Any]]:
-        """Return all chunks for a document so ingestion/retrieval can inspect evidence."""
+        """Every chunk that came from one document.
+
+        The ingester uses this during re-ingest to diff what's stored
+        against what's about to be written; the replay viewer uses it
+        to show the source text backing a citation.
+        """
         async with self.driver.session() as session:
             result = await session.run("""
                 MATCH (c:Chunk {document_id: $document_id})
@@ -368,10 +459,12 @@ class VectorDB:
             rows = [self._chunk_payload(record["chunk"]) async for record in result]
             return sanitize_neo4j_value(rows)
     
-    # - get_chunks_for_student(...):
-    #   Return chunks across all documents for student-wide traversal or debugging.
     async def get_chunks_for_student(self, *, student_id: str) -> list[dict[str, Any]]:
-        """Return chunks across all documents for student-wide traversal or debugging."""
+        """Every chunk for every document this student has uploaded.
+
+        Debug / export use — routine retrieval should go through
+        `similarity_search` instead so we benefit from the vector index.
+        """
         async with self.driver.session() as session:
             result = await session.run("""
                 MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d:Document)<-[:UPLOADED]-(s:Student {id: $student_id})
@@ -380,10 +473,8 @@ class VectorDB:
             rows = [self._chunk_payload(record["chunk"]) async for record in result]
             return sanitize_neo4j_value(rows)
 
-    # - delete_chunk(...):
-    #   Remove or replace one chunk safely during re-ingestion.
     async def delete_chunk(self, *, chunk_id: str) -> dict[str, Any]:
-        """Remove or replace one chunk safely during re-ingestion."""
+        """Detach-delete a single chunk. Used by the chunk-level tool."""
         async with self.driver.session() as session:
             result = await session.run("""
                 MATCH (c:Chunk {id: $chunk_id})
@@ -396,11 +487,14 @@ class VectorDB:
                 raise ValueError("chunk not found")
             return sanitize_neo4j_value({"status": "success", "chunk_id": record["chunk_id"]})
     
-    # - get_chunk_neighbors(...):
-    #   Convenience read helper that returns document context for one chunk; graph-side
-    #   entity expansion should still live in GraphDB.
     async def get_chunk_neighbors(self, *, chunk_id: str) -> dict[str, Any]:
-        """Return one chunk plus its document context; graph-side entity expansion stays in GraphDB."""
+        """Chunk + its parent `Document` in one hop.
+
+        Deliberately does not expand to linked entities — that's a
+        graph-side concern and lives in `GraphDB.get_chunk_entities`.
+        Keeping the split means the LLM tool layer can decide how much
+        context it actually wants.
+        """
         async with self.driver.session() as session:
             result = await session.run("""
                 MATCH (c:Chunk {id: $chunk_id})-[:FROM_DOCUMENT]->(d:Document)
@@ -415,7 +509,11 @@ class VectorDB:
             })
     
     async def get_document_search_context(self, *, document_id: str) -> list[dict[str, Any]]:
-        """Return chunk summaries/candidates for one document during ingestion or review."""
+        """A compact (id / text / metadata) chunk list for ingestion review.
+
+        Similar to `get_chunks_for_document`, but drops the Neo4j
+        internal fields so the shape is already LLM-ready.
+        """
         async with self.driver.session() as session:
             result = await session.run("""
                 MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d:Document {id: $document_id})

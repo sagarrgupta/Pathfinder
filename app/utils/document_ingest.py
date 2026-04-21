@@ -1,4 +1,23 @@
-"""Helpers for ingesting one document into the student graph."""
+"""Drive the document-ingestion agent that turns a file into graph nodes.
+
+This is the workhorse behind the `doc_analyst` node. Given a file's
+already-extracted text + chunks, we:
+
+1. Load the current student schema so the agent reuses existing
+   section/entity names instead of inventing duplicates.
+2. Hand the agent a text LLM bound to the `document_ingestor` tool
+   profile (graph writes + link tools, no web, no chunk deletion).
+3. Run a capped tool-calling loop — up to `_INGESTION_ROUNDS` rounds,
+   with each round executing at most `_INGESTION_TOOL_LIMIT` tool
+   calls — until the model emits its final JSON report.
+4. Summarize what it actually did via `build_graph_updates` so the
+   replay + UI can show "saved N items" without walking the raw log.
+
+The tool-calling loop is intentionally aggressive (100 rounds × 30
+tools) because a long document can justify hundreds of writes. The
+specialist runner's loop is much tighter — it's answering one
+question, not learning a whole resume.
+"""
 
 from __future__ import annotations
 
@@ -27,16 +46,29 @@ from app.utils.progress import add_progress
 
 log = logging.getLogger("pathfinder.utils.document_ingest")
 
+# Tool profile decides which tools the LLM can see — `document_ingestor`
+# hides read-only vector tools and the specialist's `respond` tool.
 _AGENT_PROFILE = "document_ingestor"
+# Truncation budgets for the ingestion prompt. The text/chunk limits are
+# intentionally generous since ingestion prompts run at lower frequency
+# than chat turns and benefit from seeing the whole document.
 _QUERY_LIMIT = 400
 _DOCUMENT_LIMIT = 24000
 _CHUNK_PROMPT_LIMIT = 24000
+# Ingestion loop caps — see the module docstring for rationale.
 _INGESTION_TOOL_LIMIT = 30
 _INGESTION_ROUNDS = 100
 
 
 def _normalize_model_summary(payload: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the model's final JSON report into a fixed shape."""
+    """Coerce the agent's final JSON into the fixed shape replays expect.
+
+    The agent is *asked* to return `summary` + `key_takeaways` +
+    `saved_items` + `stop_reason`, but it occasionally misses a field
+    or returns the wrong type. This normalizer fills gaps with empty
+    defaults, trims whitespace, and caps list lengths so one chatty
+    model response can't blow out the replay UI.
+    """
     key_takeaways = payload.get("key_takeaways") if isinstance(payload, dict) else []
     saved_items = payload.get("saved_items") if isinstance(payload, dict) else []
     return {
@@ -67,7 +99,21 @@ async def ingest_document(
     chunks: list[dict[str, Any]] | None = None,
     step_progress: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Use the tool registry to ingest one document into the student graph."""
+    """Run the ingestion agent over one file, returning its tool log + summary.
+
+    Called by `doc_analyst` for every uploaded file on a chat turn.
+    The return dict carries everything the replay artifact needs:
+
+    - `tool_call_log` — raw per-call records (input/output/status),
+    - `model_summary` — the LLM's own natural-language recap,
+    - `graph_updates` — `build_graph_updates` distillation,
+    - `graph_schema_after` — schema manifest once writes settled, so
+      later nodes can see the updated shape without another round trip.
+
+    Progress messages are appended to `step_progress` (a mutable list
+    owned by the caller) both for the replay artifact and for live
+    SSE streaming via `app.utils.progress`.
+    """
     progress_sink: list[dict[str, str]] = step_progress if step_progress is not None else []
     graph_db = GraphDB(await get_graph_driver())
 

@@ -1,4 +1,26 @@
-"""LM Studio LLM adapter with debug logging."""
+"""LM Studio chat-model adapter.
+
+LM Studio hosts a local model behind an OpenAI-compatible API, so we can
+reuse `langchain-openai`'s `ChatOpenAI` client and just point it at LM
+Studio's URL. Every node that calls an LLM (orchestrator, specialist,
+ingester, doc analyst) pulls its client from here.
+
+Two extras live on top of plain `ChatOpenAI`:
+
+1. `LoggingChatOpenAI` — a thin subclass that writes every request /
+   response / error to `settings.LLM_DEBUG_LOG_PATH` when debug logging
+   is on. This is invaluable when something looks off about an answer;
+   the raw LLM trace is sitting right next to the replay artifact.
+
+2. Reasoning effort handling — different model families expose
+   "thinking" differently. The OpenAI-style API wants a
+   `reasoning_effort` enum, while Gemma 4 wants a boolean template
+   toggle. `_build_reasoning_config` hides that split so the rest of
+   the app just passes a label like "low" / "medium" / "high".
+
+Clients are cached per reasoning label so we don't rebuild them on
+every node invocation.
+"""
 
 from __future__ import annotations
 
@@ -31,17 +53,24 @@ _REASONING_ALIASES = {
 
 
 class LoggingChatOpenAI(ChatOpenAI):
-    """ChatOpenAI subclass that logs every call to a debug file."""
+    """`ChatOpenAI` with an extra debug-log side effect.
+
+    Every `ainvoke` writes a request/response pair to the debug log
+    file so we can reconstruct exactly what the LLM saw and said on any
+    given turn. Logging is gated by `settings.LLM_DEBUG_LOG_ENABLED` so
+    it can be switched off for production.
+    """
 
     _llm_label: str = "text"
 
     def __init__(self, llm_label: str = "text", **kwargs: Any):
         super().__init__(**kwargs)
-        # Store label using object __dict__ to avoid pydantic issues
+        # Pydantic models forbid free attribute assignment, so stash the
+        # label directly on the instance dict instead.
         object.__setattr__(self, "_llm_label", llm_label)
 
     async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> BaseMessage:
-        """Wrap ainvoke with debug logging."""
+        """LangChain's async entry point — we wrap it to emit debug trace."""
         label = object.__getattribute__(self, "_llm_label")
         start = time.time()
 
@@ -61,13 +90,13 @@ class LoggingChatOpenAI(ChatOpenAI):
 
 
 def _log_request(label: str, input_val: Any) -> None:
-    """Write a request trace entry for one LLM call."""
+    """Dump the outgoing prompt (truncated per message) to the debug log."""
     prompt_summary = _summarize_input(input_val)
     _write_debug(f"[{label.upper()}] ── REQUEST ──\n{prompt_summary}\n")
 
 
 def _log_response(label: str, result: BaseMessage, *, elapsed: float) -> None:
-    """Write a response trace entry including useful metadata."""
+    """Dump the model's reply plus handy metadata (tool calls, reasoning)."""
     content = result.content if isinstance(result.content, str) else str(result.content)
     extra_str = "\n".join(_response_debug_lines(result))
     _write_debug(
@@ -79,7 +108,7 @@ def _log_response(label: str, result: BaseMessage, *, elapsed: float) -> None:
 
 
 def _log_error(label: str, exc: Exception, *, elapsed: float) -> None:
-    """Write an error trace entry for one failed LLM call."""
+    """Record a failed call — type, message, and how long we waited before it blew up."""
     _write_debug(
         f"[{label.upper()}] ── ERROR ({elapsed:.1f}s) ──\n"
         f"{type(exc).__name__}: {exc}\n"
@@ -88,7 +117,7 @@ def _log_error(label: str, exc: Exception, *, elapsed: float) -> None:
 
 
 def _response_debug_lines(result: BaseMessage) -> list[str]:
-    """Return compact debug lines describing one model response."""
+    """Pull tool calls, reasoning fields, and content type into debug-log lines."""
     lines: list[str] = []
     additional_kwargs = getattr(result, "additional_kwargs", None)
     if additional_kwargs:
@@ -110,7 +139,11 @@ def _response_debug_lines(result: BaseMessage) -> list[str]:
 
 
 def _summarize_input(input_val: Any) -> str:
-    """Build a readable summary of the LLM input messages."""
+    """Turn a heterogeneous list of messages into readable debug lines.
+
+    Accepts dicts, LangChain `BaseMessage`, and plain `(role, content)`
+    tuples — whichever shape the caller happened to build.
+    """
     lines = []
     messages = input_val if isinstance(input_val, (list, tuple)) else [input_val]
     for msg in messages:
@@ -132,7 +165,11 @@ def _summarize_input(input_val: Any) -> str:
 
 
 def _summarize_multimodal_content(parts: list[Any]) -> str:
-    """Summarize multimodal content for log readability without dumping payloads."""
+    """Collapse vision messages to "<text> [+image]" instead of base64 blobs.
+
+    Image payloads are huge and useless in logs, so we just note that
+    one was attached.
+    """
     text_parts = [
         part.get("text", "")
         for part in parts
@@ -150,24 +187,27 @@ def _summarize_multimodal_content(parts: list[Any]) -> str:
 
 
 def _trunc(text: str, max_len: int) -> str:
-    """Truncate text for logging."""
+    """Clip long strings for the log with a "[N chars total]" suffix."""
     if len(text) <= max_len:
         return text
     return text[:max_len] + f"... [{len(text)} chars total]"
 
 
 def _write_debug(text: str) -> None:
-    """Append a timestamped entry to the debug log file."""
+    """Append one timestamped block to the debug log file.
+
+    Swallows all I/O errors: debug logging is strictly best-effort and
+    must never take down a real request.
+    """
     try:
         _DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%H:%M:%S")
         with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {text}\n")
     except Exception:
-        pass  # Never let debug logging break the app
+        pass
 
 
-# ── LLM Singletons ─────────────────────────────────────────────────
 def _build_llm(
     *,
     label: str,
@@ -175,8 +215,12 @@ def _build_llm(
     model_kwargs: dict[str, Any] | None = None,
     extra_body: dict[str, Any] | None = None,
 ) -> LoggingChatOpenAI:
-    """Build one LM Studio client with the shared connection settings."""
-    # If not requiring an exact match, send 'local-model' so LM Studio uses whatever is in memory.
+    """Construct one LM Studio client with the shared URL + API key.
+
+    When `LLM_REQUIRE_EXACT_MODEL` is off we send the magic value
+    `local-model` so LM Studio routes the call to whichever model is
+    currently loaded, regardless of what `settings.LLM_MODEL` says.
+    """
     api_model = model if settings.LLM_REQUIRE_EXACT_MODEL else "local-model"
 
     kwargs: dict[str, Any] = {
@@ -193,11 +237,14 @@ def _build_llm(
 
 
 def _normalize_reasoning_effort(model: str, reasoning: str | None) -> str:
-    """Map app-level reasoning labels to what the configured model accepts."""
+    """Translate a user-facing reasoning label to a provider-accepted one.
+
+    The UI exposes simple words (on/off/low/medium/high). The provider
+    expects one of {none, low, medium, high}. We map aliases and fall
+    back to "medium" with a warning if the value is unknown.
+    """
     reasoning_key = str(reasoning or "medium").strip().lower() or "medium"
 
-    # Older LM Studio/Gemma flows sometimes used a binary on/off toggle.
-    # The current OpenAI-compatible API only accepts the standard effort enum.
     if reasoning_key in _REASONING_ALIASES:
         return _REASONING_ALIASES[reasoning_key]
 
@@ -213,18 +260,22 @@ def _normalize_reasoning_effort(model: str, reasoning: str | None) -> str:
 
 
 def _is_gemma_4_model(model: str) -> bool:
-    """Return True when the configured text model is from the Gemma 4 family."""
+    """Detect Gemma 4 by name — it needs the template-toggle path, not the enum."""
     lowered_model = str(model or "").strip().lower()
     return "gemma-4" in lowered_model
 
 
 def _build_reasoning_config(model: str, reasoning: str | None) -> dict[str, Any]:
-    """Build model-specific reasoning settings for the current text model."""
+    """Return the right per-model knobs for the requested reasoning level.
+
+    For OpenAI-style models: set `reasoning_effort` in `model_kwargs`.
+    For Gemma 4: flip an `enable_thinking` boolean on the chat template.
+    The returned `cache_key` is what we key the client cache on so each
+    distinct reasoning config gets its own reusable client.
+    """
     reasoning_key = _normalize_reasoning_effort(model, reasoning)
 
     if _is_gemma_4_model(model):
-        # Gemma 4 exposes thinking as a boolean prompt-template toggle rather
-        # than an OpenAI-style reasoning_effort enum.
         enable_thinking = reasoning_key != "none"
         return {
             "cache_key": f"gemma4:{'thinking' if enable_thinking else 'no-thinking'}",
@@ -240,7 +291,12 @@ def _build_reasoning_config(model: str, reasoning: str | None) -> dict[str, Any]
 
 
 def get_text_llm(reasoning: str | None = None) -> LoggingChatOpenAI:
-    """Return a cached text LLM for the requested reasoning setting."""
+    """Main entry point — hand back a chat client tuned for this reasoning level.
+
+    Clients are cached per reasoning config so repeated calls at the
+    same level reuse the same HTTP session. This is what every LangGraph
+    node ends up calling when it needs an LLM.
+    """
     config = _build_reasoning_config(settings.LLM_MODEL, reasoning)
     cache_key = str(config["cache_key"])
     build_kwargs: dict[str, Any] = {}
@@ -259,7 +315,11 @@ def get_text_llm(reasoning: str | None = None) -> LoggingChatOpenAI:
 
 
 def get_vision_llm() -> LoggingChatOpenAI:
-    """Return the singleton vision LLM."""
+    """Return the shared vision-capable model client.
+
+    Used by `doc_analyst` when an uploaded file contains images that
+    need OCR / captioning. Singleton because we only ever need one.
+    """
     global _vision_llm
     if _vision_llm is None:
         _vision_llm = _build_llm(label="vision", model=settings.VISION_MODEL)

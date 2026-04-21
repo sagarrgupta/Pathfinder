@@ -1,3 +1,36 @@
+"""Structured (non-vector) operations against the Neo4j graph.
+
+This module is the single owner of the Cypher that shapes the student
+knowledge graph. Its mental model:
+
+    (:Student {id}) -[:HAS_SECTION]->  (:Section {key})
+                     -[:HAS_ENTITY]->  (:Entity {type, identity})
+                                        -[:HAS_FIELD]-> (:Field ...)
+                                        -[:MENTIONED_IN]-> (:Chunk)
+                                        -[:DERIVED_FROM]-> (:Document)
+                     -[:HAS_DOCUMENT]-> (:Document) -> (:Chunk)
+
+- `Student` is the root per-user node; everything belongs to exactly one
+  student.
+- `Section` groups related entities under a stable key (e.g. "education").
+- `Entity` is any typed concept (Course, Employer, Award, ...) with a
+  small identity dict that dedupes it and a properties dict that carries
+  its scalar attributes.
+- `Field` is an optional child of an entity for deeper / nested detail.
+- `Document` + `Chunk` come from file ingestion; entities can be grounded
+  in them so we can cite sources.
+
+`GraphDB` is instantiated with an async Neo4j driver and exposes one
+method per operation the tool layer (`app.tools.graph_tools`) wants to
+expose to the LLM. Every return value is piped through
+`sanitize_neo4j_value` so callers see clean dicts / lists / scalars
+instead of Neo4j driver types.
+
+Vector / embedding work lives in the sibling `vectorDB.py`; this file
+only reaches over there when a graph write also needs to refresh chunk
+embeddings (e.g. cascade deletes).
+"""
+
 import json
 import logging
 import re
@@ -9,6 +42,9 @@ from app.config.settings import settings
 from app.utils.ids import generate_field_id
 
 log = logging.getLogger("pathfinder.neo4j.graph")
+
+# Relation / property names must be valid Neo4j identifiers — we never
+# inline user input into Cypher so this regex is the last-line guard.
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _GRAPH_METADATA_KEYS = {
     "created_at",
@@ -25,13 +61,25 @@ _SCHEMA_METADATA_KEYS = _GRAPH_METADATA_KEYS | {"value_json", "metadata_json"}
 _SCHEMA_SAMPLE_LIMIT = 3
 
 class GraphDB:
-    """class for student-centric knowledge graph operations."""
+    """All structured reads and writes for one Neo4j driver.
+
+    Instances are cheap — they just wrap the shared async driver — so
+    callers build one per request/tool invocation. Methods come in two
+    flavors: "read" (profile, sections, entities, relations, documents,
+    schema) and "write" (upsert / delete / cascade). The write methods
+    do their own validation so the LLM tool layer can pass-through
+    user-provided strings safely.
+    """
 
     def __init__(self, driver):
         self.driver = driver
 
     async def init_schema(self) -> None:
-        """Create constraints and indexes if they don't exist."""
+        """Create constraints + indexes at process startup.
+
+        Idempotent: uses `IF NOT EXISTS` so it's safe to run on every
+        boot. `app.main.lifespan` calls this once; nothing else should.
+        """
         async with self.driver.session() as session:
             constraints = [
                 "CREATE CONSTRAINT student_id IF NOT EXISTS FOR (s:Student) REQUIRE s.id IS UNIQUE",
@@ -50,7 +98,11 @@ class GraphDB:
                 await session.run(stmt)
 
     async def get_student(self, *, student_id: str) -> dict[str, Any] | None:
-        """Fetch one student node by id."""
+        """Return the root Student node as a plain dict, or `None` if unknown.
+
+        Thin read — callers that need the full profile use
+        `get_full_student` instead.
+        """
         async with self.driver.session() as session:
             result = await session.run(
                 """
@@ -66,7 +118,14 @@ class GraphDB:
             return sanitize_neo4j_value(dict(record["student"]))
 
     async def update_student(self, *, student_id: str, updates: dict[str, Any]) -> dict[str, Any]:
-        """Update scalar properties on the root student node."""
+        """Upsert the Student node and patch any scalar properties in one round trip.
+
+        Also doubles as "make sure this student exists" — called with an
+        empty `updates` dict from the API layer so a fresh client can
+        start using the app without a separate create step.
+        """
+        # `updated_at` is always refreshed so we can sort students by
+        # recency even when only a handful of fields actually changed.
         assignments: list[str] = ["s.updated_at = datetime()"]
         params: dict[str, Any] = {"student_id": student_id}
         for idx, (key, value) in enumerate(updates.items()):
@@ -88,7 +147,11 @@ class GraphDB:
         return await self.get_student(student_id=student_id) or {"id": student_id}
 
     async def create_document(self, *, student_id: str, document_id: str, filename: str, file_type: str = "unknown") -> dict:
-        """Create document node. (:Student)-[:UPLOADED]->(:Document)."""
+        """Register a new uploaded document and wire it to its owner student.
+
+        The doc_analyst node calls this before it pushes any chunks so
+        the chunks have something to be `(:Chunk)-[:FROM_DOCUMENT]->`.
+        """
         async with self.driver.session() as session:
             result = await session.run("""
                 MERGE (s:Student {id: $student_id})
@@ -107,7 +170,12 @@ class GraphDB:
             return sanitize_neo4j_value(dict(record["document"]))
 
     async def find_document_by_filename(self, *, student_id: str, filename: str) -> dict[str, Any] | None:
-        """Find one document for a student by filename."""
+        """Look up a student's existing document by its filename, if any.
+
+        Powers the "Replace existing?" prompt in the UI and the
+        `replace=true` upload path — both want to know whether a new
+        upload with the same name already exists.
+        """
         async with self.driver.session() as session:
             result = await session.run(
                 """
@@ -124,7 +192,13 @@ class GraphDB:
             return sanitize_neo4j_value(dict(record["document"]))
 
     async def delete_document_cascade(self, *, document_id: str) -> dict[str, Any]:
-        """Delete one document and any chunks attached to it."""
+        """Wipe a document *and* every chunk attached to it in one query.
+
+        Used when the user replaces or deletes a document. Leaves the
+        rest of the student graph intact — only the doc + its chunks
+        disappear. (Entities grounded to those chunks keep their other
+        links if they have any.)
+        """
         async with self.driver.session() as session:
             await session.run(
                 """
@@ -144,7 +218,12 @@ class GraphDB:
         description: str = "",
         parent_key: str = "",
     ) -> dict[str, Any]:
-        """Create or update one section and attach it to the student."""
+        """Create/update a Section (grouping of related entities) under a student.
+
+        Sections are the top-level organizational layer below the student
+        — e.g. "education", "work_experience". `parent_key` allows simple
+        nesting (a "projects" section living under "work_experience").
+        """
         section_key = str(key or "").strip().lower()
         async with self.driver.session() as session:
             result = await session.run(
@@ -179,11 +258,19 @@ class GraphDB:
         identity: dict[str, str],
         properties: dict[str, Any],
     ) -> dict[str, Any]:
-        """Create or update one student-linked entity node."""
-        # Example input:
-        # student_id="S1", entity_type="Skill", section_key="skills"
-        # identity={"name": "python"}
-        # properties={"proficiency": "advanced", "years": 3}
+        """Create/update one typed entity under a section on the student graph.
+
+        `identity` is the "what makes this thing unique" dict (e.g.
+        `{"name": "python"}` for a skill) — we MERGE on it so the same
+        logical entity updates instead of duplicating.
+        `properties` are the freeform scalar attributes the ingester
+        learned about it.
+
+        Example:
+            entity_type="Skill", section_key="skills"
+            identity={"name": "python"}
+            properties={"proficiency": "advanced", "years": 3}
+        """
         if not student_id:
             raise ValueError("student_id is required")
         node_type = self._safe_identifier(entity_type, "entity_type")
@@ -200,11 +287,14 @@ class GraphDB:
             "student_id": student_id,
             "section_key": section_key,
         }
-        # `merge_props` builds the identity part of MERGE:
-        # ["student_id: $student_id", "name: $id_0"]
+
+        # `merge_props` becomes the identity clause of the MERGE — these
+        # are the fields that must ALL match for Neo4j to treat two
+        # writes as the same entity. Everything else is just properties
+        # on an already-matched node.
         merge_props: list[str] = ["student_id: $student_id"]
-        # `set_clauses` builds dynamic SET updates:
-        # ["n.updated_at = datetime()", "n.proficiency = $prop_0", "n.years = $prop_1"]
+        # `set_clauses` are everything we want written to the node on
+        # both create and update.
         set_clauses: list[str] = ["n.updated_at = datetime()"]
 
         for idx, (field, value) in enumerate(identity.items()):
@@ -212,11 +302,12 @@ class GraphDB:
             param_name = f"id_{idx}"
             merge_props.append(f"{field_name}: ${param_name}")
             params[param_name] = str(value or "").strip()
-        # params -> { "student_id": "S1", "id_0": "python" }
 
         if len(merge_props) == 1:
             raise ValueError("identity must contain at least one usable field")
 
+        # Stored on the node so reads can tell which fields participate in
+        # its identity (the rest are freely editable properties).
         params["identity_keys"] = [
             self._safe_identifier(field, "identity field")
             for field in identity.keys()
@@ -228,12 +319,13 @@ class GraphDB:
             param_name = f"prop_{idx}"
             set_clauses.append(f"n.{field_name} = ${param_name}")
             params[param_name] = value
-        # set_clauses -> ["n.updated_at = datetime()", "n.proficiency = $prop_0", "n.years = $prop_1"]
-        # params -> { "student_id": "S1", "id_0": "python", "prop_0": "advanced", "prop_1": 3 }
         merge_props_clause = ", ".join(merge_props)
-        # merge_props_clause -> "student_id: $student_id, id_0: python"
         set_clause = ", ".join(set_clauses)
-        # set_clause -> "n.updated_at = datetime(), n.prop_0 = advanced, n.prop_1 = 3"
+
+        # Single query does three things at once:
+        #   1. ensure the Student and Section nodes exist,
+        #   2. MERGE the typed Entity on its identity,
+        #   3. attach it to the Section via `HAS_ITEM`.
         query = f"""
             MERGE (s:Student {{id: $student_id}})
             MERGE (sec:Section {{student_id: $student_id, key: $section_key}})
@@ -255,11 +347,11 @@ class GraphDB:
             RETURN n {{.*}} AS node
             LIMIT 1
         """
-        # Resulting MERGE shape (example):
-        # MERGE (n:Skill {student_id: $student_id, name: $id_0})
 
         params["entity_type"] = node_type
         params["section_display_name"] = self._display_name("Section", key=section_key)
+        # Precomputed display names keep Neo4j Browser and the UI from
+        # having to format raw keys every time a node is rendered.
         params["display_name"] = self._display_name(
             "Entity", entity_type=node_type, identity=identity, properties=properties
         )
@@ -282,7 +374,13 @@ class GraphDB:
         relationship_type: str,
         properties: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Create or update one typed relation between two nodes."""
+        """Connect two existing entities with a typed relationship.
+
+        Both endpoints must already exist on the student's graph —
+        missing nodes fail the query rather than creating placeholders.
+        `relationship_type` becomes a real Neo4j relationship label so
+        we can do typed traversals (e.g. `[:WORKED_AT]`).
+        """
         source_type = self._safe_identifier(source_entity_type, "source_entity_type")
         target_type = self._safe_identifier(target_entity_type, "target_entity_type")
         rel_type = self._safe_identifier(relationship_type, "relationship_type")
@@ -294,6 +392,9 @@ class GraphDB:
         src_clauses: list[str] = []
         dst_clauses: list[str] = []
         set_parts: list[str] = []
+        # Single params map keyed with distinct prefixes (src_, dst_,
+        # rel_) so identity fields from the two endpoints plus the
+        # relation's own properties can't collide.
         params: dict[str, Any] = {"student_id": student_id}
 
         for idx, (field, value) in enumerate(source_identity.items()):
@@ -301,7 +402,6 @@ class GraphDB:
             param = f"src_{idx}"
             src_clauses.append(f"src.{safe_field} = ${param}")
             params[param] = str(value or "").strip()
-
         for idx, (field, value) in enumerate(target_identity.items()):
             safe_field = self._safe_identifier(field, "target identity field")
             param = f"dst_{idx}"
@@ -354,7 +454,12 @@ class GraphDB:
     def _display_name(label: str, *, key: str = "", entity_type: str = "",
                       identity: dict[str, Any] | None = None,
                       properties: dict[str, Any] | None = None) -> str:
-        """Compute a human-readable caption for a node so Neo4j Browser shows it directly."""
+        """Pick a human-friendly caption for a node.
+
+        Stored as `display_name` on every write so Neo4j Browser, the
+        graph visualization, and debug views all show something
+        readable (e.g. "Python" instead of a hashed identity dict).
+        """
         if label == "Section":
             return str(key or "").replace("_", " ").strip().title() or "Section"
         if label == "Field":
@@ -375,6 +480,13 @@ class GraphDB:
 
     @staticmethod
     def _safe_identifier(value: str, field_name: str) -> str:
+        """Reject anything that isn't a valid Neo4j identifier.
+
+        Identifiers (entity types, relationship types, property keys)
+        get templated into Cypher strings, so this is the hard gate
+        against injection. Real "display values" for a field should
+        go into `properties`, not into the identifier slot.
+        """
         raw = str(value or "").strip()
         if not raw or not _IDENTIFIER.fullmatch(raw):
             raise ValueError(f"Invalid {field_name}: {value}")
@@ -382,13 +494,19 @@ class GraphDB:
 
     @staticmethod
     def _safe_field_key(value: str, field_name: str = "field_name") -> str:
+        """Looser check for field names — they're parameterized, not templated.
+
+        Used where a non-empty, trimmed string is enough because the
+        value flows through a bound parameter rather than directly
+        into Cypher.
+        """
         raw = str(value or "").strip()
         if not raw:
             raise ValueError(f"Invalid {field_name}: {value}")
         return raw
-    
+
     async def get_student_sections(self, *, student_id: str) -> list[dict]:
-        """Return all sections for a student."""
+        """Every Section node owned by this student."""
         async with self.driver.session() as session:
             result = await session.run("""
                 MATCH (s:Student {id: $student_id})-[:HAS_SECTION]->(sec:Section)
@@ -398,7 +516,7 @@ class GraphDB:
             return sanitize_neo4j_value(rows)
 
     async def get_section_entities(self, *, student_id: str, section_key: str) -> list[dict]:
-        """Return all entities under one section."""
+        """All entities grouped under one section (e.g. every Skill in "skills")."""
         async with self.driver.session() as session:
             result = await session.run("""
                 MATCH (s:Student {id: $student_id})-[:HAS_SECTION]->(sec:Section {key: $section_key})-[:HAS_ITEM]->(ent:Entity)
@@ -410,7 +528,11 @@ class GraphDB:
     async def get_entity_by_identity(
         self, *, student_id: str, entity_type: str, identity: dict[str, str]
     ) -> dict[str, Any] | None:
-        """Find an existing entity inside a student by type + identity."""
+        """Exact-match lookup by (type, identity) — returns `None` if missing.
+
+        Ingestion uses this to decide between "update the existing
+        entity" vs "create a new one" when new evidence lands.
+        """
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
         if not identity:
             raise ValueError("identity is required")
@@ -437,7 +559,20 @@ class GraphDB:
             return sanitize_neo4j_value(dict(record["entity"]))
 
     async def get_student_schema(self, *, student_id: str) -> dict[str, Any]:
-        """Return a bounded schema manifest for the whole student graph."""
+        """Compact "what does this student's graph look like?" manifest.
+
+        Bundles:
+        - student root properties (keys + sampled values),
+        - every section,
+        - an `entity_manifest` listing entity types, their property
+          keys, and a few example values,
+        - a `relationship_manifest` showing source → rel → target
+          patterns that actually exist,
+        - high-level counts (sections / entities / documents / chunks).
+
+        The ingestion prompt reads this so the LLM reuses existing
+        labels instead of minting near-duplicates.
+        """
         sections = await self.get_student_sections(student_id=student_id)
 
         async with self.driver.session() as session:
@@ -518,7 +653,7 @@ class GraphDB:
         return sanitize_neo4j_value(schema)
 
     async def list_entity_types(self, *, student_id: str) -> dict[str, Any]:
-        """Return entity types currently present in the student graph with counts."""
+        """Which entity types exist in this student's graph, with per-type counts."""
         async with self.driver.session() as session:
             result = await session.run(
                 """
@@ -540,7 +675,12 @@ class GraphDB:
         })
 
     async def list_relationship_types(self, *, student_id: str) -> dict[str, Any]:
-        """Return relationship types currently present in the student graph with counts and patterns."""
+        """Which relationships exist + for each, the (src → dst) type patterns.
+
+        Useful for the LLM when planning multi-hop traversals: it can
+        check "do any `WORKED_AT` edges go from `Person` to `Company`
+        on this graph?" before attempting one.
+        """
         async with self.driver.session() as session:
             result = await session.run(
                 """
@@ -589,7 +729,12 @@ class GraphDB:
         filters: dict[str, Any] | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Return matching entities of one type using exact-match filters."""
+        """List entities of a given type, with optional exact-match filters.
+
+        Think of it as "SELECT * FROM Skill WHERE name='python'" but
+        over the graph. `limit` is capped at 50 server-side so the
+        LLM can't accidentally pull the whole graph.
+        """
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
         filters = filters or {}
         where_parts: list[str] = ["ent.student_id = $student_id"]
@@ -621,7 +766,12 @@ class GraphDB:
         target_filters: dict[str, Any] | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Return student-owned relations of one type whose target matches one entity type."""
+        """Find all (src)-[rel]->(dst) edges where rel + dst type are pinned.
+
+        Used when the LLM already knows the shape it wants (e.g. "all
+        `WORKED_AT` edges pointing at `Company` nodes") and wants the
+        matching endpoints back with their section context.
+        """
         rel_type = self._safe_identifier(relationship_type, "relationship_type")
         target_type = self._safe_identifier(target_entity_type, "target_entity_type")
         target_filters = target_filters or {}
@@ -660,7 +810,11 @@ class GraphDB:
         entity_type: str,
         node_id: str,
     ) -> dict[str, Any]:
-        """Fetch one entity by a stable id-like value within a specific entity type."""
+        """Find one entity by "whatever uniquely names it" (id / name / code / title).
+
+        Gives the LLM a forgiving handle — it can pass whichever field
+        reads best in natural language and we'll try them all.
+        """
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
         lookup_value = str(node_id or "").strip()
         if not lookup_value:
@@ -698,7 +852,11 @@ class GraphDB:
         target_field: str = "id",
         target_value: str,
     ) -> dict[str, Any]:
-        """Fetch one relation detail using an exact target field match."""
+        """Drill into a single relation pinned by rel type + target field.
+
+        Returns both endpoints plus the relation's own properties — the
+        most detail we can give the LLM about one edge in the graph.
+        """
         rel_type = self._safe_identifier(relationship_type, "relationship_type")
         target_type = self._safe_identifier(target_entity_type, "target_entity_type")
         safe_target_field = self._safe_identifier(target_field, "target_field")
@@ -741,7 +899,13 @@ class GraphDB:
         field_name: str,
         field_value: Any,
     ) -> dict:
-        """Add/update one complex Field node under an Entity for expandable nested details."""
+        """Attach a richer "Field" record to an entity for nested / structured detail.
+
+        Use this when a property is too complex to be a flat scalar on
+        the entity — e.g. a Course entity's "grading scheme" that itself
+        has subfields. Fields can be further nested via
+        `upsert_nested_field`.
+        """
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
         safe_field_name = self._safe_field_key(field_name, "field_name")
         if not identity:
@@ -790,7 +954,7 @@ class GraphDB:
         entity_type: str,
         identity: dict[str, str],
     ) -> list[dict]:
-        """Return Field nodes for one entity so retrieval can show structured details."""
+        """Every `Field` hanging directly off one entity (one level deep)."""
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
         if not identity:
             raise ValueError("identity is required")
@@ -823,7 +987,12 @@ class GraphDB:
         field_name: str,
         field_value: Any | None = None,
     ) -> dict:
-        """Add or update one child Field node under an existing parent Field."""
+        """Attach a child field under an existing field (up to 6 levels deep).
+
+        Supports structured nested data like "awards -> specific award
+        -> criteria -> sub-criteria" without exploding the entity
+        property map.
+        """
         safe_field_name = self._safe_field_key(field_name, "field_name")
         async with self.driver.session() as session:
             result = await session.run(
@@ -859,7 +1028,13 @@ class GraphDB:
         identity: dict[str, str],
         chunk_id: str,
     ) -> dict:
-        """Create the grounding edge (:Entity)-[:MENTIONED_IN]->(Chunk)."""
+        """Ground an entity in a specific chunk of source text.
+
+        This is the bridge between "structured knowledge" (the entity)
+        and "raw evidence" (the chunk). When the specialist later
+        answers a question, response_validator walks these edges to
+        produce citations that point back to the actual paragraph.
+        """
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
         if not identity:
             raise ValueError("identity is required")
@@ -895,7 +1070,12 @@ class GraphDB:
         identity: dict[str, str],
         document_id: str,
     ) -> dict:
-        """Create the coarse provenance edge (:Entity)-[:DERIVED_FROM]->(Document)."""
+        """Ground an entity in a whole document (coarser than chunk-level linking).
+
+        Use this when we know the document the entity came from but
+        don't have a specific chunk to point at — e.g. the whole resume
+        counts as the source of the employment history.
+        """
         safe_entity_type = self._safe_identifier(entity_type, "entity_type")
         if not identity:
             raise ValueError("identity is required")
@@ -924,7 +1104,12 @@ class GraphDB:
             return sanitize_neo4j_value(dict(record["entity"]))
 
     async def get_chunk_entities(self, *, student_id: str, chunk_id: str) -> list[dict]:
-        """Return entities connected to one chunk for chunk-centered traversal."""
+        """Inverse of `link_entity_to_chunk` — every entity grounded in this chunk.
+
+        Used when the specialist has a relevant chunk (usually from
+        vector search) and wants to pivot to the structured entities
+        that piece of text supports.
+        """
         async with self.driver.session() as session:
             result = await session.run("""
                 MATCH (s:Student {id: $student_id})-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(ent:Entity)-[:MENTIONED_IN]->(c:Chunk {id: $chunk_id})
@@ -934,7 +1119,13 @@ class GraphDB:
             return sanitize_neo4j_value(rows)
 
     async def bfs_neighbors(self, *, student_id: str, start_node_id: str, max_depth: int = 1) -> list[dict]:
-        """Generic traversal helper so the LLM can inspect connected nodes step by step."""
+        """Breadth-first walk from a starting node, grouped by hop distance.
+
+        Capped at depth 5 so the model can't trip into a whole-graph
+        traversal. Results are returned as "level 1 = ..., level 2 =
+        ..." which is easier for the LLM to reason about than a flat
+        edge list.
+        """
         depth = max(1, min(int(max_depth), 5))
         async with self.driver.session() as session:
             result = await session.run(
@@ -976,7 +1167,13 @@ class GraphDB:
             })
 
     async def get_full_student(self, *, student_id: str) -> dict:
-        """Student-wide read model containing sections, entities, fields, and provenance."""
+        """One-shot "give me everything" export of a student's graph.
+
+        Pulls the root node, all sections, and every entity along with
+        its fields, grounding chunks, and source documents. Powers the
+        profile page and the replay viewer. Expensive — don't call it
+        from the tool-calling loop.
+        """
         async with self.driver.session() as session:
             student_result = await session.run("""
                 MATCH (s:Student {id: $student_id})
@@ -1024,7 +1221,13 @@ class GraphDB:
             })
 
     async def get_graph_data(self, *, student_id: str) -> dict[str, Any]:
-        """Return a graph view with student structure, entities, provenance, and semantic edges."""
+        """Flatten the student graph into a `nodes` + `relationships` payload.
+
+        This is the shape the frontend graph visualization expects —
+        one list of nodes with stable ids and one list of typed edges.
+        Everything is derived from `get_full_student` plus one extra
+        query to pick up entity→entity relationships.
+        """
         student_graph = await self.get_full_student(student_id=student_id)
         student = student_graph.get("student", {})
         sections = student_graph.get("sections", [])
@@ -1037,8 +1240,11 @@ class GraphDB:
         seen_relationships: set[tuple[str, str, str]] = set()
         root_student_id = str(student.get("id") or student_id or "")
 
+        # Student root is always node 0 — everything hangs off it.
         if isinstance(student, dict) and student:
             nodes.append({"id": root_student_id, "labels": ["Student"], **student})
+        # Sections get synthetic ids so the frontend can draw edges
+        # without Neo4j internal ids leaking.
         for section in sections:
             if not isinstance(section, dict):
                 continue
@@ -1050,6 +1256,10 @@ class GraphDB:
             nodes.append({"id": section_id, "labels": ["Section"], **section})
             if root_student_id:
                 relationships.append({"source": root_student_id, "target": section_id, "type": "HAS_SECTION"})
+        # Emit one node per entity plus its HAS_ITEM/DERIVED_FROM/
+        # MENTIONED_IN edges; documents/chunks are deduped via dicts
+        # so an entity mentioned in multiple chunks doesn't create
+        # phantom duplicate document nodes.
         for entity in entities:
             if not isinstance(entity, dict):
                 continue
@@ -1130,13 +1340,23 @@ class GraphDB:
         query: str,
         k: int = 5,
     ) -> list[dict[str, Any]]:
-        """Vector retrieval enriched with explicit graph grounding."""
+        """Vector search + graph grounding — the main retrieval tool.
+
+        Pipeline:
+        1. Vector search against this student's chunks to find the
+           text most similar to `query`.
+        2. For each hit, pull the parent Document + any entities
+           grounded in it (directly via MENTIONED_IN, or via the
+           document via DERIVED_FROM).
+        3. Rank the grounded entities with `_hybrid_entity_rank` so
+           only the most relevant few make it into the response (keeps
+           the LLM transcript small).
+        """
         if not student_id:
             raise ValueError("student_id is required")
         query = str(query or "").strip()
         if not query:
             return []
-
         vector_db = VectorDB(
             self.driver,
             index_name="chunk_embeddings",
@@ -1149,7 +1369,6 @@ class GraphDB:
         )
         if not vector_results:
             return []
-
         chunk_refs = [
             {"chunk_id": item["id"], "document_id": item["document_id"]}
             for item in vector_results
@@ -1157,7 +1376,8 @@ class GraphDB:
         ]
         if not chunk_refs:
             return vector_results
-
+        # Map (chunk_id, document_id) -> grounded context so we can
+        # merge it back onto each vector hit in one pass at the end.
         related_by_chunk: dict[tuple[str, str], dict[str, Any]] = {}
         async with self.driver.session() as session:
             result = await session.run(
@@ -1198,6 +1418,9 @@ class GraphDB:
             )
             async for record in result:
                 key = (record["chunk_id"], record["document_id"])
+                # Direct entities were grounded at the chunk level and
+                # carry the most specific signal; document-level
+                # entities are a weaker fallback.
                 direct_entities = list(record["direct_entities"] or [])
                 document_entities = list(record["document_entities"] or [])
 
@@ -1217,7 +1440,8 @@ class GraphDB:
                             "provenance": item.get("provenance"),
                         }
                     )
-
+                # Keep only the 5 best entities per chunk so the
+                # combined LLM transcript stays manageable.
                 ranked_entities = sorted(
                     entities,
                     key=lambda item: self._hybrid_entity_rank(
@@ -1251,7 +1475,14 @@ class GraphDB:
         return sanitize_neo4j_value(enriched)
 
     async def reset_student_data(self, *, student_id: str) -> dict[str, Any]:
-        """Delete one student root and the nearby graph hanging off it."""
+        """Nuke one student and everything within 3 hops of them.
+
+        Backs the "Reset my data" admin action on the profile page.
+        Three hops is enough to remove sections → entities → fields /
+        documents / chunks without accidentally wandering into a
+        shared node (we don't actually share nodes, but the bound
+        keeps a buggy graph from cascading too far).
+        """
         async with self.driver.session() as session:
             await session.run(
                 """
@@ -1264,12 +1495,23 @@ class GraphDB:
         return sanitize_neo4j_value({"status": "success", "student_id": student_id})
 
     async def reset_all_data(self) -> dict[str, Any]:
-        """Delete the full graph. Use only for full reset/admin flows."""
+        """Destroy the entire graph — admin / dev reset only.
+
+        Wired to the `DELETE /students` endpoint behind a confirmation.
+        Does NOT touch the SQLite checkpointer or on-disk replay
+        artifacts; callers clear those separately.
+        """
         async with self.driver.session() as session:
             await session.run("MATCH (n) DETACH DELETE n")
         return sanitize_neo4j_value({"status": "success"})
 
     def _entity_owner_key(self, student_id: str, entity_type: str, identity: dict[str, str]) -> str:
+        """Stable string used as `Field.owner_id` so fields know their parent entity.
+
+        Combines student + entity type + a sorted JSON of the identity
+        dict so the same logical entity always produces the same key
+        regardless of dict insertion order.
+        """
         normalized_identity = json.dumps(identity, sort_keys=True, ensure_ascii=True)
         return f"{student_id}:{entity_type}:{normalized_identity}"
 
@@ -1301,6 +1543,14 @@ class GraphDB:
         }
 
     def _build_entity_manifest(self, entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Roll up a list of entities into a per-type summary.
+
+        The ingestion prompt uses this to answer "what entity types
+        already exist and what property names do they use?" without
+        dumping every node into the LLM context. Each bucket carries
+        a count, the identity/property keys seen, and up to a handful
+        of sample identities so the model can match formatting.
+        """
         grouped: dict[str, dict[str, Any]] = {}
         for entity in entities:
             if not isinstance(entity, dict):
@@ -1346,6 +1596,12 @@ class GraphDB:
         return manifest
 
     def _build_relationship_manifest(self, relationship_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Group raw (rel, src_type, dst_type, count) rows into per-type buckets.
+
+        Complements `_build_entity_manifest` — tells the LLM which
+        connections already exist in the graph so it can reuse them
+        instead of inventing near-synonyms (WORKED_AT vs EMPLOYED_BY).
+        """
         grouped: dict[str, dict[str, Any]] = {}
         for row in relationship_rows:
             relationship_type = str(row.get("relationship_type") or "").strip()
@@ -1384,6 +1640,13 @@ class GraphDB:
         return manifest
 
     def _schema_identity_payload(self, entity: dict[str, Any]) -> dict[str, Any]:
+        """Pull only the scalar identity-field values off an entity.
+
+        The entity node carries a mix of identity fields, property
+        fields, and internal metadata — this extracts just the
+        "what makes this entity unique" scalar subset for the schema
+        manifest.
+        """
         payload: dict[str, Any] = {}
         raw_identity_keys = entity.get("identity_keys")
         if isinstance(raw_identity_keys, (list, tuple, set)):
@@ -1407,6 +1670,12 @@ class GraphDB:
         return payload
 
     def _schema_property_keys(self, entity: dict[str, Any]) -> list[str]:
+        """Names of scalar / simple-list properties an entity actually uses.
+
+        Internal fields (timestamps, student_id, identity_keys, ...)
+        are filtered out so the manifest only advertises user-facing
+        property names.
+        """
         keys: list[str] = []
         for key in sorted(entity.keys()):
             if key in _SCHEMA_METADATA_KEYS or key == "entity_type":
@@ -1422,6 +1691,12 @@ class GraphDB:
         return keys
 
     def _result_entity_key(self, entity: dict[str, Any]) -> str:
+        """Deterministic key used to dedupe entities across hybrid-search rows.
+
+        Same (type + identity) always maps to the same string so the
+        enrichment loop doesn't double-count a single entity that
+        shows up grounded in multiple chunks.
+        """
         identity_payload = self._schema_identity_payload(entity)
         if identity_payload:
             identity_json = json.dumps(identity_payload, sort_keys=True, ensure_ascii=True, default=str)
@@ -1433,7 +1708,12 @@ class GraphDB:
         return ""
 
     def _graph_entity_id(self, entity: dict[str, Any]) -> str:
-        """Generate a stable frontend node id without depending on schema-specific field names."""
+        """Stable frontend node id for the graph visualization.
+
+        Prefers an explicit `id` field when present; otherwise builds
+        one from the type plus a short hash of the identity payload
+        so the UI always has a deterministic node id to work with.
+        """
         entity_type = str(entity.get("entity_type") or "Entity").strip() or "Entity"
         explicit_id = str(entity.get("id", "") or "").strip()
         if explicit_id:
@@ -1448,7 +1728,13 @@ class GraphDB:
         return f"entity:{entity_type}:{identity_hash}"
 
     def _graph_identity_payload(self, entity: dict[str, Any]) -> dict[str, Any]:
-        """Return stable, non-structural scalar properties that define an entity for graph rendering."""
+        """Scalar properties that go into the synthetic graph id hash.
+
+        Looser than the schema identity payload — it includes any
+        stable scalar property, not just declared identity fields —
+        because the visualization just needs a consistent id, not
+        a domain-meaningful one.
+        """
         payload: dict[str, Any] = {}
         for key in sorted(entity.keys()):
             if key in _GRAPH_METADATA_KEYS or key == "entity_type":
@@ -1464,6 +1750,12 @@ class GraphDB:
         return payload
 
     def _chunk_payload(self, chunk: dict[str, Any]) -> dict[str, Any]:
+        """Expand a raw Chunk record's `metadata_json` into a usable `metadata` dict.
+
+        Mirrors `VectorDB._chunk_payload` so both classes emit the
+        same chunk shape — callers never have to know which adapter
+        produced the row.
+        """
         payload = dict(chunk or {})
         metadata = self._metadata_dict(payload.get("metadata_json"))
         payload["metadata"] = metadata
@@ -1471,6 +1763,10 @@ class GraphDB:
         return payload
 
     def _metadata_dict(self, raw_metadata: Any) -> dict[str, Any]:
+        """Forgiving JSON-string → dict parser for chunk metadata.
+
+        Malformed JSON degrades to `{}` rather than breaking a read.
+        """
         if isinstance(raw_metadata, dict):
             return raw_metadata
         if not raw_metadata:
@@ -1490,6 +1786,14 @@ class GraphDB:
         section: dict[str, Any],
         provenance: str,
     ) -> tuple[int, int, int, int]:
+        """Cheap heuristic score for "is this entity relevant to the query?".
+
+        Uses token overlap between the query, the chunk, the entity's
+        human-readable fields, and its section — plus a bonus for
+        chunk-level grounding (MENTIONED_IN > DERIVED_FROM). Returns
+        a tuple so Python's lexicographic sort gives us stable
+        multi-key ranking without floating-point fiddling.
+        """
         query_tokens = self._text_tokens(query)
         chunk_tokens = self._text_tokens(chunk_text)
         entity_tokens = self._text_tokens(
@@ -1504,7 +1808,8 @@ class GraphDB:
                 for key in ("key", "description", "parent_key")
             )
         )
-
+        # Weight chunk-level grounding above document-level grounding
+        # so direct evidence outranks transitive evidence.
         provenance_score = 2 if provenance == "MENTIONED_IN" else 1
         query_entity_overlap = len(query_tokens & entity_tokens)
         query_section_overlap = len(query_tokens & section_tokens)
@@ -1517,6 +1822,12 @@ class GraphDB:
         )
 
     def _text_tokens(self, value: str) -> set[str]:
+        """Lowercased word-token set used by the ranking heuristic.
+
+        Punctuation / whitespace only — no stemming, no stopwords.
+        The comparison is already fuzzy since we're just measuring
+        overlap, and keeping it simple keeps it fast.
+        """
         return {
             token.lower()
             for token in re.findall(r"[A-Za-z0-9_]+", str(value or ""))

@@ -1,4 +1,16 @@
-"""Runtime helpers for conversation context and replay summaries."""
+"""Small helpers for shaping chat-turn state into downstream-friendly shapes.
+
+Two unrelated-but-cheap helpers live here:
+- `build_recent_conversation_window` flattens the LangGraph message
+  history into a simple `[{"role","content"}, ...]` list that tool
+  prompts and specialists can reason about without importing
+  `langchain_core`.
+- `infer_method` walks every successful tool call in a turn (including
+  the ingestion sub-steps nested inside `latest_ingestion_result`) and
+  asks `summarize_tool_usage` to name the dominant retrieval strategy.
+  The chat endpoint sticks that label into the `done` SSE payload so
+  the UI can show e.g. "answered via hybrid search".
+"""
 
 from __future__ import annotations
 
@@ -8,7 +20,13 @@ from app.tools.tools import summarize_tool_usage
 
 
 def _message_role_and_content(message: Any) -> tuple[str, str]:
-    """Extract a normalized role/content pair from a stored message value."""
+    """Pull `(role, content)` out of whichever message shape the graph stored.
+
+    LangGraph state can carry either `langchain_core` message objects
+    (with `.type`/`.role` + `.content`) or plain `(role, content)`
+    tuples — we normalize both to the same pair so callers don't have
+    to care which one landed in state.
+    """
     if isinstance(message, tuple) and len(message) == 2:
         return str(message[0] or ""), str(message[1] or "").strip()
     if hasattr(message, "content"):
@@ -19,7 +37,13 @@ def _message_role_and_content(message: Any) -> tuple[str, str]:
 
 
 def build_recent_conversation_window(messages: list[Any], limit: int = 8) -> list[dict[str, str]]:
-    """Normalize recent turns into a role/content list for tools and prompts."""
+    """Last N turns of the conversation, normalized for prompts / tool context.
+
+    Maps every non-user role down to `"assistant"` because tool prompts
+    and specialist profiles only care about the two-way exchange — the
+    internal node names ("orchestrator", "ingester", ...) would just
+    confuse the LLM if surfaced.
+    """
     recent_messages: list[dict[str, str]] = []
     for message in messages[-limit:]:
         role_name, content = _message_role_and_content(message)
@@ -31,7 +55,13 @@ def build_recent_conversation_window(messages: list[Any], limit: int = 8) -> lis
 
 
 def _successful_tool_names(state: dict[str, Any]) -> list[str]:
-    """Return successful tool names from the turn, including ingestion sub-steps."""
+    """Every tool name that succeeded on this turn, including nested ingestion calls.
+
+    The specialist's own tool calls live in `state["tool_call_log"]`,
+    but doc ingestion and chat-query ingestion each keep their own
+    separate tool call logs inside their result payloads. We flatten
+    all three sources so the "method" inference sees the whole picture.
+    """
     tool_call_log = list(state.get("tool_call_log", []) or [])
     latest_ingestion = dict(state.get("latest_ingestion_result", {}) or {})
     ingestion_documents = list(latest_ingestion.get("documents", []) or [])
@@ -50,5 +80,11 @@ def _successful_tool_names(state: dict[str, Any]) -> list[str]:
 
 
 def infer_method(state: dict[str, Any]) -> str:
-    """Return the high-level retrieval method used for this turn."""
+    """One-word label for how this turn arrived at its answer.
+
+    Values come from `summarize_tool_usage` — things like `hybrid`,
+    `vector`, `graph`, `web`, or the default `direct` when no tools
+    were used. The UI displays this as a subtle attribution under the
+    assistant message.
+    """
     return summarize_tool_usage(_successful_tool_names(state)).get("method", "direct")

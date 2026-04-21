@@ -1,4 +1,9 @@
-"""Brave Search adapter."""
+"""Brave Search provider.
+
+Requires `BRAVE_API_KEY`. We only read from the `web.results` section
+of the response — Brave also returns news/images/videos that we don't
+use for answering questions.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +21,7 @@ _BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 
 
 async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
-    """Search using Brave Search API."""
+    """Call Brave's HTTP API and normalize the `web.results` section."""
     query = normalize_query(query)
     max_results = clamp_max_results(max_results)
     if not query:

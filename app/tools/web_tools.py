@@ -1,4 +1,18 @@
-"""Web MCP tools."""
+"""Tools for reaching outside the student graph — live web search + URL fetch.
+
+Three tools are registered here:
+- `search_web`            : generic results across the fallback provider chain.
+- `fetch_url`             : pull readable content from one specific page.
+- `find_official_sources` : same as search_web but filters for `.edu`/`.gov`.
+
+Only the specialist profile sees these. Ingestion agents stay offline so
+that the graph only reflects the student's own documents and statements,
+not whatever the web happens to say at ingestion time.
+
+The actual HTTP work is delegated to `app.adapters.web_search` so the
+fallback order (Tavily -> Google CSE -> Brave, etc.) is tunable in one
+place based on which API keys are configured.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +21,10 @@ from typing import Any
 from app.adapters.web_search.fallback_chain import search as web_search
 from app.adapters.web_search.url_fetcher import fetch_url_content
 from app.tools.tools import ToolContext, ToolSpec, bounded_text
+
+
 def _compact_web_results(results: list[dict], limit: int = 5) -> list[dict]:
+    """Trim a list of search results to title/url/snippet, bounded per field."""
     compacted: list[dict] = []
     for item in results[:limit]:
         if not isinstance(item, dict):
@@ -21,11 +38,13 @@ def _compact_web_results(results: list[dict], limit: int = 5) -> list[dict]:
         )
     return compacted
 
-
 async def _search_web(arguments: dict[str, Any], _: ToolContext) -> dict[str, Any]:
+    """Run a web search through the adapter's provider fallback chain."""
     query = str(arguments.get("query", "") or "").strip()
     if not query:
         return {"error": "query is required"}
+    # Clamp user-supplied result count to a safe range. The LLM occasionally
+    # asks for 100 results, which wastes tokens and provider quota.
     try:
         max_results = int(arguments.get("max_results", 5))
     except Exception:
@@ -45,6 +64,7 @@ def _compact_search_web(arguments: dict[str, Any], result: dict[str, Any], _: To
 
 
 async def _fetch_url(arguments: dict[str, Any], _: ToolContext) -> dict[str, Any]:
+    """Download and extract readable content from one URL."""
     url = str(arguments.get("url", "") or "").strip()
     if not url:
         return {"error": "url is required"}
@@ -62,6 +82,12 @@ def _compact_fetch_url(arguments: dict[str, Any], result: dict[str, Any], _: Too
 
 
 async def _find_official_sources(arguments: dict[str, Any], _: ToolContext) -> dict[str, Any]:
+    """Run a normal search and keep only results from authoritative domains.
+
+    This is a heuristic — a page hosting `.edu` in the URL is more likely
+    to be a real university source than a random blog. Good enough to
+    steer the specialist towards trustworthy references first.
+    """
     query = str(arguments.get("query", "") or "").strip()
     if not query:
         return {"error": "query is required"}
@@ -84,7 +110,7 @@ def _compact_find_official(arguments: dict[str, Any], result: dict[str, Any], _:
 
 
 def get_web_tool_specs() -> list[ToolSpec]:
-    """Return web-search tool definitions."""
+    """Register search / fetch / official-source tools with the registry."""
     return [
         ToolSpec(
             name="search_web",

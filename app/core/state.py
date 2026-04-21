@@ -1,7 +1,13 @@
-"""Shared state schema for the LangGraph StateGraph.
+"""The shared "clipboard" that every node on the LangGraph flow reads and writes.
 
-All agent nodes read from and write to this typed dictionary.
-LangGraph manages message accumulation via the ``add_messages`` reducer.
+Pathfinder processes a chat turn as a sequence of small steps (input guard,
+orchestrator, ingestion, specialist, validator, responder). Each step is a
+plain async function that takes this dictionary in and returns an updated
+copy. Because the shape is typed here in one place, any node can see what
+fields exist, who fills them in, and who consumes them later.
+
+The `messages` field uses LangGraph's `add_messages` reducer so chat history
+accumulates across turns automatically instead of being overwritten.
 """
 
 from __future__ import annotations
@@ -12,7 +18,12 @@ from langgraph.graph.message import add_messages
 
 
 class UploadedFile(TypedDict, total=False):
-    """Metadata for a file uploaded in the current turn."""
+    """One file attached to the current chat turn.
+
+    Carried through the state until `doc_analyst` extracts text, chunks it,
+    and persists it to Neo4j; after that the list is cleared so later turns
+    do not reprocess the same upload.
+    """
     filename: str
     content: bytes
     size: int
@@ -20,7 +31,13 @@ class UploadedFile(TypedDict, total=False):
 
 
 class PathfinderState(TypedDict, total=False):
-    """Shared state flowing through the LangGraph StateGraph."""
+    """Everything one chat turn may produce, consume, or pass along.
+
+    Fields are grouped by who fills them in. `total=False` means individual
+    nodes only set the fields they care about; downstream nodes use
+    `state.get(..., default)` to stay robust when an upstream node didn't
+    run (for example, when the input guard blocked the turn early).
+    """
 
     # ── Input ───────────────────────────────────────────────────
     messages: Annotated[list, add_messages]  # Conversation history (LangGraph managed)
