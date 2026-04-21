@@ -56,26 +56,8 @@ def get_embeddings_client() -> OllamaEmbeddings:
         _embeddings_cache[cache_key] = client
     return client
 
-def embed_query(text: str) -> list[float]:
-    """Blocking: embed a single query string and return its vector."""
-    return _coerce_embedding(
-        _run_embedding_call(get_embeddings_client().embed_query, text, operation="embed_query")
-    )
-
-
-def embed_documents(texts: list[str]) -> list[list[float]]:
-    """Blocking: embed a batch of chunks in one request for efficiency."""
-    raw = _run_embedding_call(
-        get_embeddings_client().embed_documents,
-        texts,
-        operation="embed_documents",
-    )
-    if not isinstance(raw, list):
-        raise EmbeddingServiceError("Embedding service returned a non-list response for embed_documents.")
-    return [_coerce_embedding(item) for item in raw]
-
 async def aembed_query(text: str, *, timeout_seconds: float = _EMBEDDING_TIMEOUT_SECONDS) -> list[float]:
-    """Async version of `embed_query` — safe to call from LangGraph nodes.
+    """Async embed a single query string — safe to call from LangGraph nodes.
 
     The underlying LangChain client is blocking, so we offload to a
     thread and enforce a timeout so a stuck Ollama doesn't freeze the
@@ -106,28 +88,12 @@ async def aembed_documents(
         raise EmbeddingServiceError("Embedding service returned a non-list response for embed_documents.")
     return [_coerce_embedding(item) for item in raw]
 
-def _run_embedding_call(fn, payload, *, operation: str):
-    """Call the blocking LangChain fn and rewrap any exception as `EmbeddingServiceError`.
-
-    The wrapped message tells the operator what to check (Ollama running,
-    model installed) without leaking provider internals.
-    """
-    try:
-        return fn(payload)
-    except Exception as exc:
-        message = (
-            "Embedding service is unavailable. Check that Ollama is running and "
-            f"the embedding model '{settings.EMBEDDING_MODEL}' is installed."
-        )
-        log.error("%s Operation=%s original_error=%s", message, operation, exc)
-        raise EmbeddingServiceError(message) from exc
-
 async def _run_async_embedding_call(fn, payload, *, operation: str, timeout_seconds: float):
-    """Async equivalent of `_run_embedding_call` that also enforces a timeout.
+    """Run the blocking LangChain fn in a thread, rewrap errors, enforce timeout.
 
-    A timeout maps to the same `EmbeddingServiceError` with a clear
-    message, so upstream code doesn't need to distinguish "dead" from
-    "slow" — both mean "embeddings aren't usable right now".
+    Rewraps any provider exception as `EmbeddingServiceError` with a clear
+    operator-facing message, so upstream code doesn't need to distinguish
+    "dead" from "slow" — both mean "embeddings aren't usable right now".
     """
     try:
         return await asyncio.wait_for(

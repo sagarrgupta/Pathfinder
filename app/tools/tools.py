@@ -68,7 +68,6 @@ ToolHandler = Callable[[dict[str, Any], "ToolContext"], Awaitable[dict[str, Any]
 CompactHandler = Callable[[dict[str, Any], dict[str, Any], "ToolContext"], dict[str, Any]]
 
 _TOOL_SPECS: tuple["ToolSpec", ...] | None = None
-_TOOL_SCHEMAS: tuple[dict[str, Any], ...] | None = None
 _MCP_TOOLS: tuple[Tool, ...] | None = None
 _TOOL_SPEC_BY_NAME: dict[str, "ToolSpec"] | None = None
 
@@ -229,12 +228,6 @@ def get_tool_specs() -> list[ToolSpec]:
     return list(_TOOL_SPECS or ())
 
 
-def get_tool_schemas() -> list[dict[str, Any]]:
-    """OpenAI-compatible schemas for all tools (the superset)."""
-    _ensure_tool_cache()
-    return list(_TOOL_SCHEMAS or ())
-
-
 def get_mcp_tools() -> list[Tool]:
     """MCP-shaped tool definitions for the stdio server."""
     _ensure_tool_cache()
@@ -254,7 +247,7 @@ def _ensure_tool_cache() -> None:
     package load time, and we memoize so the registration cost is paid
     exactly once per process.
     """
-    global _TOOL_SPECS, _TOOL_SCHEMAS, _MCP_TOOLS, _TOOL_SPEC_BY_NAME
+    global _TOOL_SPECS, _MCP_TOOLS, _TOOL_SPEC_BY_NAME
     if _TOOL_SPECS is not None:
         return
 
@@ -263,7 +256,6 @@ def _ensure_tool_cache() -> None:
     from app.tools.vector_tools import get_vector_tool_specs
     from app.tools.web_tools import get_web_tool_specs
 
-    # Order matters only for display / schema-list ordering.
     specs = tuple(
         [
             *get_graph_tool_specs(),
@@ -273,7 +265,6 @@ def _ensure_tool_cache() -> None:
         ]
     )
     _TOOL_SPECS = specs
-    _TOOL_SCHEMAS = tuple(spec.as_openai_schema() for spec in specs)
     _MCP_TOOLS = tuple(spec.as_mcp_tool() for spec in specs)
     _TOOL_SPEC_BY_NAME = {spec.name: spec for spec in specs}
 
@@ -290,11 +281,6 @@ async def execute_tool(name: str, arguments: dict[str, Any], context: ToolContex
             log.warning("Tool %s returned recoverable error: %s", name, exc)
             return {"error": str(exc)}
     return {"error": f"unknown tool: {name}"}
-
-
-def list_agent_profiles() -> list[str]:
-    """The three known profiles: document_ingestor, query_ingestor, specialist."""
-    return list(_AGENT_TOOL_EXCLUSIONS.keys())
 
 
 def _resolve_agent_profile(agent: str) -> frozenset[str]:
