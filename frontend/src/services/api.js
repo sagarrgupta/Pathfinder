@@ -22,37 +22,63 @@ function withStudentId(path, studentId) {
 export function chatSSE({ query, sessionId, studentId, files = [], replaceFilenames = [], reasoning = 'medium' }, callbacks) {
   const controller = new AbortController();
   let sawTerminalEvent = false;
+  // `currentEventType` and `dataLines` must persist across calls to
+  // processSSEBuffer because large events (e.g. the final `done` payload
+  // with a full tool_call_log) are commonly split across TCP chunks.
+  // Spec: an event ends at a blank line; accumulate `data:` lines until
+  // then, and never drop `eventType` just because this chunk ended early.
+  let currentEventType = '';
+  let dataLines = [];
+
+  const dispatchEvent = () => {
+    if (!currentEventType || dataLines.length === 0) {
+      currentEventType = '';
+      dataLines = [];
+      return;
+    }
+    const raw = dataLines.join('\n');
+    currentEventType = ((type) => {
+      try {
+        const data = JSON.parse(raw);
+        if (type === 'progress') callbacks.onProgress?.(data);
+        else if (type === 'token') callbacks.onToken?.(data);
+        else if (type === 'done') {
+          sawTerminalEvent = true;
+          callbacks.onDone?.(data);
+        } else if (type === 'error') {
+          sawTerminalEvent = true;
+          callbacks.onError?.(data.error);
+        }
+      } catch {
+        // skip malformed JSON
+      }
+      return '';
+    })(currentEventType);
+    dataLines = [];
+  };
 
   const processSSEBuffer = (chunk, { flush = false } = {}) => {
     const delimiter = '\n';
     const lines = chunk.split(delimiter);
     const remainder = flush ? '' : (lines.pop() || '');
 
-    let eventType = '';
     for (const rawLine of lines) {
       const line = rawLine.replace(/\r$/, '');
       if (!line) {
-        eventType = '';
+        // Blank line terminates an event per SSE spec.
+        dispatchEvent();
         continue;
       }
       if (line.startsWith('event: ')) {
-        eventType = line.slice(7).trim();
+        currentEventType = line.slice(7).trim();
       } else if (line.startsWith('data: ')) {
-        try {
-          const data = JSON.parse(line.slice(6));
-          if (eventType === 'progress') callbacks.onProgress?.(data);
-          else if (eventType === 'token') callbacks.onToken?.(data);
-          else if (eventType === 'done') {
-            sawTerminalEvent = true;
-            callbacks.onDone?.(data);
-          } else if (eventType === 'error') {
-            sawTerminalEvent = true;
-            callbacks.onError?.(data.error);
-          }
-        } catch {
-          // skip malformed JSON
-        }
+        dataLines.push(line.slice(6));
       }
+    }
+
+    if (flush) {
+      // Final flush: dispatch whatever we have, even without a trailing blank line.
+      dispatchEvent();
     }
 
     return remainder;

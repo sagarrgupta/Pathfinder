@@ -44,15 +44,15 @@ _SPECIALIST_DESCRIPTIONS: dict[str, str] = {
     ),
 }
 
-_ROUTING_PROMPT = """You are a query classifier. Given a student's query and optional context, score how relevant each specialist is on a scale of 0 to 10.
+_ROUTING_PROMPT = """Classify a student query. Score each specialist 0–10.
 
 Specialists:
 {specialists}
 
-Student query: "{query}"
+Query: "{query}"
 {context_line}
 
-Return ONLY a JSON object with scores, nothing else:
+Return ONLY JSON, nothing else:
 {{"academic": <0-10>, "career": <0-10>, "general": <0-10>}}"""
 
 _LIGHT_CONVERSATION_RE = re.compile(

@@ -139,10 +139,9 @@ async def _extract_page_with_vision(pdf_bytes: bytes, page_number: int, filename
             image_bytes=img_bytes,
             mime_type="image/png",
             prompt=(
-                f"Extract ALL text content from this document page image (page {page_number}). "
-                "Include all text, numbers, tables, and structured data. "
-                "Preserve the original structure as much as possible. "
-                "Return ONLY the extracted text, nothing else."
+                f"Extract ALL text from this document page (page {page_number}): "
+                "text, numbers, tables, structured data. Preserve original structure. "
+                "Return ONLY the extracted text."
             ),
             filename=filename,
             context_label=f"page {page_number}",
@@ -173,12 +172,9 @@ async def extract_text_from_image(file_bytes: bytes, filename: str = "image.png"
             image_bytes=img_bytes,
             mime_type=mime_type,
             prompt=(
-                "Extract ALL text content from this image. "
-                "Include all text, numbers, tables, and structured data you can see. "
-                "Preserve the original structure and formatting as much as possible. "
-                "If the image contains a document (resume, transcript, etc.), "
-                "extract all information from it. "
-                "Return ONLY the extracted text, nothing else."
+                "Extract ALL text from this image: text, numbers, tables, structured data. "
+                "Preserve original structure. If it's a document (resume, transcript, etc.), "
+                "extract all information. Return ONLY the extracted text."
             ),
             filename=filename,
             context_label="image",
