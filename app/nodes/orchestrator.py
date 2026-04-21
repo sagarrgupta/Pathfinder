@@ -60,7 +60,7 @@ _LIGHT_CONVERSATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-async def _llm_route(query: str, context_hint: str) -> dict[str, float] | None:
+async def _llm_route(query: str, context_hint: str) -> dict[str, float]:
     """Ask the LLM to rate how well each specialist fits this query.
 
     Returns a `{name: score}` mapping. We default to a neutral
