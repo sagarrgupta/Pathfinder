@@ -117,6 +117,14 @@ function appReducer(state, action) {
     case 'SET_STUDENTS':
       return { ...state, students: action.payload };
 
+    case 'UPSERT_STUDENT':
+      return {
+        ...state,
+        students: [action.payload, ...state.students.filter(
+          (student) => student.student_id !== action.payload.student_id
+        )],
+      };
+
     case 'SET_ACTIVE_STUDENT': {
       const nextStudentId = action.payload;
       const nextSessions = state.sessions.filter((s) => s.student_id === nextStudentId);
@@ -394,9 +402,11 @@ export function AppProvider({ children }) {
 
   const createStudent = useCallback(async (studentInput) => {
     const created = await createStudentRequest(studentInput);
-    await refreshStudents();
+    dispatch({ type: 'UPSERT_STUDENT', payload: created });
     dispatch({ type: 'SET_ACTIVE_STUDENT', payload: created.student_id });
     // The activeStudentId effect will load the new student automatically.
+    // Creation succeeded even if refreshing the full list is temporarily unavailable.
+    await refreshStudents().catch(() => {});
     return created;
   }, [refreshStudents]);
 

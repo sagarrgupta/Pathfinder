@@ -88,7 +88,7 @@ def _student_info(student: dict[str, Any]) -> StudentInfo:
     """
     extra = {
         k: v for k, v in student.items()
-        if k not in {"id", "name", "created_at", "updated_at",
+        if k not in {"id", "student_id", "name", "created_at", "updated_at",
                       "long_context"}
         and v is not None and str(v).strip()
     }
