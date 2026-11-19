@@ -50,6 +50,7 @@ export default function ChatPage() {
   const [files, setFiles] = useState([]);
   const [replaceFlags, setReplaceFlags] = useState({});  // filename -> true if user chose to replace
   const abortRef = useRef(null);
+  const requestTimingRef = useRef(null);
   const streamBufferRef = useRef({ sessionId: '', content: '', pendingContent: '', frameId: 0 });
 
   // Duplicate file dialog state
@@ -166,16 +167,23 @@ export default function ChatPage() {
     setFiles([]);
     setReplaceFlags({});
 
+    const request = { sessionId: sid, startedAt: Date.now(), clockStart: performance.now(), finished: false };
+    requestTimingRef.current = request;
+    const finishTiming = (status) => {
+      request.finished = true;
+      return { startedAt: request.startedAt, elapsedMs: Math.max(0, performance.now() - request.clockStart), status };
+    };
+
     // Add empty assistant message (will be streamed into)
     dispatch({
       type: 'ADD_MESSAGE',
       payload: {
         sessionId: sid,
-        message: { role: 'assistant', content: '', metadata: {}, progress: [] },
+        message: { role: 'assistant', content: '', metadata: {}, progress: [], timing: { startedAt: request.startedAt } },
       },
     });
 
-    dispatch({ type: 'SET_STREAMING', payload: true });
+    dispatch({ type: 'SET_STREAMING', payload: true, sessionId: sid });
     streamBufferRef.current = { sessionId: sid, content: '', pendingContent: '', frameId: 0 };
 
     abortRef.current = chatSSE(
@@ -189,12 +197,14 @@ export default function ChatPage() {
       },
       {
         onProgress: (data) => {
+          if (request.finished) return;
           dispatch({
             type: 'APPEND_MESSAGE_PROGRESS',
             payload: { sessionId: sid, progress: data },
           });
         },
         onToken: (data) => {
+          if (request.finished) return;
           const stream = streamBufferRef.current;
           stream.sessionId = sid;
           stream.pendingContent += data.content;
@@ -206,6 +216,8 @@ export default function ChatPage() {
           }
         },
         onDone: (data) => {
+          if (request.finished) return;
+          const timing = finishTiming('completed');
           flushStreamBuffer(sid);
           const runtimeSnapshot = data.runtime_snapshot || {};
           dispatch({
@@ -213,6 +225,7 @@ export default function ChatPage() {
             payload: {
               sessionId: sid,
               update: {
+                timing,
                 metadata: {
                   citations: data.citations,
                   method: data.method,
@@ -249,10 +262,12 @@ export default function ChatPage() {
           }
         },
         onError: (error) => {
+          if (request.finished) return;
+          const timing = finishTiming('error');
           flushStreamBuffer(sid);
           dispatch({
             type: 'UPDATE_LAST_MESSAGE',
-            payload: { sessionId: sid, update: { content: `Error: ${error}` } },
+            payload: { sessionId: sid, update: { content: `Error: ${error}`, timing } },
           });
           dispatch({ type: 'SET_STREAMING', payload: false });
         },
@@ -261,6 +276,17 @@ export default function ChatPage() {
   };
 
   const handleStop = () => {
+    const request = requestTimingRef.current;
+    if (request && !request.finished) {
+      request.finished = true;
+      dispatch({
+        type: 'UPDATE_LAST_MESSAGE',
+        payload: {
+          sessionId: request.sessionId,
+          update: { timing: { startedAt: request.startedAt, elapsedMs: Math.max(0, performance.now() - request.clockStart), status: 'stopped' } },
+        },
+      });
+    }
     flushStreamBuffer(streamBufferRef.current.sessionId);
     abortRef.current?.abort();
     dispatch({ type: 'SET_STREAMING', payload: false });

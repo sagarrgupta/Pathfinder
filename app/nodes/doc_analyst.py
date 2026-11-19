@@ -201,7 +201,7 @@ async def doc_analyst(state: PathfinderState) -> PathfinderState:
                     )
 
                 # Single round-trip to Neo4j for all chunks of this doc.
-                stored_result = await vector_db.batch_upsert_chunks(document_id=doc_id, chunks=chunks_to_store)
+                stored_result = await vector_db.batch_upsert_chunks(student_id=student_id, document_id=doc_id, chunks=chunks_to_store)
                 stored = int(stored_result.get("stored_chunks", 0) or 0)
                 total_chunks += stored
                 document_result["chunks_stored"] = stored

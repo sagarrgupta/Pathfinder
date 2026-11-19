@@ -265,7 +265,7 @@ async def chat(
             filename=fname,
         )
         if existing and existing.get("id"):
-            await graph_db.delete_document_cascade(document_id=existing["id"])
+            await graph_db.delete_document_cascade(student_id=resolved_student_id, document_id=existing["id"])
             log.info("Chat: replaced existing document before re-upload: %s", fname)
 
     file_data = [await _read_upload_file(upload) for upload in files]
@@ -449,7 +449,7 @@ async def upload_document(
             filename=upload["filename"],
         )
         if existing and existing.get("id"):
-            await graph_db.delete_document_cascade(document_id=existing["id"])
+            await graph_db.delete_document_cascade(student_id=resolved_student_id, document_id=existing["id"])
             log.info("Replaced existing document: %s", upload["filename"])
 
     from app.nodes.doc_analyst import doc_analyst as process_doc

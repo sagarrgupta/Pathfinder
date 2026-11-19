@@ -274,6 +274,8 @@ def _ensure_tool_cache() -> None:
 
 async def execute_tool(name: str, arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
     """Run one tool by name (no profile check). Used by the MCP server."""
+    if not str(context.student_id or "").strip():
+        return {"error": "student_id is required"}
     spec = get_tool_spec(name)
     if spec is not None:
         try:
@@ -325,6 +327,8 @@ async def execute_agent_tool(
     instead of silently calling it. This is what prevents the read-only
     specialist from issuing graph writes even if it tried to.
     """
+    if not str(context.student_id or "").strip():
+        return {"error": "student_id is required"}
     if agent not in _AGENT_TOOL_BY_NAME_CACHE:
         get_agent_tool_specs(agent)
     spec = _AGENT_TOOL_BY_NAME_CACHE.get(agent, {}).get(name)

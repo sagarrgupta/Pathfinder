@@ -93,6 +93,7 @@ class VectorDB:
     async def upsert_chunk_metadata(
         self,
         *,
+        student_id: str,
         chunk_id: str,
         document_id: str,
         text: str,
@@ -105,6 +106,8 @@ class VectorDB:
         chunk in a valid-but-unindexed state. Blank text is skipped
         (not an error) so batch callers don't have to pre-filter.
         """
+        if not student_id or not student_id.strip():
+            raise ValueError("student_id is required")
         if not chunk_id or not document_id:
             raise ValueError("chunk_id and document_id are required")
         text = (text or "").strip()
@@ -121,8 +124,14 @@ class VectorDB:
         async with self.driver.session() as session:
             result = await session.run(
                 """
-                MATCH (d:Document {id: $document_id})
-                MERGE (c:Chunk {id: $chunk_id})
+                MATCH (:Student {id: $student_id})-[:UPLOADED]->(d:Document {id: $document_id})
+                OPTIONAL MATCH (existing:Chunk {id: $chunk_id})
+                WITH d, existing
+                WHERE existing IS NULL OR (
+                    existing.document_id = d.id AND
+                    EXISTS { MATCH (existing)-[:FROM_DOCUMENT]->(d) }
+                )
+                MERGE (c:Chunk {id: $chunk_id, document_id: $document_id})
                 ON CREATE SET c.created_at = datetime()
                 SET c.updated_at = datetime(),
                     c.text = $text,
@@ -132,6 +141,7 @@ class VectorDB:
                 RETURN c.id AS chunk_id, d.id AS document_id
                 """,
                 chunk_id=chunk_id,
+                student_id=student_id,
                 document_id=document_id,
                 text=text,
                 metadata_json=metadata_json,
@@ -139,7 +149,7 @@ class VectorDB:
             record = await result.single()
             if not record:
                 raise ValueError(
-                    f"Document not found for chunk upsert. document_id={document_id}"
+                    "document or chunk not found for student"
                 )
 
         return sanitize_neo4j_value({
@@ -151,6 +161,7 @@ class VectorDB:
     async def upsert_chunk(
         self,
         *,
+        student_id: str,
         chunk_id: str,
         document_id: str,
         text: str,
@@ -163,7 +174,10 @@ class VectorDB:
         `batch_upsert_chunks` — it embeds all chunks in a single Ollama
         call which is dramatically faster.
         """
+        if not student_id or not student_id.strip():
+            raise ValueError("student_id is required")
         base = await self.upsert_chunk_metadata(
+            student_id=student_id,
             chunk_id=chunk_id,
             document_id=document_id,
             text=text,
@@ -178,21 +192,22 @@ class VectorDB:
         async with self.driver.session() as session:
             result = await session.run(
                 """
-                MATCH (d:Document {id: $document_id})
-                MERGE (c:Chunk {id: $chunk_id})
+                MATCH (:Student {id: $student_id})-[:UPLOADED]->(d:Document {id: $document_id})
+                MATCH (c:Chunk {id: $chunk_id, document_id: $document_id})-[:FROM_DOCUMENT]->(d)
                 SET c.embedding = $embedding,
                     c.updated_at = datetime()
                 MERGE (c)-[:FROM_DOCUMENT]->(d)
                 RETURN c.id AS chunk_id, d.id AS document_id
                 """,
                 chunk_id=chunk_id,
+                student_id=student_id,
                 document_id=document_id,
                 embedding=embedding,
             )
             record = await result.single()
             if not record:
                 raise ValueError(
-                    f"Document not found for chunk upsert. document_id={document_id}"
+                    "document or chunk not found for student"
                 )
 
         return sanitize_neo4j_value({
@@ -204,6 +219,7 @@ class VectorDB:
     async def batch_upsert_chunks(
         self,
         *,
+        student_id: str,
         document_id: str,
         chunks: list[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -221,6 +237,8 @@ class VectorDB:
         Empty/invalid chunks are silently dropped so the ingester can
         hand in whatever it has without pre-filtering.
         """
+        if not student_id or not student_id.strip():
+            raise ValueError("student_id is required")
         if not document_id:
             raise ValueError("document_id is required")
         if not chunks:
@@ -273,9 +291,16 @@ class VectorDB:
         async with self.driver.session() as session:
             result = await session.run(
                 """
-                MATCH (d:Document {id: $document_id})
+                MATCH (:Student {id: $student_id})-[:UPLOADED]->(d:Document {id: $document_id})
+                WITH d
+                WHERE NOT EXISTS {
+                    UNWIND $rows AS candidate
+                    MATCH (existing:Chunk {id: candidate.chunk_id})
+                    WHERE existing.document_id IS NULL OR existing.document_id <> d.id
+                       OR NOT EXISTS { MATCH (existing)-[:FROM_DOCUMENT]->(d) }
+                }
                 UNWIND $rows AS row
-                MERGE (c:Chunk {id: row.chunk_id})
+                MERGE (c:Chunk {id: row.chunk_id, document_id: row.document_id})
                 ON CREATE SET c.created_at = datetime()
                 SET c.updated_at = datetime(),
                     c.text = row.text,
@@ -283,12 +308,15 @@ class VectorDB:
                     c.metadata_json = row.metadata_json,
                     c.embedding = row.embedding
                 MERGE (c)-[:FROM_DOCUMENT]->(d)
-                RETURN count(c) AS stored
+                RETURN d.id AS document_id, count(c) AS stored
                 """,
+                student_id=student_id,
                 document_id=document_id,
                 rows=rows,
             )
             record = await result.single()
+            if not record:
+                raise ValueError("document or chunks not found for student")
 
         return sanitize_neo4j_value({
             "status": "success",
@@ -355,26 +383,31 @@ class VectorDB:
                 )
         return sanitize_neo4j_value(rows)
 
-    async def delete_document_chunks(self, *, document_id: str) -> dict[str, Any]:
+    async def delete_document_chunks(self, *, student_id: str, document_id: str) -> dict[str, Any]:
         """Remove every chunk for a document (and all edges attached to them).
 
-        Called by `GraphDB.delete_document_cascade` when a user re-uploads
-        or explicitly deletes a document — we never want orphan chunks
-        hanging around in the vector index.
+        The document must belong to the supplied student. An owned empty
+        document is a successful no-op; foreign and missing IDs are hidden.
         """
+        if not student_id or not student_id.strip():
+            raise ValueError("student_id is required")
         if not document_id:
             raise ValueError("document_id is required")
         async with self.driver.session() as session:
             result = await session.run(
                 """
-                MATCH (c:Chunk {document_id: $document_id})
-                WITH collect(c) AS chunks
+                MATCH (:Student {id: $student_id})-[:UPLOADED]->(d:Document {id: $document_id})
+                OPTIONAL MATCH (c:Chunk {document_id: $document_id})-[:FROM_DOCUMENT]->(d)
+                WITH d, collect(c) AS chunks
                 FOREACH (n IN chunks | DETACH DELETE n)
                 RETURN size(chunks) AS deleted
                 """,
+                student_id=student_id,
                 document_id=document_id,
             )
             record = await result.single()
+            if not record:
+                raise ValueError("document not found for student")
         deleted = int(record["deleted"]) if record and record["deleted"] is not None else 0
         return sanitize_neo4j_value({"status": "success", "deleted_chunks": deleted, "document_id": document_id})
 
@@ -431,31 +464,36 @@ class VectorDB:
         payload.pop("metadata_json", None)
         return payload
 
-    async def get_chunk(self, *, chunk_id: str) -> dict[str, Any]:
+    async def get_chunk(self, *, student_id: str, chunk_id: str) -> dict[str, Any]:
         """Fetch a single chunk by id — used by the `get_chunk` LLM tool."""
+        if not student_id or not student_id.strip():
+            raise ValueError("student_id is required")
         async with self.driver.session() as session:
             result = await session.run("""
-                MATCH (c:Chunk {id: $chunk_id})
+                MATCH (:Student {id: $student_id})-[:UPLOADED]->(:Document)<-[:FROM_DOCUMENT]-(c:Chunk {id: $chunk_id})
                 RETURN c {.*} AS chunk
-            """, chunk_id=chunk_id)
+            """, student_id=student_id, chunk_id=chunk_id)
             record = await result.single()
             if not record:
                 raise ValueError("chunk not found")
             return sanitize_neo4j_value(self._chunk_payload(record["chunk"]))
 
 
-    async def get_chunks_for_document(self, *, document_id: str) -> list[dict[str, Any]]:
+    async def get_chunks_for_document(self, *, student_id: str, document_id: str) -> list[dict[str, Any]]:
         """Every chunk that came from one document.
 
         The ingester uses this during re-ingest to diff what's stored
         against what's about to be written; the replay viewer uses it
         to show the source text backing a citation.
         """
+        if not student_id or not student_id.strip():
+            raise ValueError("student_id is required")
         async with self.driver.session() as session:
             result = await session.run("""
-                MATCH (c:Chunk {document_id: $document_id})
+                MATCH (:Student {id: $student_id})-[:UPLOADED]->(d:Document {id: $document_id})
+                MATCH (c:Chunk {document_id: $document_id})-[:FROM_DOCUMENT]->(d)
                 RETURN c {.*} AS chunk
-            """, document_id=document_id)
+            """, student_id=student_id, document_id=document_id)
             rows = [self._chunk_payload(record["chunk"]) async for record in result]
             return sanitize_neo4j_value(rows)
     
@@ -473,21 +511,23 @@ class VectorDB:
             rows = [self._chunk_payload(record["chunk"]) async for record in result]
             return sanitize_neo4j_value(rows)
 
-    async def delete_chunk(self, *, chunk_id: str) -> dict[str, Any]:
+    async def delete_chunk(self, *, student_id: str, chunk_id: str) -> dict[str, Any]:
         """Detach-delete a single chunk. Used by the chunk-level tool."""
+        if not student_id or not student_id.strip():
+            raise ValueError("student_id is required")
         async with self.driver.session() as session:
             result = await session.run("""
-                MATCH (c:Chunk {id: $chunk_id})
+                MATCH (:Student {id: $student_id})-[:UPLOADED]->(:Document)<-[:FROM_DOCUMENT]-(c:Chunk {id: $chunk_id})
                 WITH c, c.id AS chunk_id
                 DETACH DELETE c
                 RETURN chunk_id
-            """, chunk_id=chunk_id)
+            """, student_id=student_id, chunk_id=chunk_id)
             record = await result.single()
             if not record:
                 raise ValueError("chunk not found")
             return sanitize_neo4j_value({"status": "success", "chunk_id": record["chunk_id"]})
     
-    async def get_chunk_neighbors(self, *, chunk_id: str) -> dict[str, Any]:
+    async def get_chunk_neighbors(self, *, student_id: str, chunk_id: str) -> dict[str, Any]:
         """Chunk + its parent `Document` in one hop.
 
         Deliberately does not expand to linked entities — that's a
@@ -495,11 +535,13 @@ class VectorDB:
         Keeping the split means the LLM tool layer can decide how much
         context it actually wants.
         """
+        if not student_id or not student_id.strip():
+            raise ValueError("student_id is required")
         async with self.driver.session() as session:
             result = await session.run("""
-                MATCH (c:Chunk {id: $chunk_id})-[:FROM_DOCUMENT]->(d:Document)
+                MATCH (:Student {id: $student_id})-[:UPLOADED]->(d:Document)<-[:FROM_DOCUMENT]-(c:Chunk {id: $chunk_id})
                 RETURN c {.*} AS chunk, d {.*} AS document
-            """, chunk_id=chunk_id)
+            """, student_id=student_id, chunk_id=chunk_id)
             record = await result.single()
             if not record:
                 raise ValueError("chunk not found")
@@ -508,17 +550,19 @@ class VectorDB:
                 "document": dict(record["document"]),
             })
     
-    async def get_document_search_context(self, *, document_id: str) -> list[dict[str, Any]]:
+    async def get_document_search_context(self, *, student_id: str, document_id: str) -> list[dict[str, Any]]:
         """A compact (id / text / metadata) chunk list for ingestion review.
 
         Similar to `get_chunks_for_document`, but drops the Neo4j
         internal fields so the shape is already LLM-ready.
         """
+        if not student_id or not student_id.strip():
+            raise ValueError("student_id is required")
         async with self.driver.session() as session:
             result = await session.run("""
-                MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d:Document {id: $document_id})
+                MATCH (:Student {id: $student_id})-[:UPLOADED]->(d:Document {id: $document_id})<-[:FROM_DOCUMENT]-(c:Chunk)
                 RETURN c {.*} AS chunk
-            """, document_id=document_id)
+            """, student_id=student_id, document_id=document_id)
             rows: list[dict[str, Any]] = []
             async for record in result:
                 chunk = dict(record["chunk"])

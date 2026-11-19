@@ -157,6 +157,7 @@ async def _upsert_chunk_metadata(arguments: dict[str, Any], context: ToolContext
     """
     vector_db = await _vector_db(context)
     chunk = await vector_db.upsert_chunk_metadata(
+        student_id=str(context.student_id or "").strip(),
         chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
         document_id=str(arguments.get("document_id", "") or "").strip(),
         text=str(arguments.get("text", "") or ""),
@@ -169,9 +170,10 @@ def _compact_upsert_chunk_metadata(_: dict[str, Any], result: dict[str, Any], __
 
 
 async def _upsert_chunk(arguments: dict[str, Any], context: ToolContext) -> dict[str, Any]:
-    """Full write path: metadata + embedding generation + document link, atomic."""
+    """Write metadata and an embedding for a chunk in an owned document."""
     vector_db = await _vector_db(context)
     chunk = await vector_db.upsert_chunk(
+        student_id=str(context.student_id or "").strip(),
         chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
         document_id=str(arguments.get("document_id", "") or "").strip(),
         text=str(arguments.get("text", "") or ""),
@@ -192,6 +194,7 @@ async def _batch_upsert_chunks(arguments: dict[str, Any], context: ToolContext) 
     """
     vector_db = await _vector_db(context)
     result = await vector_db.batch_upsert_chunks(
+        student_id=str(context.student_id or "").strip(),
         document_id=str(arguments.get("document_id", "") or "").strip(),
         chunks=list(arguments.get("chunks") or []),
     )
@@ -211,6 +214,7 @@ async def _delete_document_chunks(arguments: dict[str, Any], context: ToolContex
     """Remove every chunk tied to one document (used for re-ingestion)."""
     vector_db = await _vector_db(context)
     result = await vector_db.delete_document_chunks(
+        student_id=str(context.student_id or "").strip(),
         document_id=str(arguments.get("document_id", "") or "").strip(),
     )
     return {"result": result}
@@ -238,6 +242,7 @@ async def _get_chunk(arguments: dict[str, Any], context: ToolContext) -> dict[st
     vector_db = await _vector_db(context)
     try:
         chunk = await vector_db.get_chunk(
+            student_id=str(context.student_id or "").strip(),
             chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
         )
     except ValueError as exc:
@@ -260,6 +265,7 @@ async def _get_chunks_for_document(arguments: dict[str, Any], context: ToolConte
     """Return every chunk attached to one document."""
     vector_db = await _vector_db(context)
     chunks = await vector_db.get_chunks_for_document(
+        student_id=str(context.student_id or "").strip(),
         document_id=str(arguments.get("document_id", "") or "").strip(),
     )
     return {"chunks": chunks}
@@ -294,6 +300,7 @@ async def _delete_chunk(arguments: dict[str, Any], context: ToolContext) -> dict
     """Remove one chunk without touching siblings — targeted cleanup."""
     vector_db = await _vector_db(context)
     result = await vector_db.delete_chunk(
+        student_id=str(context.student_id or "").strip(),
         chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
     )
     return {"result": result}
@@ -315,6 +322,7 @@ async def _get_chunk_neighbors(arguments: dict[str, Any], context: ToolContext) 
     vector_db = await _vector_db(context)
     try:
         neighbors = await vector_db.get_chunk_neighbors(
+            student_id=str(context.student_id or "").strip(),
             chunk_id=str(arguments.get("chunk_id", "") or "").strip(),
         )
     except ValueError as exc:
@@ -352,6 +360,7 @@ async def _get_document_search_context(arguments: dict[str, Any], context: ToolC
     """
     vector_db = await _vector_db(context)
     chunks = await vector_db.get_document_search_context(
+        student_id=str(context.student_id or "").strip(),
         document_id=str(arguments.get("document_id", "") or "").strip(),
     )
     return {"chunks": chunks}

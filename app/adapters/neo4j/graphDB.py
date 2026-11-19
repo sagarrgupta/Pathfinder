@@ -38,6 +38,7 @@ import hashlib
 from typing import Any
 from app.adapters.neo4j._sanitize import sanitize_neo4j_value
 from app.adapters.neo4j.vectorDB import VectorDB
+from app.adapters.neo4j.ownership import owned_node_predicate
 from app.config.settings import settings
 from app.utils.ids import generate_field_id
 
@@ -132,6 +133,8 @@ class GraphDB:
             if value is None:
                 continue
             field = self._safe_identifier(str(key or "").strip(), "student field")
+            if field in {"id", "student_id"}:
+                raise ValueError("student identity cannot be changed")
             param = f"value_{idx}"
             assignments.append(f"s.{field} = ${param}")
             params[param] = value
@@ -191,7 +194,7 @@ class GraphDB:
                 return None
             return sanitize_neo4j_value(dict(record["document"]))
 
-    async def delete_document_cascade(self, *, document_id: str) -> dict[str, Any]:
+    async def delete_document_cascade(self, *, student_id: str, document_id: str) -> dict[str, Any]:
         """Wipe a document *and* every chunk attached to it in one query.
 
         Used when the user replaces or deletes a document. Leaves the
@@ -202,10 +205,11 @@ class GraphDB:
         async with self.driver.session() as session:
             await session.run(
                 """
-                MATCH (d:Document {id: $document_id})
+                MATCH (:Student {id: $student_id})-[:UPLOADED]->(d:Document {id: $document_id})
                 OPTIONAL MATCH (c:Chunk)-[:FROM_DOCUMENT]->(d)
                 DETACH DELETE c, d
                 """,
+                student_id=student_id,
                 document_id=document_id,
             )
         return sanitize_neo4j_value({"status": "success", "document_id": document_id})
@@ -299,6 +303,8 @@ class GraphDB:
 
         for idx, (field, value) in enumerate(identity.items()):
             field_name = self._safe_identifier(field, "identity field")
+            if field_name == "student_id":
+                raise ValueError("student_id is managed by the application")
             param_name = f"id_{idx}"
             merge_props.append(f"{field_name}: ${param_name}")
             params[param_name] = str(value or "").strip()
@@ -316,6 +322,8 @@ class GraphDB:
 
         for idx, (field, value) in enumerate(properties.items()):
             field_name = self._safe_identifier(field, "property field")
+            if field_name == "student_id":
+                raise ValueError("student_id is managed by the application")
             param_name = f"prop_{idx}"
             set_clauses.append(f"n.{field_name} = ${param_name}")
             params[param_name] = value
@@ -786,8 +794,8 @@ class GraphDB:
 
         query = f"""
             MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(src_sec:Section)-[:HAS_ITEM]->(src:Entity)-[r:{rel_type}]->(dst:Entity:{target_type})
-            OPTIONAL MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(dst_sec:Section)-[:HAS_ITEM]->(dst)
-            WHERE {" AND ".join(where_parts)}
+            WHERE src.student_id = $student_id AND {" AND ".join(where_parts)}
+            MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(dst_sec:Section)-[:HAS_ITEM]->(dst)
             RETURN {{
                 relationship_type: type(r),
                 source: src {{.*}},
@@ -866,9 +874,9 @@ class GraphDB:
 
         query = f"""
             MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(src_sec:Section)-[:HAS_ITEM]->(src:Entity)-[r:{rel_type}]->(dst:Entity:{target_type})
-            OPTIONAL MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(dst_sec:Section)-[:HAS_ITEM]->(dst)
-            WHERE dst.student_id = $student_id
+            WHERE src.student_id = $student_id AND dst.student_id = $student_id
               AND toString(dst.{safe_target_field}) = $target_value
+            MATCH (:Student {{id: $student_id}})-[:HAS_SECTION]->(dst_sec:Section)-[:HAS_ITEM]->(dst)
             RETURN {{
                 relationship_type: type(r),
                 source: src {{.*}},
@@ -1050,7 +1058,7 @@ class GraphDB:
                 f"""
                 MATCH (s:Student {{id: $student_id}})-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(ent:Entity:{safe_entity_type})
                 WHERE {" AND ".join(where_parts)}
-                MATCH (c:Chunk {{id: $chunk_id}})
+                MATCH (s)-[:UPLOADED]->(:Document)<-[:FROM_DOCUMENT]-(c:Chunk {{id: $chunk_id}})
                 MERGE (ent)-[:MENTIONED_IN]->(c)
                 RETURN ent {{.*}} AS entity
                 LIMIT 1
@@ -1091,7 +1099,7 @@ class GraphDB:
                 f"""
                 MATCH (s:Student {{id: $student_id}})-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(ent:Entity:{safe_entity_type})
                 WHERE {" AND ".join(where_parts)}
-                MATCH (d:Document {{id: $document_id}})
+                MATCH (s)-[:UPLOADED]->(d:Document {{id: $document_id}})
                 MERGE (ent)-[:DERIVED_FROM]->(d)
                 RETURN ent {{.*}} AS entity
                 LIMIT 1
@@ -1113,6 +1121,8 @@ class GraphDB:
         async with self.driver.session() as session:
             result = await session.run("""
                 MATCH (s:Student {id: $student_id})-[:HAS_SECTION]->(:Section)-[:HAS_ITEM]->(ent:Entity)-[:MENTIONED_IN]->(c:Chunk {id: $chunk_id})
+                WITH s, ent, c
+                MATCH (s)-[:UPLOADED]->(:Document)<-[:FROM_DOCUMENT]-(c)
                 RETURN ent {.*} AS entity
             """, student_id=student_id, chunk_id=chunk_id)
             rows = [dict(record["entity"]) async for record in result]
@@ -1127,12 +1137,17 @@ class GraphDB:
         edge list.
         """
         depth = max(1, min(int(max_depth), 5))
+        start_owned = owned_node_predicate("start")
+        path_node_owned = owned_node_predicate("path_node")
         async with self.driver.session() as session:
             result = await session.run(
                 f"""
+                MATCH (student:Student {{id: $student_id}})
                 MATCH (start {{id: $start_node_id}})
+                WHERE {start_owned}
                 OPTIONAL MATCH path = (start)-[*1..{depth}]-(nbr)
                 WHERE nbr IS NOT NULL
+                  AND all(path_node IN nodes(path) WHERE {path_node_owned})
                 WITH start, nbr, min(length(path)) AS hop
                 ORDER BY hop ASC
                 RETURN start {{.*, labels: labels(start)}} AS start_node,
@@ -1141,6 +1156,7 @@ class GraphDB:
                            node: nbr {{.*, labels: labels(nbr)}}
                        }}) AS discovered
                 """,
+                student_id=student_id,
                 start_node_id=start_node_id,
             )
             record = await result.single()
@@ -1194,7 +1210,11 @@ class GraphDB:
                 MATCH (:Student {id: $student_id})-[:HAS_SECTION]->(sec:Section)-[:HAS_ITEM]->(ent:Entity)
                 OPTIONAL MATCH (ent)-[:HAS_FIELD]->(f:Field)
                 OPTIONAL MATCH (ent)-[:MENTIONED_IN]->(c:Chunk)
+                WHERE EXISTS {
+                    MATCH (:Student {id: $student_id})-[:UPLOADED]->(:Document)<-[:FROM_DOCUMENT]-(c)
+                }
                 OPTIONAL MATCH (ent)-[:DERIVED_FROM]->(d:Document)
+                WHERE EXISTS { MATCH (:Student {id: $student_id})-[:UPLOADED]->(d) }
                 RETURN ent {.*} AS entity,
                        sec.key AS section_key,
                        collect(DISTINCT f {.*}) AS fields,

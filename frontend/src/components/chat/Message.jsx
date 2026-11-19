@@ -6,6 +6,7 @@ import {
   Copy, Check, Loader2, CheckCircle2, Paperclip, Wrench,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import ResponseTime from './ResponseTime';
 
 function formatStep(step) {
   const label = step.stage || 'Working';
@@ -301,8 +302,11 @@ function Message({ message, isLast, isStreaming }) {
           </div>
         )}
 
-        {!isUser && systemContextAvailable && (
+        {!isUser && (systemContextAvailable || message.timing) && (
           <div className="mt-2">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <ResponseTime timing={message.timing} isStreaming={isCurrentlyStreaming} />
+            {systemContextAvailable && (
             <button
               onClick={() => setShowSystemContext(!showSystemContext)}
               className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 rounded-md px-1.5 py-0.5 -ml-1.5 hover:bg-accent/50 transition-colors"
@@ -310,6 +314,8 @@ function Message({ message, isLast, isStreaming }) {
               {showSystemContext ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
               Why this answer
             </button>
+            )}
+            </div>
             {showSystemContext && (
               <div className="mt-2 space-y-3 rounded-[20px] border border-border/70 bg-card/75 p-3.5 shadow-sm animate-fade-in">
                 {selectedSpecialist && hasMeaningfulRouting && (

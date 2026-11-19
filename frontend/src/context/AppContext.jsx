@@ -108,6 +108,7 @@ const initialState = {
   // UI (never persisted)
   sidebarOpen: true,
   isStreaming: false,
+  streamingSessionId: null,
 };
 
 // ── Reducer ─────────────────────────────────────────────────────
@@ -280,8 +281,36 @@ function appReducer(state, action) {
       };
     }
 
-    case 'SET_STREAMING':
-      return { ...state, isStreaming: action.payload };
+    case 'SET_STREAMING': {
+      if (action.payload || !state.isStreaming) {
+        return {
+          ...state,
+          isStreaming: action.payload,
+          streamingSessionId: action.payload ? (action.sessionId || state.activeSessionId) : null,
+        };
+      }
+      // Freeze any pending timer even when a stream ends without its normal
+      // completion metadata. Persist the total with the assistant message.
+      const finishedAt = Date.now();
+      const messagesBySession = Object.fromEntries(
+        Object.entries(state.messagesBySession).map(([sessionId, messages]) => {
+          if (sessionId !== (state.streamingSessionId || state.activeSessionId)) return [sessionId, messages];
+          const last = messages[messages.length - 1];
+          if (last?.role !== 'assistant' || !last.timing?.startedAt || last.timing.elapsedMs != null) {
+            return [sessionId, messages];
+          }
+          return [sessionId, [...messages.slice(0, -1), {
+            ...last,
+            timing: {
+              ...last.timing,
+              elapsedMs: Math.max(0, finishedAt - last.timing.startedAt),
+              status: last.timing.status || 'completed',
+            },
+          }]];
+        })
+      );
+      return { ...state, isStreaming: false, streamingSessionId: null, messagesBySession };
+    }
 
     case 'SET_STUDENT':
       return { ...state, student: action.payload, studentLoading: false };
