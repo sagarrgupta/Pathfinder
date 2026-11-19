@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '@/context/AppContext';
+import { useToast } from '@/components/shared/Toast';
 import { chatSSE, checkDocumentExists } from '@/services/api';
 import MessageList from '@/components/chat/MessageList';
 import InputArea from '@/components/chat/InputArea';
@@ -45,6 +46,7 @@ function generateSmartTitle(query) {
 
 export default function ChatPage() {
   const { state, dispatch, createSession, refreshStudent } = useApp();
+  const toast = useToast();
   const [files, setFiles] = useState([]);
   const [replaceFlags, setReplaceFlags] = useState({});  // filename -> true if user chose to replace
   const abortRef = useRef(null);
@@ -92,6 +94,10 @@ export default function ChatPage() {
   }, [createSession]);
 
   const handleFilesChange = async (newFiles) => {
+    if (!state.activeStudentId) {
+      toast.error('Create or select a student profile first.');
+      return;
+    }
     // Find files that were just added (not already in the existing list)
     const existingNames = new Set(files.map((f) => f.name));
     const justAdded = newFiles.filter((f) => !existingNames.has(f.name));
@@ -127,6 +133,10 @@ export default function ChatPage() {
 
   const handleSend = (query) => {
     if (!query.trim() || state.isStreaming) return;
+    if (!state.activeStudentId) {
+      toast.error('Create or select a student profile first.');
+      return;
+    }
 
     let sid = sessionId;
     if (!sid) {

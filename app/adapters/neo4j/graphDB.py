@@ -1494,6 +1494,27 @@ class GraphDB:
             )
         return sanitize_neo4j_value({"status": "success", "student_id": student_id})
 
+    async def delete_student_profile(self, *, student_id: str) -> dict[str, Any]:
+        """Delete a profile through ownership edges, preserving other students."""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (s:Student {id: $student_id})
+                OPTIONAL MATCH (s)-[:HAS_SECTION|HAS_ITEM|HAS_FIELD|UPLOADED*0..]->(n)
+                WITH s, collect(DISTINCT n) AS owned
+                OPTIONAL MATCH (s)-[:UPLOADED]->(:Document)<-[:FROM_DOCUMENT]-(c:Chunk)
+                WITH owned, collect(DISTINCT c) AS chunks
+                WITH owned + chunks AS nodes
+                UNWIND nodes AS node
+                WITH DISTINCT node
+                DETACH DELETE node
+                RETURN count(*) AS deleted_nodes
+                """,
+                student_id=student_id,
+            )
+            record = await result.single()
+        return {"student_id": student_id, "deleted_nodes": record["deleted_nodes"] if record else 0}
+
     async def reset_all_data(self) -> dict[str, Any]:
         """Destroy the entire graph — admin / dev reset only.
 

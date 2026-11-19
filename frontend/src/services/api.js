@@ -205,6 +205,13 @@ export async function deleteAllDataEverywhere() {
   return response.json();
 }
 
+export async function deleteStudentProfile(studentId) {
+  if (!studentId) throw new Error('Select a student profile first.');
+  const response = await fetch(withStudentId(`${API_BASE}/student`, studentId), { method: 'DELETE' });
+  if (!response.ok) throw new Error(`Failed to delete student profile: ${response.status}`);
+  return response.json();
+}
+
 // ── Settings ────────────────────────────────────────────────────
 
 export async function getSettings() {
@@ -219,7 +226,10 @@ export async function updateSettings(updates) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
   });
-  if (!response.ok) throw new Error(`Failed to update settings: ${response.status}`);
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(typeof error.detail === 'string' ? error.detail : 'Failed to update settings');
+  }
   return response.json();
 }
 

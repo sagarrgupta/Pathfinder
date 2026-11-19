@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '@/context/AppContext';
 import { useToast } from '@/components/shared/Toast';
-import { getSettings, updateSettings, getHealth, resetStudentData, deleteAllDataEverywhere } from '@/services/api';
+import { getSettings, updateSettings, getHealth, resetStudentData, deleteAllDataEverywhere, deleteStudentProfile } from '@/services/api';
 import {
   Settings, Shield, Monitor, Server, Loader2,
   Trash2, AlertTriangle, X,
@@ -42,8 +42,11 @@ export default function SettingsPage() {
   const toast = useToast();
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [switchingProvider, setSwitchingProvider] = useState(false);
   const [showResetModal, setShowResetModal] = useState(false);
   const [showDeleteAllModal, setShowDeleteAllModal] = useState(false);
+  const [studentToDelete, setStudentToDelete] = useState(null);
+  const activeStudent = state.students.find((student) => student.student_id === state.activeStudentId);
   const modelEntries = Object.entries(state.settings.models || {});
   const dependencyPairs = health?.services
     ? Object.entries(health.services).map(([key, status]) => [
@@ -94,6 +97,23 @@ export default function SettingsPage() {
     }
   };
 
+  const handleProvider = async (provider) => {
+    if (provider === state.settings.llm_provider || switchingProvider) return;
+    setSwitchingProvider(true);
+    try {
+      const updated = await updateSettings({ llm_provider: provider });
+      dispatch({ type: 'SET_SETTINGS', payload: updated });
+      setHealth(null);
+      toast.success(`Switched to ${provider === 'nvidia' ? 'NVIDIA' : 'LM Studio'}`);
+      const healthData = await getHealth().catch(() => null);
+      setHealth(healthData);
+    } catch (error) {
+      toast.error(error.message || 'Failed to switch model provider');
+    } finally {
+      setSwitchingProvider(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -117,7 +137,7 @@ export default function SettingsPage() {
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-              <p className="mt-0.5 text-sm text-muted-foreground">Control how Pathfinder looks, reasons, and connects to its local services.</p>
+              <p className="mt-0.5 text-sm text-muted-foreground">Control how Pathfinder looks, reasons, and connects to its services.</p>
             </div>
           </div>
           <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -192,7 +212,7 @@ export default function SettingsPage() {
             <div>
               <p className="text-sm font-medium">Reasoning Level</p>
               <p className="text-xs text-muted-foreground">
-                Choose how much reasoning effort Pathfinder should request from the local model.
+                Choose how much reasoning effort Pathfinder should request from the selected model.
               </p>
             </div>
             <select
@@ -214,6 +234,35 @@ export default function SettingsPage() {
           <h2 className="font-semibold flex items-center gap-2 mb-4">
             <Monitor className="h-4 w-4 text-primary" /> Models
           </h2>
+          <div className="flex flex-col gap-3 border-b border-border/50 pb-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <label htmlFor="llm-provider" className="text-sm font-medium">Model provider</label>
+              <p id="llm-provider-description" className="mt-1 text-xs text-muted-foreground">
+                LM Studio runs on this computer. NVIDIA uses hosted models.
+                {' '}Your selection is saved for future sessions.
+              </p>
+              {!state.settings.nvidia_configured && (
+                <p className="mt-1 text-xs text-muted-foreground">Set up an NVIDIA API key on the backend to enable NVIDIA.</p>
+              )}
+              {state.isStreaming && (
+                <p className="mt-1 text-xs text-muted-foreground">Wait for the current response to finish before switching.</p>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-2" aria-busy={switchingProvider}>
+              {switchingProvider && <Loader2 className="h-4 w-4 animate-spin text-primary" aria-label="Switching provider" />}
+              <select
+                id="llm-provider"
+                aria-describedby="llm-provider-description"
+                value={state.settings.llm_provider || 'lmstudio'}
+                onChange={(e) => handleProvider(e.target.value)}
+                disabled={switchingProvider || state.isStreaming}
+                className="h-10 rounded-lg border border-border bg-background px-3 text-sm disabled:opacity-50"
+              >
+                <option value="lmstudio">LM Studio (local)</option>
+                <option value="nvidia" disabled={!state.settings.nvidia_configured}>NVIDIA (hosted)</option>
+              </select>
+            </div>
+          </div>
           <div className="space-y-0">
             {modelEntries.map(([key, value]) => (
               <div key={key} className="flex justify-between items-center py-3 border-b last:border-0 border-border/50">
@@ -350,10 +399,27 @@ export default function SettingsPage() {
             </div>
             <button
               onClick={() => setShowResetModal(true)}
-              className="px-4 py-2 text-sm rounded-lg border-2 border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground transition-all flex items-center gap-1.5 font-medium active:scale-95"
+              disabled={!state.activeStudentId}
+              className="px-4 py-2 text-sm rounded-lg border-2 border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground transition-all flex items-center gap-1.5 font-medium active:scale-95 disabled:opacity-40"
             >
               <Trash2 className="h-3.5 w-3.5" />
               Reset
+            </button>
+          </div>
+          <div className="flex items-center justify-between py-4 border-t border-destructive/20 gap-4">
+            <div>
+              <p className="text-sm font-medium">Delete Student Profile</p>
+              <p className="text-xs text-muted-foreground">
+                Permanently delete {activeStudent?.name || 'the selected student'}'s profile, documents, and chats. Other students are kept.
+              </p>
+            </div>
+            <button
+              onClick={() => setStudentToDelete({ student_id: state.activeStudentId, name: activeStudent?.name || 'this student' })}
+              disabled={!state.activeStudentId || state.isStreaming || state.studentLoading}
+              className="px-4 py-2 text-sm rounded-lg border-2 border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground transition-all flex items-center gap-1.5 font-medium active:scale-95 disabled:opacity-40 disabled:pointer-events-none shrink-0"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete Profile
             </button>
           </div>
           <div className="flex items-center justify-between pt-4 border-t border-destructive/20">
@@ -384,6 +450,17 @@ export default function SettingsPage() {
             await refreshStudents().catch(() => {});
             await refreshStudent(state.activeStudentId).catch(() => {});
             toast.success(msg);
+          }}
+        />
+      )}
+
+      {studentToDelete && (
+        <DeleteProfileModal
+          student={studentToDelete}
+          onClose={() => setStudentToDelete(null)}
+          onSuccess={() => {
+            dispatch({ type: 'REMOVE_STUDENT', payload: studentToDelete.student_id });
+            toast.success('Student profile and associated data deleted.');
           }}
         />
       )}
@@ -446,6 +523,43 @@ function ResetModal({ studentId, onClose, onSuccess }) {
   );
 }
 
+function DeleteProfileModal({ student, onClose, onSuccess }) {
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleDelete = async () => {
+    setIsDeleting(true);
+    setError('');
+    try {
+      await deleteStudentProfile(student.student_id);
+      onSuccess();
+      onClose();
+    } catch (err) {
+      setError(`Delete failed: ${err.message}`);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  return (
+    <DangerModal
+      title="Delete Student Profile"
+      intro={<>Permanently delete <strong className="text-destructive">{student.name}</strong> and their associated data? Other student profiles will be kept.</>}
+      items={[
+        'The student profile and its stored properties',
+        'All of their documents, extracted data, and graph',
+        'All of their chats and replay artifacts',
+      ]}
+      error={error}
+      isSubmitting={isDeleting}
+      confirmLabel="Yes, Delete Profile"
+      pendingLabel="Deleting..."
+      onClose={onClose}
+      onConfirm={handleDelete}
+    />
+  );
+}
+
 function DeleteAllModal({ onClose, onSuccess }) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState('');
@@ -502,14 +616,14 @@ function DangerModal({
   const backdropRef = useRef(null);
 
   const handleBackdropClick = (e) => {
-    if (e.target === backdropRef.current) onClose();
+    if (!isSubmitting && e.target === backdropRef.current) onClose();
   };
 
   useEffect(() => {
-    const handleKey = (e) => { if (e.key === 'Escape') onClose(); };
+    const handleKey = (e) => { if (!isSubmitting && e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
+  }, [onClose, isSubmitting]);
 
   return (
     <div
@@ -528,7 +642,7 @@ function DangerModal({
               <h3 className="text-lg font-bold">{title}</h3>
             </div>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+          <button onClick={onClose} disabled={isSubmitting} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -555,6 +669,7 @@ function DangerModal({
         <div className="flex justify-end gap-2 p-5 pt-0">
           <button
             onClick={onClose}
+            disabled={isSubmitting}
             className="px-4 py-2.5 text-sm rounded-lg border hover:bg-accent transition-colors font-medium"
           >
             No

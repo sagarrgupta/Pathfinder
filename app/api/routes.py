@@ -37,8 +37,9 @@ from fastapi.responses import StreamingResponse
 from app.adapters.neo4j._sanitize import sanitize_neo4j_value
 from app.adapters.neo4j.graphDB import GraphDB
 from app.config.settings import settings
-from app.core.checkpointer import reset_checkpointer_storage
+from app.core.checkpointer import delete_student_checkpoints, reset_checkpointer_storage
 from app.core.workflow import get_compiled_workflow
+from app.services.llm_settings import switch_llm_provider
 from app.services.replay_store import (
     build_replay_artifact,
     delete_all_replay_artifacts,
@@ -186,7 +187,10 @@ async def _get_dependency_status(*, force_refresh: bool = False) -> dict[str, st
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             try:
-                resp = await client.get(f"{settings.LLM_BASE_URL.replace('/v1', '')}/v1/models")
+                resp = await client.get(
+                    f"{settings.LLM_BASE_URL.rstrip('/')}/models",
+                    headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+                )
                 if resp.status_code == 200:
                     payload = resp.json() if resp.content else {}
                     models = payload.get("data", []) if isinstance(payload, dict) else []
@@ -533,6 +537,19 @@ async def reset_all_student_data(student_id: Optional[str] = Query(default=None)
     }
 
 
+@router.delete("/student")
+async def delete_student_profile(student_id: str = Query(min_length=1)):
+    """Delete the explicitly selected profile without auto-creating a student."""
+    await delete_student_checkpoints(student_id)
+    deleted = await (await _graph_db()).delete_student_profile(student_id=student_id)
+    deleted_replays = delete_replay_artifacts_for_student(student_id)
+    return {
+        **deleted,
+        "deleted_replays": deleted_replays,
+        "message": "Student profile and associated data have been deleted.",
+    }
+
+
 @router.delete("/settings/delete-all-data")
 async def delete_all_data_everywhere():
     """Nuke everything: Neo4j data, chat checkpoints, and replay artifacts.
@@ -585,6 +602,10 @@ async def get_settings():
     return SettingsResponse(
         topic_guard_enabled=_topic_guard_enabled,
         reasoning=_reasoning,
+        llm_provider=settings.llm_provider,
+        nvidia_configured=bool(settings.NVIDIA_API_KEY or (
+            settings.LLM_API_KEY and settings.LLM_API_KEY != "sk-no-key"
+        )),
         models={
             "text_llm": settings.LLM_MODEL,
             "vision_llm": settings.VISION_MODEL,
@@ -595,13 +616,22 @@ async def get_settings():
 
 @router.put("/settings")
 async def update_settings(update: SettingsUpdate):
-    """Patch runtime toggles (topic guard, reasoning) without a restart."""
+    """Update toggles and persist provider changes without a restart."""
     global _topic_guard_enabled, _reasoning
+    if update.llm_provider is not None:
+        try:
+            switch_llm_provider(update.llm_provider)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except OSError as exc:
+            log.error("Could not save LLM provider: %s", type(exc).__name__)
+            raise HTTPException(500, "Could not save the model provider. Please try again.") from exc
+        _dependency_status_cache.update(timestamp=0.0, payload=None)
     if update.topic_guard_enabled is not None:
         _topic_guard_enabled = update.topic_guard_enabled
     if update.reasoning is not None:
         _reasoning = _normalize_reasoning(update.reasoning)
-    return {"updated": True, "topic_guard_enabled": _topic_guard_enabled, "reasoning": _reasoning}
+    return {"updated": True, **(await get_settings()).model_dump()}
 
 
 # ── Health ───────────────────────────────────────────────────────

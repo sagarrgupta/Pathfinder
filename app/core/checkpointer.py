@@ -38,6 +38,19 @@ async def get_checkpointer() -> AsyncSqliteSaver:
     return _checkpointer
 
 
+async def delete_student_checkpoints(student_id: str) -> None:
+    """Remove only threads whose student prefix matches exactly."""
+    saver = await get_checkpointer()
+    prefix = f"{student_id}:"
+    async with saver.lock, saver.conn.cursor() as cursor:
+        for table in ("checkpoints", "writes"):
+            await cursor.execute(
+                f"DELETE FROM {table} WHERE substr(thread_id, 1, ?) = ?",
+                (len(prefix), prefix),
+            )
+        await saver.conn.commit()
+
+
 async def reset_checkpointer_storage() -> None:
     """Wipe all stored chat history (used by the admin reset endpoint).
 

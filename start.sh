@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pathfinder local stack startup script.
-# Starts Neo4j, Ollama, LM Studio, backend, and frontend.
+# Starts local dependencies, the configured model provider, backend, and frontend.
 
 set -euo pipefail
 
@@ -96,7 +96,22 @@ if [ ! -d "$FRONTEND_DIR" ]; then
     exit 1
 fi
 
-echo "[1/6] Restarting Neo4j..."
+cd "$ROOT_DIR"
+echo "[1/6] Activating Python virtual environment..."
+source "$VENV_DIR/bin/activate"
+mkdir -p "$ROOT_DIR/data"
+
+if [ ! -f "$REQ_STAMP" ] || [ "$REQ_FILE" -nt "$REQ_STAMP" ]; then
+    echo "  Installing Python dependencies..."
+    python -m pip install -r "$REQ_FILE"
+    touch "$REQ_STAMP"
+else
+    echo "  Python dependencies already look up to date."
+fi
+
+LLM_PROVIDER="$(python -c 'from app.config.settings import settings; print(settings.llm_provider)')"
+
+echo "[2/6] Restarting Neo4j..."
 kill_port_listener 7474 "Neo4j HTTP"
 kill_port_listener 7687 "Neo4j Bolt"
 (
@@ -108,7 +123,7 @@ if ! wait_for_http "http://localhost:7474" "Neo4j" 30; then
     exit 1
 fi
 
-echo "[2/6] Restarting Ollama..."
+echo "[3/6] Restarting Ollama..."
 kill_port_listener 11434 "Ollama"
 nohup ollama serve > "$LOG_DIR/ollama.log" 2>&1 &
 OLLAMA_PID=$!
@@ -121,38 +136,29 @@ if ! ollama list | grep -q "$EMBEDDING_MODEL"; then
     ollama pull "$EMBEDDING_MODEL"
 fi
 
-echo "[3/6] Opening LM Studio..."
-kill_port_listener 1234 "LM Studio API"
-if command -v open > /dev/null 2>&1; then
-    open -a "LM Studio" || true
+echo "[4/6] Preparing model provider: $LLM_PROVIDER..."
+if [ "$LLM_PROVIDER" = "lmstudio" ]; then
+    kill_port_listener 1234 "LM Studio API"
+    if command -v open > /dev/null 2>&1; then
+        open -a "LM Studio" || true
+    else
+        echo "  'open' command is unavailable. Start LM Studio manually."
+    fi
+    if ! wait_for_http "http://localhost:1234/v1/models" "LM Studio API" 45; then
+        echo "LM Studio API did not become ready on http://localhost:1234/v1/models"
+        echo "Open LM Studio, load your model, and enable the local server."
+        exit 1
+    fi
+
+    SELECTED_LLM_MODEL="$(select_lmstudio_model "${LLM_MODEL:-}")"
+    if [ -z "$SELECTED_LLM_MODEL" ]; then
+        echo "LM Studio is running, but no served models were returned from /v1/models."
+        echo "Load any model in LM Studio and start the local server."
+        exit 1
+    fi
+    echo "  LM Studio available model: $SELECTED_LLM_MODEL"
 else
-    echo "  'open' command is unavailable. Start LM Studio manually."
-fi
-if ! wait_for_http "http://localhost:1234/v1/models" "LM Studio API" 45; then
-    echo "LM Studio API did not become ready on http://localhost:1234/v1/models"
-    echo "Open LM Studio, load your model, and enable the local server."
-    exit 1
-fi
-
-SELECTED_LLM_MODEL="$(select_lmstudio_model "${LLM_MODEL:-}")"
-if [ -z "$SELECTED_LLM_MODEL" ]; then
-    echo "LM Studio is running, but no served models were returned from /v1/models."
-    echo "Load any model in LM Studio and start the local server."
-    exit 1
-fi
-export LLM_MODEL="$SELECTED_LLM_MODEL"
-echo "  Using LM Studio model: $LLM_MODEL"
-
-echo "[4/6] Activating Python virtual environment..."
-source "$VENV_DIR/bin/activate"
-mkdir -p "$ROOT_DIR/data"
-
-if [ ! -f "$REQ_STAMP" ] || [ "$REQ_FILE" -nt "$REQ_STAMP" ]; then
-    echo "  Installing Python dependencies..."
-    pip install -r "$REQ_FILE"
-    touch "$REQ_STAMP"
-else
-    echo "  Python dependencies already look up to date."
+    echo "  Using the saved NVIDIA configuration."
 fi
 
 echo "[5/6] Restarting backend..."

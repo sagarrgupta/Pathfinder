@@ -87,7 +87,7 @@ const persisted = loadPersistedState();
 
 const initialState = {
   students: persisted?.students || [],
-  activeStudentId: persisted?.activeStudentId || getOrCreateRuntimeStudentId(),
+  activeStudentId: persisted ? persisted.activeStudentId : getOrCreateRuntimeStudentId(),
   // Sessions (restored from localStorage if available)
   sessions: persisted?.sessions || [],
   activeSessionId: persisted?.activeSessionId || null,
@@ -176,6 +176,30 @@ function appReducer(state, action) {
         sessions: remainingSessions,
         messagesBySession: nextMessagesBySession,
         activeSessionId: nextActiveSessionId,
+      };
+    }
+
+    case 'REMOVE_STUDENT': {
+      const studentId = action.payload;
+      const students = state.students.filter((student) => student.student_id !== studentId);
+      const sessions = state.sessions.filter((session) => session.student_id !== studentId);
+      const sessionIds = new Set(sessions.map((session) => session.session_id));
+      const removingActive = state.activeStudentId === studentId;
+      // An empty selection lets the user create a profile without recreating the deleted one.
+      const activeStudentId = removingActive ? (students[0]?.student_id || null) : state.activeStudentId;
+      return {
+        ...state,
+        students,
+        sessions,
+        messagesBySession: Object.fromEntries(
+          Object.entries(state.messagesBySession).filter(([id]) => sessionIds.has(id))
+        ),
+        activeStudentId,
+        activeSessionId: removingActive
+          ? (sessions.find((session) => session.student_id === activeStudentId)?.session_id || null)
+          : state.activeSessionId,
+        student: removingActive ? null : state.student,
+        studentLoading: removingActive ? false : state.studentLoading,
       };
     }
 
@@ -312,7 +336,7 @@ export function AppProvider({ children }) {
         const hasActive = students.some((item) => item.student_id === state.activeStudentId);
         const preferredStudentId = hasActive
           ? state.activeStudentId
-          : (students[0]?.student_id || state.activeStudentId || getOrCreateRuntimeStudentId());
+          : (students[0]?.student_id || state.activeStudentId);
 
         if (preferredStudentId !== state.activeStudentId) {
           dispatch({ type: 'SET_ACTIVE_STUDENT', payload: preferredStudentId });

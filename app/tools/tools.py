@@ -208,7 +208,10 @@ class ToolSpec:
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "strict": True,
+                # Graph identities and properties have dynamic keys. Strict
+                # mode forbids those maps (and requires every field), so use
+                # standard function calling without stripping valid arguments.
+                "strict": False,
                 "parameters": self.input_schema,
             },
         }

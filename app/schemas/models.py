@@ -15,7 +15,7 @@ health checks, and replay artifacts.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -73,6 +73,7 @@ class SettingsUpdate(RequestModel):
     """
     topic_guard_enabled: Optional[bool] = None
     reasoning: Optional[str] = Field(default=None, max_length=40)
+    llm_provider: Optional[Literal["lmstudio", "nvidia"]] = None
 
 
 class DocumentUploadResponse(ResponseModel):
@@ -135,6 +136,8 @@ class SettingsResponse(ResponseModel):
     """Snapshot of current app settings + which models are configured."""
     topic_guard_enabled: bool = True
     reasoning: str = "medium"
+    llm_provider: Literal["lmstudio", "nvidia"] = "lmstudio"
+    nvidia_configured: bool = False
     models: dict[str, str] = Field(default_factory=dict)
 
 

@@ -1,4 +1,4 @@
-"""LM Studio chat-model adapter.
+"""OpenAI-compatible chat-model adapter for LM Studio and NVIDIA.
 
 LM Studio hosts a local model behind an OpenAI-compatible API, so we can
 reuse `langchain-openai`'s `ChatOpenAI` client and just point it at LM
@@ -47,6 +47,13 @@ _REASONING_ALIASES = {
     "true": "medium",
     "1": "medium",
 }
+
+
+def reset_llm_clients() -> None:
+    """Rebuild text and vision clients on their next use after a provider change."""
+    global _vision_llm
+    _text_llms.clear()
+    _vision_llm = None
 
 
 # ── Logging wrapper ─────────────────────────────────────────────────
@@ -215,19 +222,24 @@ def _build_llm(
     model_kwargs: dict[str, Any] | None = None,
     extra_body: dict[str, Any] | None = None,
 ) -> LoggingChatOpenAI:
-    """Construct one LM Studio client with the shared URL + API key.
+    """Construct an OpenAI-compatible client with provider-specific credentials.
 
     When `LLM_REQUIRE_EXACT_MODEL` is off we send the magic value
     `local-model` so LM Studio routes the call to whichever model is
     currently loaded, regardless of what `settings.LLM_MODEL` says.
+    NVIDIA always receives the configured model name.
     """
-    api_model = model if settings.LLM_REQUIRE_EXACT_MODEL else "local-model"
+    api_model = (
+        model
+        if settings.LLM_REQUIRE_EXACT_MODEL or settings.is_nvidia_endpoint
+        else "local-model"
+    )
 
     kwargs: dict[str, Any] = {
         "llm_label": label,
         "model": api_model,
         "base_url": settings.LLM_BASE_URL,
-        "api_key": settings.LLM_API_KEY,
+        "api_key": settings.llm_api_key,
     }
     if model_kwargs:
         kwargs["model_kwargs"] = model_kwargs

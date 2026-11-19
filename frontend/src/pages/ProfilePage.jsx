@@ -94,6 +94,11 @@ export default function ProfilePage() {
   const handleUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    if (!state.activeStudentId) {
+      toast.error('Create or select a student profile first.');
+      event.target.value = '';
+      return;
+    }
     try {
       const { exists } = await checkDocumentExists(file.name, state.activeStudentId);
       if (exists) {

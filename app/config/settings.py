@@ -11,7 +11,9 @@ server from anywhere and it will still pick up the right credentials.
 """
 
 from pathlib import Path
+from urllib.parse import urlsplit
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # app/config/settings.py -> parents[2] == project root (contains app/)
@@ -32,14 +34,43 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
     )
 
-    # ---------- LM Studio (Text + Vision LLM) ----------
-    # Local LLM served via LM Studio's OpenAI-compatible API. Used by every
-    # reasoning step: routing, ingestion, and the specialist answer loop.
+    # ---------- OpenAI-compatible LLM (LM Studio or NVIDIA) ----------
+    # Used by every reasoning step: routing, ingestion, and the specialist
+    # answer loop. The endpoint determines which provider key is used.
     LLM_BASE_URL: str = "http://localhost:1234/v1"
     LLM_MODEL: str = "google/gemma-4-26b-a4b"
     LLM_REQUIRE_EXACT_MODEL: bool = False
     LLM_API_KEY: str = "sk-no-key"
+    NVIDIA_API_KEY: str = Field(default="", repr=False)
     VISION_MODEL: str = "google/gemma-4-26b-a4b"
+
+    # Remember each provider's models when switching from Settings.
+    LMSTUDIO_BASE_URL: str = "http://localhost:1234/v1"
+    LMSTUDIO_MODEL: str = "google/gemma-4-26b-a4b"
+    LMSTUDIO_VISION_MODEL: str = "google/gemma-4-26b-a4b"
+    LMSTUDIO_REQUIRE_EXACT_MODEL: bool = False
+    NVIDIA_MODEL: str = "deepseek-ai/deepseek-v4-flash"
+    NVIDIA_VISION_MODEL: str = "deepseek-ai/deepseek-v4-flash"
+
+    @property
+    def llm_provider(self) -> str:
+        return "nvidia" if self.is_nvidia_endpoint else "lmstudio"
+
+    @property
+    def is_nvidia_endpoint(self) -> bool:
+        return urlsplit(self.LLM_BASE_URL).hostname in {
+            "integrate.api.nvidia.com", "ai.api.nvidia.com",
+        }
+
+    @property
+    def llm_api_key(self) -> str:
+        """Use NVIDIA credentials only for NVIDIA-hosted requests."""
+        if self.is_nvidia_endpoint:
+            if self.NVIDIA_API_KEY:
+                return self.NVIDIA_API_KEY
+            if not self.LLM_API_KEY or self.LLM_API_KEY == "sk-no-key":
+                raise ValueError("NVIDIA_API_KEY is required for the NVIDIA LLM endpoint")
+        return self.LLM_API_KEY
 
     # ---------- Ollama (Embeddings) ----------
     # Ollama turns chunk/query text into vectors. Dimension must match the
