@@ -68,6 +68,9 @@ _MESSAGE_FIELD_RE = re.compile(r'"message"\s*:\s*"((?:\\.|[^"])*)"', re.DOTALL)
 # Strip chat-template control tokens (e.g., `<|im_end|>`) that some local
 # models emit into their plain-text output.
 _SPECIAL_TOKEN_RE = re.compile(r"<\|.*?\|>")
+_CONTEXT_FIELD_RE = re.compile(
+    r'[ \t]*[`"*]*(next_session_context|next_long_context)[`"*]*[ \t]*:[ \t]*'
+)
 
 
 # Phrases that signal the model is giving up. If we see one of these in the
@@ -109,6 +112,38 @@ def _should_retry_web_search(payload: dict[str, Any], tool_log: list[dict[str, A
     search_count = sum(1 for t in tool_log if isinstance(t, dict) and t.get("tool") == "search_web")
     fetch_count = sum(1 for t in tool_log if isinstance(t, dict) and t.get("tool") == "fetch_url")
     return search_count < _MAX_WEB_SEARCH_RETRIES or fetch_count < _MAX_WEB_SEARCH_FETCHES
+
+
+def _split_trailing_context(content: str) -> tuple[str, dict[str, Any]]:
+    """Recover a complete memory-field suffix appended to an ordinary answer.
+
+    Only consume a suffix containing both fields with valid string/null
+    values, so mentions of these names in normal prose remain untouched.
+    """
+    start = re.search(r'\n(?=[ \t]*[`"*]*next_(?:session|long)_context[`"*]*[ \t]*:)', content)
+    if start is None:
+        return content, {}
+    remaining = content[start.end():].strip()
+    fields: dict[str, Any] = {}
+    decoder = json.JSONDecoder(strict=False)
+    while remaining:
+        match = _CONTEXT_FIELD_RE.match(remaining)
+        if match is None or match.group(1) in fields:
+            return content, {}
+        key = match.group(1)
+        try:
+            value, end = decoder.raw_decode(remaining[match.end():])
+        except ValueError:
+            return content, {}
+        if not isinstance(value, str) and not (key == "next_long_context" and value is None):
+            return content, {}
+        fields[key] = value
+        remaining = remaining[match.end() + end:].strip()
+        if remaining.startswith(","):
+            remaining = remaining[1:].lstrip()
+    if set(fields) != {"next_session_context", "next_long_context"}:
+        return content, {}
+    return content[:start.start()].rstrip(), fields
 
 
 def _extract_message_from_text(content: str) -> str:
@@ -345,12 +380,14 @@ async def specialist_runner(state: PathfinderState) -> PathfinderState:
         if isinstance(parsed, dict):
             final_payload = _normalize_specialist_payload(parsed, session_context)
         else:
+            answer_text, recovered_context = _split_trailing_context(content)
             final_payload = _normalize_specialist_payload(
                 {
-                    "message": _extract_message_from_text(content),
+                    "message": _extract_message_from_text(answer_text),
                     "stop_reason": "",
                     "next_session_context": session_context,
                     "next_long_context": None,
+                    **recovered_context,
                 },
                 session_context,
             )
