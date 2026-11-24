@@ -154,7 +154,7 @@ async def _extract_page_with_vision(pdf_bytes: bytes, page_number: int, filename
             doc.close()
 
 async def extract_text_from_image(file_bytes: bytes, filename: str = "image.png") -> list[dict[str, Any]]:
-    """OCR an uploaded image file. HEIF/HEIC are converted to JPEG first.
+    """Describe uploaded clothing and extract text. Convert HEIF/HEIC to JPEG.
 
     Always returns exactly one page so the downstream chunker can treat
     images and single-page PDFs the same way.
@@ -172,9 +172,15 @@ async def extract_text_from_image(file_bytes: bytes, filename: str = "image.png"
             image_bytes=img_bytes,
             mime_type=mime_type,
             prompt=(
-                "Extract ALL text from this image: text, numbers, tables, structured data. "
-                "Preserve original structure. If it's a document (resume, transcript, etc.), "
-                "extract all information. Return ONLY the extracted text."
+                "Describe this image for a fashion wardrobe and document knowledge graph. "
+                "For clothing or accessories, describe EACH visible item separately with a "
+                "local item number, category, color, pattern, and visible design details. "
+                "Transcribe readable labels, sizes, brands, measurements with units, and "
+                "any other visible text or tables. Preserve document and size-table structure. "
+                "Distinguish printed facts from visual observations. Do not guess exact "
+                "measurements, size, brand, material, ownership, or occasion from appearance; "
+                "mark unclear attributes unknown. If no text is present, still describe "
+                "visible garments. Return only the factual description and extracted text."
             ),
             filename=filename,
             context_label="image",

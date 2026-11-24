@@ -476,7 +476,7 @@ def get_vector_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="get_chunks_for_student",
-            description="Return stored chunks across every document owned by the active student. Use this for broader evidence inspection, debugging, or student-wide retrieval context.",
+            description="Return stored chunks across every document owned by the active consumer, including uploaded wardrobe descriptions, clothing-photo observations, and size guides. Use this for broader evidence inspection and consumer-wide retrieval context.",
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             handler=_get_chunks_for_student,
             compact_handler=_compact_get_chunks_for_student,

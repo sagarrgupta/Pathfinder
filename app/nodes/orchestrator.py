@@ -1,7 +1,8 @@
 """Picks which specialist persona should answer this turn.
 
-Pathfinder has three specialist prompts — `academic`, `career`, and
-`general`. Instead of hand-written keyword rules (which age badly as the
+The fashion demo reuses three internal keys: `academic` for shopping,
+`career` for size/fit, and `general` for wardrobe/general fashion assistance.
+Instead of hand-written keyword rules (which age badly as the
 product grows), we ask the local LLM to score each one on a 0–10 scale
 and pick the winner. The scoring prompt is kept tiny so it's fast and
 cheap. On failure we fall back to `general`, which is the catch-all.
@@ -29,22 +30,24 @@ log = logging.getLogger("pathfinder.agents.orchestrator")
 
 _SPECIALIST_DESCRIPTIONS: dict[str, str] = {
     "academic": (
-        "Academic records, degree progress, institutional policies, "
-        "academic deadlines, courses, grades, graduation requirements, "
-        "enrollment, and eligibility."
+        "Fashion shopping and product discovery for any requested clothing or "
+        "accessory category. Find web products using the consumer's preferences, "
+        "budget, measurements, and the applicable product size guide."
     ),
     "career": (
-        "Career planning, job search, professional development, "
-        "skill assessment, market-oriented advice, resume and interview help."
+        "Size and fit questions, comparing body measurements and units with "
+        "brand or product size guides, garment dimensions, and fit preferences."
     ),
     "general": (
-        "Profile management, uploaded documents, cross-domain requests, "
-        "greetings, follow-ups, memory-aware questions, and anything "
-        "that does not clearly belong to a single specialist."
+        "Wardrobe styling, combinations from owned garments for an occasion, "
+        "consumer profiles, clothing photos, greetings, follow-ups, and "
+        "fashion requests that span roles or do not belong to one specialist."
     ),
 }
 
-_ROUTING_PROMPT = """Classify a student query. Score each specialist 0–10.
+_ROUTING_PROMPT = """Classify a consumer's fashion query. Score each specialist 0–10.
+The category names academic, career, and general are legacy routing identifiers;
+use their descriptions below to determine their current fashion responsibilities.
 
 Specialists:
 {specialists}
@@ -97,9 +100,8 @@ async def _llm_route(query: str, context_hint: str) -> dict[str, float]:
 async def orchestrator(state: PathfinderState) -> PathfinderState:
     """Score the query against all specialists and pick the winner.
 
-    We hint the router with a few fields from the student's profile so it
-    can tell the difference between (say) an academic question from a
-    current student and the same wording from someone exploring careers.
+    We hint the router with a few fields from the consumer's profile to
+    disambiguate shopping, size/fit, and wardrobe styling requests.
     Ties favor `general` since it's the safe fallback.
     """
     query = str(state.get("query", "") or "")
@@ -136,10 +138,10 @@ async def orchestrator(state: PathfinderState) -> PathfinderState:
     # of "orchestrator" while the backend thinks.
     step_progress = list(state.get("step_progress", []))
     specialist_label = {
-        "academic": "academic planning",
-        "career": "career planning",
-        "general": "general guidance",
-    }.get(selected_specialist, "the best guidance path")
+        "academic": "finding clothing and accessories",
+        "career": "size and fit",
+        "general": "wardrobe styling and fashion assistance",
+    }.get(selected_specialist, "fashion assistance")
     add_progress(
         step_progress,
         stage="Choosing the best approach",

@@ -64,7 +64,7 @@ def get_utility_tool_specs() -> list[ToolSpec]:
                     },
                     "next_long_context": {
                         "anyOf": [{"type": "string"}, {"type": "null"}],
-                        "description": "Full replacement long context for the student. Do not return null when this turn revealed useful durable facts like the student's name, goals, preferences, constraints, or background; return null only when the existing long context should remain unchanged.",
+                        "description": "Full replacement durable context for the consumer, including explicit measurements with units, fit/style preferences, and confirmed owned garments. Merge new durable facts and corrections with existing facts; return null when nothing durable changed. Keep one-time shopping budgets and occasions in session context. Suggested products are not owned garments. Graph ingestion stores structured facts separately.",
                     },
                 },
                 "required": ["message", "next_session_context"],

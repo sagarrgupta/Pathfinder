@@ -1,12 +1,12 @@
-"""Tools for reaching outside the student graph — live web search + URL fetch.
+"""Tools for reaching outside the consumer graph — live web search + URL fetch.
 
 Three tools are registered here:
 - `search_web`            : generic results across the fallback provider chain.
 - `fetch_url`             : pull readable content from one specific page.
-- `find_official_sources` : same as search_web but filters for `.edu`/`.gov`.
+- `find_official_sources` : search for brand/retailer product and size-guide sources.
 
 Only the specialist profile sees these. Ingestion agents stay offline so
-that the graph only reflects the student's own documents and statements,
+that the graph only reflects the consumer's own documents and statements,
 not whatever the web happens to say at ingestion time.
 
 The actual HTTP work is delegated to `app.adapters.web_search` so the
@@ -74,30 +74,25 @@ async def _fetch_url(arguments: dict[str, Any], _: ToolContext) -> dict[str, Any
 
 def _compact_fetch_url(arguments: dict[str, Any], result: dict[str, Any], _: ToolContext) -> dict[str, Any]:
     payload = dict(result.get("result") or {})
+    content = str(payload.get("content") or payload.get("text") or "")
     return {
         "url": str(arguments.get("url", "") or ""),
         "title": bounded_text(payload.get("title"), limit=160),
-        "content_preview": bounded_text(payload.get("content") or payload.get("text"), limit=320),
+        # The model needs actual product details and size tables, not just a snippet.
+        "content_preview": bounded_text(content, limit=22000),
+        "content_truncated": len(content) > 22000 or "[Content truncated...]" in content,
     }
 
 
 async def _find_official_sources(arguments: dict[str, Any], _: ToolContext) -> dict[str, Any]:
-    """Run a normal search and keep only results from authoritative domains.
-
-    This is a heuristic — a page hosting `.edu` in the URL is more likely
-    to be a real university source than a random blog. Good enough to
-    steer the specialist towards trustworthy references first.
-    """
+    """Find candidate brand/retailer sources; the agent verifies their provenance."""
     query = str(arguments.get("query", "") or "").strip()
     if not query:
         return {"error": "query is required"}
-    results = await web_search(query, max_results=8)
-    official = []
-    for item in results:
-        url = str(item.get("url", "") or "")
-        if any(domain in url for domain in (".edu", ".gov", ".ac.", "official", "catalog")):
-            official.append(item)
-    return {"results": official[:5]}
+    results = await web_search(f"{query} official brand retailer size guide", max_results=8)
+    # A search hit alone cannot establish authority. Do not discard real brands
+    # because their URLs lack the old academic-domain substrings.
+    return {"results": results[:5]}
 
 
 def _compact_find_official(arguments: dict[str, Any], result: dict[str, Any], _: ToolContext) -> dict[str, Any]:
@@ -114,7 +109,7 @@ def get_web_tool_specs() -> list[ToolSpec]:
     return [
         ToolSpec(
             name="search_web",
-            description="Search the web for current or external information relevant to the user query. Use this when the answer depends on live sources, public webpages, policies, catalogs, deadlines, or other information not guaranteed to exist in the student graph.",
+            description="Search the web for products, clothing, accessories, retailer pages, and product-specific size guides for any requested category. Use saved consumer preferences to target the search. Results are candidates: fetch pages to verify product details, fit evidence, prices, and availability.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -129,7 +124,7 @@ def get_web_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="fetch_url",
-            description="Fetch one specific webpage and return extracted readable content. Use this after finding a promising source and you need the actual page text rather than only search-result snippets.",
+            description="Fetch a specific product page or size guide and return readable page content, including available size-table text. Use this to verify search results and compare the consumer's measurements with the applicable chart. Content may be truncated or unavailable; do not invent missing details.",
             input_schema={
                 "type": "object",
                 "properties": {"url": {"type": "string", "description": "Absolute URL of the webpage to fetch and extract."}},
@@ -141,7 +136,7 @@ def get_web_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="find_official_sources",
-            description="Search for likely official or authoritative sources related to the query, such as university, government, catalog, or institutional pages. Use this when source quality matters and the model should prefer official references first.",
+            description="Search for candidate official brand or retailer product pages and size guides. Include the relevant brand or product in the query when known. Search results are not automatically authoritative: fetch the page and verify the source and chart applicability before relying on it.",
             input_schema={
                 "type": "object",
                 "properties": {"query": {"type": "string", "description": "Search query for which authoritative or official sources should be identified."}},

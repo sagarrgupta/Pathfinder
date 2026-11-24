@@ -79,7 +79,7 @@ JSON_VALUE_SCHEMA: dict[str, Any] = {
 # Referenced by almost every upsert tool below.
 IDENTITY_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "description": "Stable identity fields that uniquely identify an entity inside a student graph, such as {'key': 'value'}.",
+    "description": "Stable identity fields that uniquely identify an entity inside the consumer's graph, such as a measurement_type or garment_id. Reuse the same identity when updating a record.",
     "additionalProperties": {"type": "string"},
 }
 
@@ -737,13 +737,13 @@ def get_graph_tool_specs() -> list[ToolSpec]:
     return [
         ToolSpec(
             name="update_student",
-            description="Create the root student node if needed and update scalar student properties in one step. This is one valid home for attributes that identify or describe the student as a person; an alternative home is a section that groups personal information as entities. Pick whichever shape the existing schema already uses for that kind of attribute and stay consistent. Before calling this, inspect `student.property_keys` in the provided schema manifest and REUSE existing keys whenever one already covers the attribute, so the same fact does not end up under multiple parallel keys.",
+            description="Create the consumer's root profile node if needed and update scalar profile properties. This is one valid home for personal attributes; an alternative is a section grouping personal information as entities. Follow the existing schema consistently. Inspect `student.property_keys` in the manifest and REUSE existing keys so the same fact does not appear under parallel keys. Keep measurement values and units explicit.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "updates": {
                         "type": "object",
-                        "description": "Scalar student properties to create or update on the root student node. Reuse existing keys from the student manifest when available; only introduce a new key when none of the existing keys fits the attribute.",
+                        "description": "Scalar consumer properties to create or update on the existing root profile node. Reuse keys from the manifest; only introduce a new key when no existing key fits. Preserve measurement units alongside values.",
                         "additionalProperties": JSON_VALUE_SCHEMA,
                     },
                 },
@@ -755,12 +755,12 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="upsert_section",
-            description="Create or update one student-owned section that groups related entities. Before calling this, inspect the existing sections in the provided schema manifest and REUSE the `key` of any existing section whose description already covers the same conceptual area as the new content. Match by meaning, not by exact wording. Only create a new section when no existing section reasonably covers the concept. You MUST provide a meaningful `description` explaining what the section groups — empty descriptions are not acceptable.",
+            description="Create or update one consumer-owned section that groups related entities. Inspect the schema manifest and REUSE a section key whose description covers the same conceptual area, matching by meaning. Examples include measurements, preferences, and wardrobe. Only create a section when none fits. You MUST provide a meaningful description of what it groups.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "key": {"type": "string", "description": "Stable section key that identifies the grouping this entity set belongs to."},
-                    "description": {"type": "string", "minLength": 1, "description": "Required plain-language description (one or two sentences) of what this section groups and why it exists in the student's profile. Never leave empty. This is how future agents understand the section's purpose."},
+                    "description": {"type": "string", "minLength": 1, "description": "Required plain-language description (one or two sentences) of what this section groups and why it exists in the consumer's profile. Never leave empty. This is how future agents understand the section's purpose."},
                     "parent_key": {"type": "string", "description": "Optional parent section key if this section should be nested under another existing section."},
                 },
                 "required": ["key", "description"],
@@ -771,7 +771,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="upsert_graph_node",
-            description="Create or update one dynamic entity under a student-owned section. Before calling this, inspect the `entity_manifest` in the provided schema and REUSE any existing `entity_type` label that already covers the same conceptual kind as the new entity — match by meaning, not by exact wording, so the graph does not fragment into parallel near-duplicate types. Keep identity keys uniform across every call of a given type. Only introduce a new `entity_type` when no existing label reasonably fits. Properties must never be empty — put every descriptive attribute the source reveals into `properties`.",
+            description="Create or update one dynamic entity under a consumer-owned section. Inspect the entity_manifest and REUSE an entity_type matching the same concept by meaning. Keep identity keys uniform for a type; reuse an existing entity when correcting measurements or updating a garment. Only introduce a type when no existing label fits. Properties must never be empty: include supported attributes, measurement units, and uncertainty. Product recommendations do not establish ownership.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -788,7 +788,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="upsert_graph_relation",
-            description="Create or update a typed relationship between two existing entities owned by the same student. Before calling this, inspect the `relationship_manifest` in the provided schema and REUSE any existing `relationship_type` that already expresses the same semantic connection — match by meaning, not by exact wording, so the edge vocabulary stays consistent and typed lookups keep working. Only introduce a new relationship type when no existing one reasonably fits.",
+            description="Create or update a typed relationship between two existing entities owned by the same consumer. Inspect the relationship_manifest and REUSE a relationship_type expressing the same connection by meaning. Only introduce a type when none fits. Create only source-supported connections, such as garments explicitly grouped in an outfit.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -807,7 +807,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="get_section_entities",
-            description="Return every entity that currently belongs to one student section. Use this to inspect what already exists inside a section before deciding whether to update an existing entity or create a new one.",
+            description="Return every entity that currently belongs to one consumer section. Use this to inspect measurements, preferences, or wardrobe items before updating an existing entity or creating a new one.",
             input_schema={
                 "type": "object",
                 "properties": {"section_key": {"type": "string", "description": "Section key to inspect."}},
@@ -834,13 +834,13 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="upsert_entity_field",
-            description="Create or update one first-level Field node under an existing entity. Use this ONLY for complex, structured, or nested detail (e.g. lists, sub-components) that should live outside the entity core. Do NOT use this tool for simple metadata like titles, names, dates, grades, averages, counts, or summary statistics; put those directly into the properties dict of upsert_graph_node.",
+            description="Create or update one first-level Field node under an existing entity. Use this ONLY for complex, structured, or nested detail, such as size-guide rows or care sub-components. Put simple attributes like color, size, measurement value, unit, name, or count directly into the properties dict of upsert_graph_node.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "entity_type": {"type": "string", "description": "Dynamic entity type that owns the field."},
                     "identity": IDENTITY_SCHEMA,
-                    "field_name": {"type": "string", "description": "Field key to create or update under the entity. This can be a human-readable label from the document, such as a course title or section heading."},
+                    "field_name": {"type": "string", "description": "Field key to create or update under the entity, such as a size-guide heading or garment care subsection."},
                     "field_value": {**JSON_VALUE_SCHEMA, "description": "Optional field value. Leave it null when the field will act mainly as a container for child fields."},
                 },
                 "required": ["entity_type", "identity", "field_name"],
@@ -871,7 +871,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
                 "type": "object",
                 "properties": {
                     "parent_field_id": {"type": "string", "description": "Id of the existing parent Field node that should own the child field."},
-                    "field_name": {"type": "string", "description": "Child field key to create below the parent field. This can be a human-readable label from the document, such as a course title or subsection heading."},
+                    "field_name": {"type": "string", "description": "Child field key to create below the parent field, such as a size-guide row or care-detail heading."},
                     "field_value": {**JSON_VALUE_SCHEMA, "description": "Optional child field value. Leave null when the child field is also acting as a container."},
                 },
                 "required": ["parent_field_id", "field_name"],
@@ -941,35 +941,35 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="get_student_schema",
-            description="Return the canonical student graph schema manifest, including all sections, entity types, relationship types, and graph counts. Use this before graph writes or typed graph reads so you follow the student's existing graph vocabulary instead of inventing new structure.",
+            description="Return the consumer graph schema manifest, including sections, entity types, relationship types, and graph counts. Use this before writes or typed reads to follow existing vocabulary. The manifest describes structure; retrieve actual measurements and wardrobe items for personalized answers.",
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             handler=_get_student_schema,
             compact_handler=_compact_schema,
         ),
         ToolSpec(
             name="list_entity_types",
-            description="Return the entity types currently present in the student graph along with counts for each type. Use this when the model needs to know what kinds of graph entities already exist before deciding which type to read or update.",
+            description="Return entity types currently present in the consumer graph with counts. Use this to discover the actual types used for measurements, preferences, garments, or other facts before reading or updating them.",
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             handler=_list_entity_types,
             compact_handler=_compact_entity_types,
         ),
         ToolSpec(
             name="list_relationship_types",
-            description="Return the relationship types currently present in the active student graph, along with counts and simple source-to-target entity patterns. Use this before `typed_relation_lookup` or `fetch_relation_detail` whenever you do not already know the exact relationship type names.",
+            description="Return relationship types currently present in the active consumer graph, along with counts and source-to-target entity patterns. Use this before typed_relation_lookup or fetch_relation_detail when the exact relationship type is unknown.",
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             handler=_list_relationship_types,
             compact_handler=_compact_relationship_types,
         ),
         ToolSpec(
             name="get_graph_data",
-            description="Return a lightweight node-and-relationship graph view for visualization or structural inspection. Use this when the model needs the student graph as simple `nodes` and `relationships` arrays instead of the richer full student snapshot.",
+            description="Return a lightweight consumer graph view as nodes and relationships arrays for visualization or structural inspection.",
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
             handler=_get_graph_data,
             compact_handler=_compact_graph_data,
         ),
         ToolSpec(
             name="typed_node_lookup",
-            description="Return matching student-owned entities of one dynamic entity type using exact-match property filters. Use this when the model needs a list search within one entity type instead of one exact identity match.",
+            description="Return matching consumer-owned entities of one dynamic entity type using exact-match property filters. Use this to retrieve saved measurements, preferences, or garments. Discover the type from the schema and omit unnecessary filters when the full set is needed.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -985,7 +985,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="typed_relation_lookup",
-            description="Return student-owned graph relationships of one specific type whose target matches one dynamic entity type. Use this when the model needs to inspect existing semantic edges before creating duplicate relationships or when it wants entities that are already connected in a particular way. If the exact relationship type is unknown, call `list_relationship_types` first instead of guessing.",
+            description="Return consumer-owned relationships of one type whose target matches one dynamic entity type. Use this to inspect existing connections before duplicating them or to retrieve connected wardrobe items. If the relationship type is unknown, call list_relationship_types first.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -1034,7 +1034,7 @@ def get_graph_tool_specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="hybrid_search",
-            description="Run vector retrieval over stored chunks and enrich the results with graph grounding from `MENTIONED_IN` and `DERIVED_FROM` edges. Use this when the model needs both raw chunk evidence and connected student graph context in one retrieval step.",
+            description="Retrieve stored document and clothing-photo description chunks and enrich them with graph grounding from MENTIONED_IN and DERIVED_FROM edges. Use this for source evidence connected to the consumer graph; use graph lookups for complete wardrobe lists and measurement records.",
             input_schema={
                 "type": "object",
                 "properties": {
